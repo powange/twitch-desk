@@ -2,7 +2,12 @@
 
 Application de bureau (Windows, Linux) pour Twitch, sur plusieurs comptes à la fois.
 
-Version 0.1 : **points de chaîne**. L'application simule le visionnage des chaînes choisies sans ouvrir de lecteur ni télécharger la vidéo, et récupère le bonus automatiquement. Les drops et le suivi des giveaways arrivent dans les versions suivantes.
+Ce que fait l'application aujourd'hui :
+
+- **Points de chaîne Twitch** : visionnage simulé des chaînes choisies, sans lecteur ni téléchargement de la vidéo, et récupération automatique du bonus.
+- **Points StreamElements** : le compte reste connecté au chat des chaînes choisies, ce qui le place dans la liste des spectateurs où StreamElements distribue ses points toutes les 10 min. Le solde est relu sur l'API publique de StreamElements.
+
+Les drops et le suivi des giveaways arrivent dans les versions suivantes.
 
 Stack : Tauri 2, cœur en Rust (tokio, reqwest, SQLite), interface Vue 3 + Nuxt UI.
 
@@ -22,6 +27,8 @@ npm run typecheck
 - **Connexion** : code d'appareil (twitch.tv/activate) avec l'identifiant client de l'application Android TV de Twitch. Ses jetons passent sans contrôle d'intégrité sur l'API interne de Twitch. Les jetons sont rangés dans le Gestionnaire d'identification de Windows (Secret Service sous Linux, fichier `secrets.json` en mode 600 si aucun trousseau n'est disponible).
 - **Visionnage** : toutes les 10 s, liste de lecture HLS en qualité minimale et requête `HEAD` sur chaque nouveau segment ; toutes les 59 s, événement `minute-watched`. Twitch ne compte que 2 chaînes à la fois par compte : l'application prend les 2 premières chaînes en live de la liste.
 - **Événements en direct** : PubSub (`pubsub-edge.twitch.tv`) pour le bonus disponible, les gains, le début et la fin des lives. Le solde est aussi relu régulièrement, ce qui récupère le bonus si PubSub est coupé.
+- **Chat** : connexion IRC authentifiée (`irc-ws.chat.twitch.tv`), JOIN des chaînes où la présence est activée, sans jamais envoyer de message. Une connexion anonyme ne suffirait pas : elle n'apparaît pas dans la liste des spectateurs. La présence n'a pas de limite de chaînes.
+- **StreamElements** : `api.streamelements.com/kappa/v2/channels/{login}` donne l'identifiant de la chaîne, `kappa/v2/points/{id}/{pseudo}` le solde (404 tant que le pseudo n'a rien gagné). Adresses non documentées officiellement. Une baisse du solde (tickets achetés) n'est pas comptée comme un gain.
 - **Requêtes internes (GQL)** : leurs empreintes sont dans [`operations.json`](operations.json). L'application embarque ce fichier et relit la version de la branche `main` au démarrage : quand Twitch change une empreinte, il suffit de corriger ce fichier, sans publier de nouvelle version. Chaque opération accepte plusieurs empreintes, essayées dans l'ordre.
 
 Ces mécanismes reprennent les principes de [TwitchDropsMiner](https://github.com/DevilXD/TwitchDropsMiner), [Twitch-Channel-Points-Miner-v2](https://github.com/rdavydov/Twitch-Channel-Points-Miner-v2) et [twitch-drops-miner](https://github.com/ohne-b/twitch-drops-miner). Aucun code n'en est copié.
@@ -30,7 +37,8 @@ Utiliser ces outils va contre l'esprit des conditions d'utilisation de Twitch : 
 
 ## Organisation
 
-- `src-tauri/src/twitch/` : connexion (`auth.rs`), requêtes GQL (`gql.rs`), PubSub (`pubsub.rs`), visionnage simulé (`watch.rs`).
+- `src-tauri/src/twitch/` : connexion (`auth.rs`), requêtes GQL (`gql.rs`), PubSub (`pubsub.rs`), visionnage simulé (`watch.rs`), présence dans le chat (`chat.rs`).
+- `src-tauri/src/streamelements.rs` : solde StreamElements.
 - `src-tauri/src/miner.rs` : superviseur d'un compte (choix des chaînes, bonus, événements). Un superviseur isolé par compte.
 - `src-tauri/src/app.rs` : état partagé, envoyé à l'interface par l'événement `snapshot`.
 - `src-tauri/src/db.rs` : base SQLite (comptes, chaînes, gains, réglages).

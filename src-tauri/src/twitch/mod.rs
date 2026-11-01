@@ -6,6 +6,7 @@
 //! Twitch-Channel-Points-Miner-v2 et twitch-drops-miner, relevée le 2026-11-01).
 
 pub mod auth;
+pub mod chat;
 pub mod gql;
 pub mod pubsub;
 pub mod watch;

@@ -6,6 +6,7 @@ import { ACCOUNT_STATUS, EVENT_KIND, formatNumber, formatTime } from '../utils/f
 const { accounts, events, channels } = useSnapshot()
 
 const earnedToday = computed(() => channels.value.reduce((sum, c) => sum + c.channel.earnedToday, 0))
+const seEarnedToday = computed(() => channels.value.reduce((sum, c) => sum + c.channel.seEarnedToday, 0))
 const watching = computed(() => channels.value.filter(c => c.channel.state === 'watching'))
 const live = computed(() => channels.value.filter(c => c.channel.live).length)
 const attention = computed(() => accounts.value.filter(a => a.status === 'expired' || a.status === 'error').length)
@@ -25,8 +26,8 @@ const bonusesToday = computed(() => {
         <div class="text-sm text-muted">points gagnés aujourd'hui</div>
       </UCard>
       <UCard>
-        <div class="text-2xl font-semibold">{{ bonusesToday }}</div>
-        <div class="text-sm text-muted">bonus récupérés aujourd'hui</div>
+        <div class="text-2xl font-semibold">+{{ formatNumber(seEarnedToday) }}</div>
+        <div class="text-sm text-muted">points StreamElements aujourd'hui · {{ bonusesToday }} bonus Twitch</div>
       </UCard>
       <UCard>
         <div class="text-2xl font-semibold">{{ watching.length }} / {{ live }}</div>

@@ -1,63 +1,22 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { openUrl } from '@tauri-apps/plugin-opener'
-import { useSnapshot } from '../composables/useSnapshot'
+import { useChannelList } from '../composables/useChannelList'
+import { useOpenExternal } from '../utils/external'
 import { CHANNEL_STATE, formatNumber } from '../utils/format'
 import type { ChannelView } from '../types'
 
-const { accounts } = useSnapshot()
-const toast = useToast()
+const openExternal = useOpenExternal()
+const { accounts, accountId, account, accountItems, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove } = useChannelList('points')
 
-const accountId = ref<number | undefined>()
-watch(accounts, (list) => {
-  if (!list.some(a => a.id === accountId.value)) accountId.value = list[0]?.id
-}, { immediate: true })
-
-const account = computed(() => accounts.value.find(a => a.id === accountId.value))
-const accountItems = computed(() => accounts.value.map(a => ({ label: a.login, value: a.id })))
-
-const newLogin = ref('')
-const adding = ref(false)
-
-async function addChannel() {
-  if (!account.value || !newLogin.value.trim()) return
-  adding.value = true
-  try {
-    const login = await invoke<string>('add_channel', { accountId: account.value.id, login: newLogin.value })
-    newLogin.value = ''
-    toast.add({ title: `${login} ajoutée`, color: 'success', icon: 'i-lucide-check' })
-  } catch (e) {
-    toast.add({ title: 'Chaîne non ajoutée', description: String(e), color: 'error' })
-  } finally {
-    adding.value = false
-  }
-}
-
+// L'ordre ne concerne que cette liste : c'est lui qui décide des 2 chaînes regardées
 async function move(channel: ChannelView, delta: number) {
-  const list = account.value?.channels ?? []
-  const ids = list.map(c => c.id)
+  const ids = channels.value.map(c => c.id)
   const from = ids.indexOf(channel.id)
   const to = from + delta
-  if (from < 0 || to < 0 || to >= ids.length) return
+  if (from < 0 || to < 0 || to >= ids.length || !account.value) return
   ids.splice(from, 1)
   ids.splice(to, 0, channel.id)
-  await invoke('reorder_channels', { accountId: account.value!.id, ids })
-}
-
-async function setOptions(channel: ChannelView, patch: Partial<Pick<ChannelView, 'enabled' | 'autoClaim'>>) {
-  await invoke('set_channel_options', {
-    id: channel.id,
-    enabled: patch.enabled ?? channel.enabled,
-    autoClaim: patch.autoClaim ?? channel.autoClaim
-  })
-}
-
-const toRemove = ref<ChannelView | null>(null)
-async function confirmRemove() {
-  if (!toRemove.value) return
-  await invoke('remove_channel', { id: toRemove.value.id })
-  toRemove.value = null
+  await invoke('reorder_channels', { accountId: account.value.id, ids })
 }
 </script>
 
@@ -90,63 +49,69 @@ async function confirmRemove() {
         icon="i-lucide-pause"
         color="warning"
         variant="subtle"
-        title="Points désactivés pour ce compte"
-        description="Active-les dans Comptes."
+        title="Récolte désactivée pour ce compte"
+        description="Active-la dans Comptes."
       />
 
       <form class="flex gap-2" @submit.prevent="addChannel">
-        <UInput id="new-channel" v-model="newLogin" placeholder="Nom ou adresse de la chaîne (ex. lunarsea)" class="flex-1" icon="i-lucide-plus" />
+        <UInput id="new-points-channel" v-model="newLogin" placeholder="Nom ou adresse de la chaîne (ex. lunarsea)" class="flex-1" icon="i-lucide-plus" />
         <UButton type="submit" label="Ajouter" :loading="adding" />
       </form>
 
-      <div class="border border-default rounded-lg overflow-hidden">
+      <div class="border border-default rounded-lg overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
             <tr>
-              <th class="text-left px-3 py-2 w-20">Ordre</th>
+              <th class="text-left px-3 py-2 w-24">Ordre</th>
               <th class="text-left px-3 py-2">Chaîne</th>
               <th class="text-left px-3 py-2">État</th>
               <th class="text-right px-3 py-2">Solde</th>
               <th class="text-right px-3 py-2">Aujourd'hui</th>
-              <th class="text-center px-3 py-2">Active</th>
-              <th class="text-center px-3 py-2">Bonus auto</th>
+              <th class="text-center px-3 py-2">Récolte</th>
+              <th class="text-center px-3 py-2 whitespace-nowrap">Bonus auto</th>
               <th class="px-3 py-2" />
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(channel, i) in account.channels" :key="channel.id" class="border-t border-default">
+            <tr v-for="(channel, i) in channels" :key="channel.id" class="border-t border-default">
               <td class="px-3 py-2">
                 <div class="flex items-center gap-0.5">
                   <span class="w-5 text-muted">{{ i + 1 }}</span>
                   <UButton icon="i-lucide-chevron-up" size="xs" variant="ghost" color="neutral" :disabled="i === 0" aria-label="Monter" @click="move(channel, -1)" />
-                  <UButton icon="i-lucide-chevron-down" size="xs" variant="ghost" color="neutral" :disabled="i === account.channels.length - 1" aria-label="Descendre" @click="move(channel, 1)" />
+                  <UButton icon="i-lucide-chevron-down" size="xs" variant="ghost" color="neutral" :disabled="i === channels.length - 1" aria-label="Descendre" @click="move(channel, 1)" />
                 </div>
               </td>
               <td class="px-3 py-2 min-w-0">
-                <button class="font-medium hover:underline" @click="openUrl(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
-                <div v-if="channel.live" class="text-xs text-muted truncate max-w-[340px]">
+                <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
+                <div v-if="channel.live" class="text-xs text-muted truncate max-w-[320px]">
                   {{ channel.live.gameName ?? 'Sans catégorie' }} · {{ formatNumber(channel.live.viewers) }} spectateurs
                 </div>
-                <div v-if="channel.error" class="text-xs text-error truncate max-w-[340px]" :title="channel.error">{{ channel.error }}</div>
+                <div v-if="channel.error" class="text-xs text-error truncate max-w-[320px]" :title="channel.error">{{ channel.error }}</div>
               </td>
               <td class="px-3 py-2">
-                <UBadge :color="CHANNEL_STATE[channel.state].color" variant="subtle" :label="CHANNEL_STATE[channel.state].label" />
+                <UTooltip :text="CHANNEL_STATE[channel.state].hint" :disabled="!CHANNEL_STATE[channel.state].hint">
+                  <UBadge :color="CHANNEL_STATE[channel.state].color" variant="subtle" :label="CHANNEL_STATE[channel.state].label" class="whitespace-nowrap" />
+                </UTooltip>
               </td>
               <td class="px-3 py-2 text-right">{{ formatNumber(channel.balance) }}</td>
               <td class="px-3 py-2 text-right" :class="channel.earnedToday > 0 ? 'text-success' : 'text-muted'">
                 {{ channel.earnedToday > 0 ? '+' : '' }}{{ formatNumber(channel.earnedToday) }}
               </td>
               <td class="px-3 py-2 text-center">
-                <USwitch :model-value="channel.enabled" :aria-label="`Récolter sur ${channel.login}`" @update:model-value="v => setOptions(channel, { enabled: v })" />
+                <div class="flex justify-center">
+                  <USwitch :model-value="channel.enabled" :aria-label="`Récolter sur ${channel.login}`" @update:model-value="v => setOptions(channel, { enabled: v })" />
+                </div>
               </td>
               <td class="px-3 py-2 text-center">
-                <USwitch :model-value="channel.autoClaim" :aria-label="`Bonus auto sur ${channel.login}`" @update:model-value="v => setOptions(channel, { autoClaim: v })" />
+                <div class="flex justify-center">
+                  <USwitch :model-value="channel.autoClaim" :aria-label="`Bonus auto sur ${channel.login}`" @update:model-value="v => setOptions(channel, { autoClaim: v })" />
+                </div>
               </td>
               <td class="px-3 py-2 text-right">
-                <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Retirer" @click="toRemove = channel" />
+                <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Retirer de la liste" @click="toRemove = channel" />
               </td>
             </tr>
-            <tr v-if="account.channels.length === 0">
+            <tr v-if="channels.length === 0">
               <td colspan="8" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
             </tr>
           </tbody>
@@ -156,7 +121,11 @@ async function confirmRemove() {
 
     <UModal :open="toRemove !== null" title="Retirer la chaîne ?" @update:open="v => { if (!v) toRemove = null }">
       <template #body>
-        <p>{{ toRemove?.login }} ne sera plus suivie par {{ account?.login }}. L'historique des gains est conservé.</p>
+        <p>
+          {{ toRemove?.login }} ne sera plus regardée par {{ account?.login }}.
+          <template v-if="toRemove?.inSe">Elle reste dans la page StreamElements.</template>
+          L'historique des gains est conservé.
+        </p>
       </template>
       <template #footer>
         <div class="flex justify-end gap-2 w-full">

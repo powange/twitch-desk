@@ -13,9 +13,9 @@ export function formatTime(iso: string): string {
 type Color = 'primary' | 'success' | 'warning' | 'error' | 'info' | 'neutral'
 
 // Chaque état a une couleur ET un mot : on ne lit jamais l'état à la couleur seule
-export const CHANNEL_STATE: Record<ChannelState, { label: string, color: Color }> = {
-  watching: { label: 'En cours', color: 'success' },
-  waiting: { label: 'En attente (live, hors quota)', color: 'warning' },
+export const CHANNEL_STATE: Record<ChannelState, { label: string, color: Color, hint?: string }> = {
+  watching: { label: 'En cours', color: 'success', hint: 'Le temps de visionnage est compté' },
+  waiting: { label: 'En attente', color: 'warning', hint: 'En live, mais 2 chaînes plus haut dans la liste sont déjà regardées' },
   offline: { label: 'Hors ligne', color: 'neutral' },
   disabled: { label: 'Désactivée', color: 'neutral' },
   unknown: { label: 'Vérification…', color: 'neutral' }

@@ -8,7 +8,7 @@ use serde::Serialize;
 use tauri::{Emitter, State};
 
 use crate::app::{App, EventKind, Snapshot};
-use crate::db::Settings;
+use crate::db::{ChannelList, Settings};
 use crate::miner::MinerCommand;
 use crate::twitch::auth::{self, DeviceCode, PollResult};
 use crate::twitch::gql::Gql;
@@ -146,7 +146,7 @@ pub fn normalize_login(input: &str) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn add_channel(app: AppState<'_>, account_id: i64, login: String) -> CmdResult<String> {
+pub async fn add_channel(app: AppState<'_>, account_id: i64, login: String, list: ChannelList) -> CmdResult<String> {
     let login = normalize_login(&login).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
     let account = app
         .db
@@ -162,15 +162,15 @@ pub async fn add_channel(app: AppState<'_>, account_id: i64, login: String) -> C
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("La chaîne « {login} » n'existe pas"))?;
-    app.db.add_channel(account_id, &login, &channel_id).map_err(db_err)?;
+    app.db.add_channel(account_id, &login, &channel_id, list).map_err(db_err)?;
     app.send(account_id, MinerCommand::Reload);
     Ok(login)
 }
 
 #[tauri::command]
-pub fn remove_channel(app: AppState, id: i64) -> CmdResult<()> {
+pub fn remove_channel(app: AppState, id: i64, list: ChannelList) -> CmdResult<()> {
     let account = app.db.channel_account(id).map_err(db_err)?;
-    app.db.remove_channel(id).map_err(db_err)?;
+    app.db.remove_channel(id, list).map_err(db_err)?;
     if let Some(account) = account {
         app.send(account, MinerCommand::Reload);
     }
@@ -185,8 +185,14 @@ pub fn reorder_channels(app: AppState, account_id: i64, ids: Vec<i64>) -> CmdRes
 }
 
 #[tauri::command]
-pub fn set_channel_options(app: AppState, id: i64, enabled: bool, auto_claim: bool) -> CmdResult<()> {
-    app.db.set_channel_options(id, enabled, auto_claim).map_err(db_err)?;
+pub fn set_channel_options(
+    app: AppState,
+    id: i64,
+    enabled: bool,
+    auto_claim: bool,
+    chat_presence: bool,
+) -> CmdResult<()> {
+    app.db.set_channel_options(id, enabled, auto_claim, chat_presence).map_err(db_err)?;
     if let Some(account) = app.db.channel_account(id).map_err(db_err)? {
         app.send(account, MinerCommand::Reload);
     }

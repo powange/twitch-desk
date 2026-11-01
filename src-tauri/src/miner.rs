@@ -4,17 +4,23 @@
 //! 2 chaînes à regarder (Twitch n'en compte pas plus par compte), simuler le
 //! visionnage, relire le solde et réclamer le bonus. Les événements PubSub
 //! accélèrent tout ça (bonus disponible, début de live).
+//!
+//! Il garde aussi le compte présent dans le chat des chaînes choisies : c'est
+//! ce qui fait gagner les points StreamElements, relus toutes les 10 min.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::TimeZone;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
 use crate::app::{AccountStatus, AccountView, App, ChannelState, ChannelView, EventKind};
-use crate::db::{Account, Channel};
+use crate::db::{Account, Channel, STREAMELEMENTS, TWITCH};
+use crate::streamelements::{self, Giveaway, Loyalty, TicketUpdate};
+use crate::twitch::chat::{self, ChatEvent};
 use crate::twitch::auth::{self, Tokens};
 use crate::twitch::gql::{Gql, StreamInfo};
 use crate::twitch::pubsub::{self, PubSubEvent};
@@ -35,6 +41,13 @@ const FAILED_CHANNEL_COOLDOWN: Duration = Duration::from_secs(600);
 const RETRY_CONNECT_AFTER: Duration = Duration::from_secs(60);
 // Après un « stream-up », Twitch met quelques secondes à exposer le live
 const STREAM_UP_DELAY: Duration = Duration::from_secs(15);
+// StreamElements donne ses points toutes les 10 min pendant le live
+const SE_POLL_EVERY: Duration = Duration::from_secs(10 * 60);
+const SE_RETRY_AFTER: Duration = Duration::from_secs(15 * 60);
+// Giveaway StreamElements en cours : relu souvent en live (nombre de participants)
+const SE_GIVEAWAY_LIVE_EVERY: Duration = Duration::from_secs(2 * 60);
+const SE_GIVEAWAY_OFFLINE_EVERY: Duration = Duration::from_secs(15 * 60);
+const SE_LOYALTY_EVERY: Duration = Duration::from_secs(6 * 3600);
 
 #[derive(Debug, Clone)]
 pub enum MinerCommand {
@@ -57,6 +70,15 @@ struct ChannelRt {
     error: Option<String>,
     earned_today: i64,
     last_bonus_at: Option<String>,
+    in_chat: bool,
+    se_polled: Option<Instant>,
+    se_earned_today: i64,
+    se_rank: Option<i64>,
+    se_loyalty: Option<Loyalty>,
+    se_loyalty_at: Option<Instant>,
+    se_giveaway: Option<Giveaway>,
+    se_giveaway_at: Option<Instant>,
+    se_my_tickets: Option<i64>,
 }
 
 impl ChannelRt {
@@ -74,6 +96,15 @@ impl ChannelRt {
             error: None,
             earned_today: 0,
             last_bonus_at: None,
+            in_chat: false,
+            se_polled: None,
+            se_earned_today: 0,
+            se_rank: None,
+            se_loyalty: None,
+            se_loyalty_at: None,
+            se_giveaway: None,
+            se_giveaway_at: None,
+            se_my_tickets: None,
         }
     }
 
@@ -110,6 +141,11 @@ struct Miner {
     realtime: bool,
     pubsub_task: Option<JoinHandle<()>>,
     pubsub_rx: Option<mpsc::Receiver<PubSubEvent>>,
+    chat_task: Option<JoinHandle<()>>,
+    chat_rx: Option<mpsc::Receiver<ChatEvent>>,
+    chat_wanted: watch::Sender<BTreeSet<String>>,
+    chat_connected: bool,
+    chat_refused: bool,
     last_validate: Instant,
     day: chrono::NaiveDate,
 }
@@ -126,6 +162,11 @@ pub async fn run(app: Arc<App>, account: Account, mut commands: mpsc::Receiver<M
         realtime: false,
         pubsub_task: None,
         pubsub_rx: None,
+        chat_task: None,
+        chat_rx: None,
+        chat_wanted: watch::channel(BTreeSet::new()).0,
+        chat_connected: false,
+        chat_refused: false,
         last_validate: Instant::now(),
         day: chrono::Local::now().date_naive(),
     };
@@ -133,7 +174,7 @@ pub async fn run(app: Arc<App>, account: Account, mut commands: mpsc::Receiver<M
     miner.stop_pubsub();
 }
 
-async fn next_event(rx: &mut Option<mpsc::Receiver<PubSubEvent>>) -> Option<PubSubEvent> {
+async fn next_event<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Option<T> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
@@ -199,6 +240,11 @@ impl Miner {
                         }
                         Some(MinerCommand::Wake) => {}
                     },
+                    event = next_event(&mut self.chat_rx) => {
+                        if let Some(event) = event {
+                            self.on_chat_event(event);
+                        }
+                    }
                     event = next_event(&mut self.pubsub_rx) => {
                         if let Some(event) = event {
                             if let Err(stop) = self.on_event(event).await {
@@ -271,6 +317,7 @@ impl Miner {
             gql.set_token(fresh.access_token.clone());
         }
         self.tokens = Some(fresh);
+        self.stop_chat();
         self.restart_pubsub();
         Ok(())
     }
@@ -284,7 +331,8 @@ impl Miner {
     fn reload_channels(&mut self) {
         let fresh = self.app.db.channels(self.account.id).unwrap_or_default();
         let mut old: Vec<ChannelRt> = std::mem::take(&mut self.channels);
-        let gains = self.today_gains();
+        let gains = self.today_gains(TWITCH);
+        let se_gains = self.today_gains(STREAMELEMENTS);
         for ch in fresh {
             let rt = match old.iter().position(|o| o.ch.id == ch.id) {
                 Some(i) => {
@@ -295,6 +343,7 @@ impl Miner {
                 None => {
                     let mut rt = ChannelRt::new(ch);
                     rt.earned_today = gains.iter().find(|(l, _)| *l == rt.ch.login).map_or(0, |(_, g)| *g);
+                    rt.se_earned_today = se_gains.iter().find(|(l, _)| *l == rt.ch.login).map_or(0, |(_, g)| *g);
                     rt
                 }
             };
@@ -302,14 +351,14 @@ impl Miner {
         }
     }
 
-    fn today_gains(&self) -> Vec<(String, i64)> {
+    fn today_gains(&self, currency: &str) -> Vec<(String, i64)> {
         let midnight = chrono::Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
         let since = chrono::Local
             .from_local_datetime(&midnight)
             .earliest()
             .map(|d| d.with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
             .unwrap_or_default();
-        self.app.db.gains_since(self.account.id, &since).unwrap_or_default()
+        self.app.db.gains_since(self.account.id, currency, &since).unwrap_or_default()
     }
 
     fn restart_pubsub(&mut self) {
@@ -321,14 +370,242 @@ impl Miner {
         let token = tokens.access_token.clone();
         self.pubsub_task = Some(tokio::spawn(pubsub::run(token, topics, tx)));
         self.pubsub_rx = Some(rx);
+        self.ensure_chat();
     }
 
+    /// Arrête aussi la présence dans le chat
     fn stop_pubsub(&mut self) {
         if let Some(task) = self.pubsub_task.take() {
             task.abort();
         }
         self.pubsub_rx = None;
         self.realtime = false;
+        self.stop_chat();
+    }
+
+    // --- Présence dans le chat (points StreamElements) ---
+
+    fn ensure_chat(&mut self) {
+        if self.chat_task.is_some() || self.chat_refused {
+            return;
+        }
+        let Some(tokens) = &self.tokens else { return };
+        let (tx, rx) = mpsc::channel(64);
+        let task = chat::run(
+            self.account.login.clone(),
+            tokens.access_token.clone(),
+            self.chat_wanted.subscribe(),
+            tx,
+        );
+        self.chat_task = Some(tokio::spawn(task));
+        self.chat_rx = Some(rx);
+    }
+
+    fn stop_chat(&mut self) {
+        if let Some(task) = self.chat_task.take() {
+            task.abort();
+        }
+        self.chat_rx = None;
+        self.chat_connected = false;
+        for ch in &mut self.channels {
+            ch.in_chat = false;
+        }
+    }
+
+    /// Chaînes où le compte doit être présent dans le chat
+    fn update_chat_targets(&self) {
+        let targets: BTreeSet<String> = if self.active() {
+            self.channels.iter().filter(|c| c.ch.wants_chat()).map(|c| c.ch.login.clone()).collect()
+        } else {
+            BTreeSet::new()
+        };
+        self.chat_wanted.send_if_modified(|current| {
+            let changed = *current != targets;
+            *current = targets;
+            changed
+        });
+    }
+
+    fn on_chat_event(&mut self, event: ChatEvent) {
+        match event {
+            ChatEvent::Connected(connected) => {
+                tracing::info!("[{}] chat {}", self.account.login, if connected { "connecté" } else { "déconnecté" });
+                self.chat_connected = connected;
+                if !connected {
+                    for ch in &mut self.channels {
+                        ch.in_chat = false;
+                    }
+                }
+            }
+            ChatEvent::Joined(ref login) | ChatEvent::Parted(ref login) => {
+                let joined = matches!(event, ChatEvent::Joined(_));
+                tracing::info!("[{}] chat {} : {}", self.account.login, login, if joined { "rejoint" } else { "quitté" });
+                if let Some(ch) = self.channels.iter_mut().find(|c| c.ch.login == *login) {
+                    ch.in_chat = joined;
+                }
+            }
+            ChatEvent::BotMessage { channel, bot, text } => self.on_bot_message(&channel, &bot, &text),
+            ChatEvent::AuthFailed => {
+                self.chat_refused = true;
+                self.stop_chat();
+                self.app.log(
+                    &self.account.login,
+                    EventKind::Error,
+                    "Chat refusé par Twitch : reconnecte ce compte pour les points StreamElements",
+                );
+            }
+        }
+    }
+
+    /// Réponse d'un bot dans un chat suivi : nos tickets StreamElements
+    fn on_bot_message(&mut self, channel: &str, bot: &str, text: &str) {
+        if bot != "streamelements" {
+            return;
+        }
+        let Some(update) = streamelements::parse_ticket_message(text, &self.account.login) else { return };
+        let Some(ch) = self.channels.iter_mut().find(|c| c.ch.login == channel) else { return };
+        let tickets = match update {
+            TicketUpdate::Total { current, .. } => current,
+            TicketUpdate::Bought(n) => ch.se_my_tickets.unwrap_or(0) + n,
+        };
+        ch.se_my_tickets = Some(tickets);
+        match &ch.se_giveaway {
+            Some(g) => {
+                let _ = self.app.db.set_se_tickets(self.account.id, &g.id, tickets);
+            }
+            // Giveaway pas encore connu : on le relit tout de suite pour y rattacher les tickets
+            None => ch.se_giveaway_at = None,
+        }
+        let login = channel.to_owned();
+        self.app.log(&self.account.login, EventKind::Info, format!("{tickets} ticket(s) StreamElements sur {login}"));
+    }
+
+    /// StreamElements : une requête au plus par passage, dans l'ordre solde,
+    /// réglage de fidélité, giveaway en cours
+    async fn poll_streamelements(&mut self, now: Instant) {
+        if self.poll_se_points(now).await {
+            return;
+        }
+        if self.poll_se_loyalty(now).await {
+            return;
+        }
+        self.poll_se_giveaway(now).await;
+    }
+
+    fn se_ready(c: &ChannelRt) -> Option<String> {
+        if !c.ch.wants_chat() {
+            return None;
+        }
+        c.ch.se_channel_id.clone().filter(|id| !id.is_empty())
+    }
+
+    async fn poll_se_loyalty(&mut self, now: Instant) -> bool {
+        let Some(i) = self.channels.iter().position(|c| {
+            Self::se_ready(c).is_some() && c.se_loyalty_at.is_none_or(|t| now.duration_since(t) >= SE_LOYALTY_EVERY)
+        }) else {
+            return false;
+        };
+        self.channels[i].se_loyalty_at = Some(now);
+        let se_id = Self::se_ready(&self.channels[i]).unwrap_or_default();
+        match streamelements::loyalty(&self.app.http, &se_id).await {
+            Ok(loyalty) => self.channels[i].se_loyalty = loyalty,
+            Err(e) => tracing::warn!("StreamElements ({}) : {e}", self.channels[i].ch.login),
+        }
+        true
+    }
+
+    async fn poll_se_giveaway(&mut self, now: Instant) -> bool {
+        let Some(i) = self.channels.iter().position(|c| {
+            let every = if c.live.is_some() { SE_GIVEAWAY_LIVE_EVERY } else { SE_GIVEAWAY_OFFLINE_EVERY };
+            Self::se_ready(c).is_some() && c.se_giveaway_at.is_none_or(|t| now.duration_since(t) >= every)
+        }) else {
+            return false;
+        };
+        self.channels[i].se_giveaway_at = Some(now);
+        let se_id = Self::se_ready(&self.channels[i]).unwrap_or_default();
+        let login = self.channels[i].ch.login.clone();
+        let giveaway = match streamelements::active_giveaway(&self.app.http, &se_id).await {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!("StreamElements ({login}) : {e}");
+                return true;
+            }
+        };
+        let previous = self.channels[i].se_giveaway.as_ref().map(|g| g.id.clone());
+        let current = giveaway.as_ref().map(|g| g.id.clone());
+        if previous != current {
+            let ch = &mut self.channels[i];
+            ch.se_my_tickets = current.as_deref().and_then(|id| self.app.db.se_tickets(self.account.id, id));
+            if let Some(g) = &giveaway {
+                let command = g.command.as_deref().map(|c| format!(" avec {c}")).unwrap_or_default();
+                self.app.log(
+                    &self.account.login,
+                    EventKind::Info,
+                    format!("Giveaway StreamElements sur {login}{command} ({} points le ticket)", g.cost),
+                );
+            }
+        }
+        self.channels[i].se_giveaway = giveaway;
+        true
+    }
+
+    /// Solde StreamElements
+    async fn poll_se_points(&mut self, now: Instant) -> bool {
+        let username = self.account.login.clone();
+        let Some(i) = self.channels.iter().position(|c| {
+            c.ch.wants_chat()
+                && match c.ch.se_channel_id.as_deref() {
+                    Some("") => false,
+                    None => c.se_polled.is_none_or(|t| now.duration_since(t) >= SE_RETRY_AFTER),
+                    Some(_) => match c.se_polled {
+                        None => true,
+                        Some(t) => c.live.is_some() && now.duration_since(t) >= SE_POLL_EVERY,
+                    },
+                }
+        }) else {
+            return false;
+        };
+        self.channels[i].se_polled = Some(now);
+        let http = self.app.http.clone();
+        let login = self.channels[i].ch.login.clone();
+        let se_id = match self.channels[i].ch.se_channel_id.clone() {
+            Some(id) => id,
+            None => match streamelements::channel_id(&http, &login).await {
+                Ok(found) => {
+                    let id = found.unwrap_or_default();
+                    let _ = self.app.db.set_se_channel(self.channels[i].ch.id, &id);
+                    self.channels[i].ch.se_channel_id = Some(id.clone());
+                    if id.is_empty() {
+                        return true;
+                    }
+                    id
+                }
+                Err(e) => {
+                    tracing::warn!("StreamElements ({login}) : {e}");
+                    return true;
+                }
+            },
+        };
+        match streamelements::points(&http, &se_id, &username).await {
+            Ok(points) => {
+                let ch = &mut self.channels[i];
+                ch.se_rank = points.rank;
+                if let Some(previous) = ch.ch.se_points {
+                    let gain = points.points - previous;
+                    // Une baisse = des points dépensés (tickets de giveaway…) : pas un gain
+                    if gain > 0 {
+                        ch.se_earned_today += gain;
+                        let _ = self.app.db.record_gain(self.account.id, &login, STREAMELEMENTS, gain, "WATCH");
+                    }
+                }
+                if ch.ch.se_points != Some(points.points) {
+                    ch.ch.se_points = Some(points.points);
+                    let _ = self.app.db.set_se_points(ch.ch.id, points.points);
+                }
+            }
+            Err(e) => tracing::warn!("StreamElements ({login}) : {e}"),
+        }
+        true
     }
 
     fn active(&self) -> bool {
@@ -344,6 +621,7 @@ impl Miner {
             self.day = today;
             for ch in &mut self.channels {
                 ch.earned_today = 0;
+                ch.se_earned_today = 0;
             }
         }
 
@@ -361,7 +639,7 @@ impl Miner {
         // Choix des chaînes regardées
         let selected = if self.active() {
             let candidates: Vec<_> =
-                self.channels.iter().map(|c| (c.ch.enabled, c.live.is_some(), c.cooling(now))).collect();
+                self.channels.iter().map(|c| (c.ch.farms_points(), c.live.is_some(), c.cooling(now))).collect();
             select_watched(&candidates)
         } else {
             vec![]
@@ -379,6 +657,8 @@ impl Miner {
         }
 
         self.refresh_contexts(&gql, now).await?;
+        self.update_chat_targets();
+        self.poll_streamelements(now).await;
         Ok(())
     }
 
@@ -389,7 +669,8 @@ impl Miner {
                 break;
             }
             let ch = &self.channels[i];
-            if !ch.ch.enabled {
+            // Le live sert aussi aux points StreamElements (relus seulement en live)
+            if !ch.ch.farms_points() && !ch.ch.wants_chat() {
                 continue;
             }
             let due = ch.recheck_at.is_some_and(|t| t <= now)
@@ -477,7 +758,7 @@ impl Miner {
                 break;
             }
             let ch = &self.channels[i];
-            if !ch.ch.enabled {
+            if !ch.ch.farms_points() {
                 continue;
             }
             // Solde lu une fois au démarrage pour toutes les chaînes, puis seulement en live
@@ -549,7 +830,7 @@ impl Miner {
                 }
                 let login = self.channels[i].ch.login.clone();
                 self.channels[i].earned_today += gain;
-                let _ = self.app.db.record_gain(self.account.id, &login, gain, &reason);
+                let _ = self.app.db.record_gain(self.account.id, &login, TWITCH, gain, &reason);
                 // Les gains de visionnage (toutes les 5 min) gonfleraient le fil pour rien
                 if reason != "WATCH" {
                     self.app.log(
@@ -604,7 +885,13 @@ impl Miner {
                 balance: c.ch.balance,
                 earned_today: c.earned_today,
                 live: c.live.clone(),
-                state: match (c.ch.enabled, c.live_checked.is_some(), c.live.is_some(), c.watching) {
+                in_points: c.ch.in_points,
+                in_se: c.ch.in_se,
+                se_rank: c.se_rank,
+                se_loyalty: c.se_loyalty.clone(),
+                se_giveaway: c.se_giveaway.clone(),
+                se_my_tickets: c.se_my_tickets,
+                state: match (c.ch.farms_points(), c.live_checked.is_some(), c.live.is_some(), c.watching) {
                     (false, ..) => ChannelState::Disabled,
                     (_, _, _, true) => ChannelState::Watching,
                     (_, _, true, false) => ChannelState::Waiting,
@@ -616,6 +903,11 @@ impl Miner {
                     false => c.error.clone(),
                 },
                 last_bonus_at: c.last_bonus_at.clone(),
+                chat_presence: c.ch.chat_presence,
+                in_chat: c.in_chat,
+                se_enabled: c.ch.se_channel_id.as_deref().map(|id| !id.is_empty()),
+                se_points: c.ch.se_points,
+                se_earned_today: c.se_earned_today,
             })
             .collect();
         self.app.set_view(AccountView {
@@ -626,6 +918,7 @@ impl Miner {
             status: self.status,
             status_text: self.status_text.clone(),
             realtime: self.realtime,
+            chat_connected: self.chat_connected,
             channels,
         });
     }

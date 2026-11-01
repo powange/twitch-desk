@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod miner;
 mod secrets;
+mod streamelements;
 mod tray;
 mod twitch;
 

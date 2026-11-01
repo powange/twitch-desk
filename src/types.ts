@@ -24,6 +24,20 @@ export interface ChannelView {
   state: ChannelState
   error: string | null
   lastBonusAt: string | null
+  // Listes où figure la chaîne : page Points de chaîne, page StreamElements
+  inPoints: boolean
+  inSe: boolean
+  chatPresence: boolean
+  inChat: boolean
+  seRank: number | null
+  seLoyalty: SeLoyalty | null
+  seGiveaway: SeGiveaway | null
+  // Nos tickets dans le giveaway en cours, lus dans les réponses du bot (null : inconnu)
+  seMyTickets: number | null
+  // null : pas encore vérifié ; false : la chaîne n'utilise pas StreamElements
+  seEnabled: boolean | null
+  sePoints: number | null
+  seEarnedToday: number
 }
 
 export interface AccountView {
@@ -34,6 +48,7 @@ export interface AccountView {
   status: AccountStatus
   statusText: string | null
   realtime: boolean
+  chatConnected: boolean
   channels: ChannelView[]
 }
 
@@ -70,4 +85,29 @@ export interface Settings {
   closeToTray: boolean
   startMinimized: boolean
   autoUpdate: boolean
+}
+
+export type ChannelList = 'points' | 'se'
+
+export interface SeLoyalty {
+  enabled: boolean
+  name: string
+  amount: number
+  interval: number
+  subscriberMultiplier: number
+  bonuses: [string, number][]
+}
+
+export interface SeGiveaway {
+  id: string
+  title: string
+  description: string
+  command: string | null
+  cost: number
+  maxTickets: number | null
+  freeTicket: boolean
+  subscriberOnly: boolean
+  totalTickets: number
+  totalUsers: number
+  botResponses: boolean
 }

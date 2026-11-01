@@ -2,13 +2,14 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { useOpenExternal } from '../utils/external'
 import { useSnapshot } from '../composables/useSnapshot'
 import { ACCOUNT_STATUS } from '../utils/format'
 import type { AccountView, DeviceCode, LoginEvent } from '../types'
 
 const { accounts } = useSnapshot()
 const toast = useToast()
+const openExternal = useOpenExternal()
 
 const code = ref<DeviceCode | null>(null)
 const starting = ref(false)
@@ -100,7 +101,7 @@ async function confirmRemove() {
     <div v-if="code" class="border border-dashed border-primary rounded-lg bg-primary/5 p-5 flex items-center gap-6">
       <div>
         <div class="text-sm text-muted">
-          Ouvre <button class="text-primary font-medium hover:underline" @click="openUrl(activationUrl())">twitch.tv/activate</button>,
+          Ouvre <button class="text-primary font-medium hover:underline" @click="openExternal(activationUrl())">twitch.tv/activate</button>,
           connecte-toi avec le compte voulu et saisis :
         </div>
         <div class="font-mono text-3xl tracking-[0.2em] text-primary mt-1 select-all">{{ code.user_code }}</div>
@@ -109,7 +110,7 @@ async function confirmRemove() {
         Le code expire dans {{ formatRemaining(remaining) }}. Le compte apparaît ici dès que tu as validé.
       </div>
       <div class="flex flex-col gap-2">
-        <UButton icon="i-lucide-external-link" label="Ouvrir Twitch" @click="openUrl(activationUrl())" />
+        <UButton icon="i-lucide-external-link" label="Ouvrir Twitch" @click="openExternal(activationUrl())" />
         <UButton icon="i-lucide-copy" label="Copier le code" color="neutral" variant="soft" @click="copyCode" />
         <UButton label="Annuler" color="neutral" variant="ghost" @click="cancel" />
       </div>
@@ -122,6 +123,7 @@ async function confirmRemove() {
             <th class="text-left px-3 py-2">Compte</th>
             <th class="text-left px-3 py-2">État</th>
             <th class="text-left px-3 py-2">Temps réel</th>
+            <th class="text-left px-3 py-2">Chat</th>
             <th class="text-center px-3 py-2">Points de chaîne</th>
             <th class="px-3 py-2" />
           </tr>
@@ -144,8 +146,16 @@ async function confirmRemove() {
                 {{ account.realtime ? 'Connecté' : 'Interrogation régulière' }}
               </span>
             </td>
+            <td class="px-3 py-2.5 text-muted">
+              <span class="inline-flex items-center gap-1.5">
+                <span class="size-2 rounded-full" :class="account.chatConnected ? 'bg-success' : 'bg-neutral-400'" />
+                {{ account.chatConnected ? `${account.channels.filter(c => c.inChat).length} chaîne(s)` : 'Déconnecté' }}
+              </span>
+            </td>
             <td class="px-3 py-2.5 text-center">
-              <USwitch :model-value="account.pointsEnabled" :aria-label="`Points pour ${account.login}`" @update:model-value="v => setPoints(account, v)" />
+              <div class="flex justify-center">
+                <USwitch :model-value="account.pointsEnabled" :aria-label="`Points pour ${account.login}`" @update:model-value="v => setPoints(account, v)" />
+              </div>
             </td>
             <td class="px-3 py-2.5">
               <div class="flex justify-end gap-1">
@@ -156,7 +166,7 @@ async function confirmRemove() {
             </td>
           </tr>
           <tr v-if="accounts.length === 0">
-            <td colspan="5" class="px-3 py-8 text-center text-muted">Aucun compte. Connecte ton premier compte Twitch avec le bouton en haut.</td>
+            <td colspan="6" class="px-3 py-8 text-center text-muted">Aucun compte. Connecte ton premier compte Twitch avec le bouton en haut.</td>
           </tr>
         </tbody>
       </table>

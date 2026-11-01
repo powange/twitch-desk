@@ -15,10 +15,12 @@ const version = ref('')
 const needsAttention = computed(() => accounts.value.filter(a => a.status === 'expired').length)
 const liveCount = computed(() => accounts.value.flatMap(a => a.channels).filter(c => c.live).length)
 const watchingCount = computed(() => accounts.value.flatMap(a => a.channels).filter(c => c.state === 'watching').length)
+const inChatCount = computed(() => accounts.value.flatMap(a => a.channels).filter(c => c.inChat).length)
 
 const items = computed<NavigationMenuItem[]>(() => [
   { label: 'Tableau de bord', icon: 'i-lucide-layout-dashboard', to: '/' },
   { label: 'Points de chaîne', icon: 'i-lucide-coins', to: '/points', badge: watchingCount.value || undefined },
+  { label: 'StreamElements', icon: 'i-lucide-ticket', to: '/streamelements', badge: inChatCount.value || undefined },
   { label: 'Comptes', icon: 'i-lucide-users', to: '/accounts', badge: needsAttention.value ? { label: String(needsAttention.value), color: 'error' } : undefined },
   { label: 'Paramètres', icon: 'i-lucide-settings', to: '/settings' }
 ])

@@ -36,7 +36,48 @@ const MIGRATIONS: &[&str] = &[r#"
     );
     CREATE INDEX points_events_at ON points_events (account_id, at);
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+"#, r#"
+    -- v0.2 : présence dans le chat et points StreamElements
+    ALTER TABLE channels ADD COLUMN chat_presence INTEGER NOT NULL DEFAULT 1;
+    -- NULL : pas encore cherché ; '' : la chaîne n'utilise pas StreamElements
+    ALTER TABLE channels ADD COLUMN se_channel_id TEXT;
+    ALTER TABLE channels ADD COLUMN se_points INTEGER;
+    ALTER TABLE points_events ADD COLUMN currency TEXT NOT NULL DEFAULT 'twitch';
+"#, r#"
+    -- Deux listes par compte : points de chaîne Twitch et StreamElements.
+    -- Une chaîne peut être dans l'une, l'autre ou les deux.
+    ALTER TABLE channels ADD COLUMN in_points INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE channels ADD COLUMN in_se INTEGER NOT NULL DEFAULT 0;
+    UPDATE channels SET in_se = 1 WHERE se_channel_id IS NOT NULL AND se_channel_id != '';
+"#, r#"
+    -- Nos tickets par giveaway StreamElements, lus dans les réponses du bot
+    CREATE TABLE se_tickets (
+        account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        giveaway_id TEXT NOT NULL,
+        tickets INTEGER NOT NULL,
+        PRIMARY KEY (account_id, giveaway_id)
+    );
 "#];
+
+/// Liste d'une chaîne : une page de l'interface
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelList {
+    Points,
+    Se,
+}
+
+impl ChannelList {
+    fn column(self) -> &'static str {
+        match self {
+            ChannelList::Points => "in_points",
+            ChannelList::Se => "in_se",
+        }
+    }
+}
+
+pub const TWITCH: &str = "twitch";
+pub const STREAMELEMENTS: &str = "se";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +101,23 @@ pub struct Channel {
     pub enabled: bool,
     pub auto_claim: bool,
     pub balance: Option<i64>,
+    pub chat_presence: bool,
+    pub se_channel_id: Option<String>,
+    pub se_points: Option<i64>,
+    pub in_points: bool,
+    pub in_se: bool,
+}
+
+impl Channel {
+    /// Temps de visionnage à simuler (liste Points, récolte activée)
+    pub fn farms_points(&self) -> bool {
+        self.in_points && self.enabled
+    }
+
+    /// Présence voulue dans le chat (liste StreamElements, chat activé)
+    pub fn wants_chat(&self) -> bool {
+        self.in_se && self.chat_presence
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,7 +209,8 @@ impl Db {
     pub fn channels(&self, account_id: i64) -> DbResult<Vec<Channel>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, account_id, login, channel_id, position, enabled, auto_claim, balance
+            "SELECT id, account_id, login, channel_id, position, enabled, auto_claim, balance,
+                    chat_presence, se_channel_id, se_points, in_points, in_se
              FROM channels WHERE account_id = ?1 ORDER BY position, id",
         )?;
         let rows = stmt.query_map([account_id], |r| {
@@ -164,27 +223,42 @@ impl Db {
                 enabled: r.get(5)?,
                 auto_claim: r.get(6)?,
                 balance: r.get(7)?,
+                chat_presence: r.get(8)?,
+                se_channel_id: r.get(9)?,
+                se_points: r.get(10)?,
+                in_points: r.get(11)?,
+                in_se: r.get(12)?,
             })
         })?;
         rows.collect()
     }
 
-    pub fn add_channel(&self, account_id: i64, login: &str, channel_id: &str) -> DbResult<()> {
+    /// Ajoute la chaîne à une liste (la ligne existe peut-être déjà pour l'autre liste)
+    pub fn add_channel(&self, account_id: i64, login: &str, channel_id: &str, list: ChannelList) -> DbResult<()> {
         let conn = self.conn();
         let next: i64 = conn.query_row(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM channels WHERE account_id = ?1",
             [account_id],
             |r| r.get(0),
         )?;
+        let (in_points, in_se) = (list == ChannelList::Points, list == ChannelList::Se);
+        let column = list.column();
         conn.execute(
-            "INSERT OR IGNORE INTO channels (account_id, login, channel_id, position) VALUES (?1, ?2, ?3, ?4)",
-            params![account_id, login, channel_id, next],
+            &format!(
+                "INSERT INTO channels (account_id, login, channel_id, position, in_points, in_se)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(account_id, login) DO UPDATE SET {column} = 1"
+            ),
+            params![account_id, login, channel_id, next, in_points, in_se],
         )?;
         Ok(())
     }
 
-    pub fn remove_channel(&self, id: i64) -> DbResult<()> {
-        self.conn().execute("DELETE FROM channels WHERE id = ?1", [id])?;
+    /// Retire la chaîne d'une liste ; la ligne disparaît quand elle n'est plus dans aucune
+    pub fn remove_channel(&self, id: i64, list: ChannelList) -> DbResult<()> {
+        let conn = self.conn();
+        conn.execute(&format!("UPDATE channels SET {} = 0 WHERE id = ?1", list.column()), [id])?;
+        conn.execute("DELETE FROM channels WHERE id = ?1 AND in_points = 0 AND in_se = 0", [id])?;
         Ok(())
     }
 
@@ -207,11 +281,21 @@ impl Db {
         tx.commit()
     }
 
-    pub fn set_channel_options(&self, id: i64, enabled: bool, auto_claim: bool) -> DbResult<()> {
+    pub fn set_channel_options(&self, id: i64, enabled: bool, auto_claim: bool, chat_presence: bool) -> DbResult<()> {
         self.conn().execute(
-            "UPDATE channels SET enabled = ?2, auto_claim = ?3 WHERE id = ?1",
-            params![id, enabled, auto_claim],
+            "UPDATE channels SET enabled = ?2, auto_claim = ?3, chat_presence = ?4 WHERE id = ?1",
+            params![id, enabled, auto_claim, chat_presence],
         )?;
+        Ok(())
+    }
+
+    pub fn set_se_channel(&self, id: i64, se_channel_id: &str) -> DbResult<()> {
+        self.conn().execute("UPDATE channels SET se_channel_id = ?2 WHERE id = ?1", params![id, se_channel_id])?;
+        Ok(())
+    }
+
+    pub fn set_se_points(&self, id: i64, points: i64) -> DbResult<()> {
+        self.conn().execute("UPDATE channels SET se_points = ?2 WHERE id = ?1", params![id, points])?;
         Ok(())
     }
 
@@ -223,24 +307,45 @@ impl Db {
         Ok(())
     }
 
-    // --- Gains ---
+    // --- Tickets StreamElements ---
 
-    pub fn record_gain(&self, account_id: i64, login: &str, amount: i64, reason: &str) -> DbResult<()> {
+    pub fn se_tickets(&self, account_id: i64, giveaway_id: &str) -> Option<i64> {
+        self.conn()
+            .query_row(
+                "SELECT tickets FROM se_tickets WHERE account_id = ?1 AND giveaway_id = ?2",
+                params![account_id, giveaway_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    pub fn set_se_tickets(&self, account_id: i64, giveaway_id: &str, tickets: i64) -> DbResult<()> {
         self.conn().execute(
-            "INSERT INTO points_events (account_id, channel_login, amount, reason) VALUES (?1, ?2, ?3, ?4)",
-            params![account_id, login, amount, reason],
+            "INSERT INTO se_tickets (account_id, giveaway_id, tickets) VALUES (?1, ?2, ?3)
+             ON CONFLICT(account_id, giveaway_id) DO UPDATE SET tickets = excluded.tickets",
+            params![account_id, giveaway_id, tickets],
         )?;
         Ok(())
     }
 
-    /// Gains par chaîne depuis `since` (date UTC au format RFC 3339)
-    pub fn gains_since(&self, account_id: i64, since: &str) -> DbResult<Vec<(String, i64)>> {
+    // --- Gains ---
+
+    pub fn record_gain(&self, account_id: i64, login: &str, currency: &str, amount: i64, reason: &str) -> DbResult<()> {
+        self.conn().execute(
+            "INSERT INTO points_events (account_id, channel_login, currency, amount, reason) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![account_id, login, currency, amount, reason],
+        )?;
+        Ok(())
+    }
+
+    /// Gains par chaîne dans une monnaie depuis `since` (date UTC au format RFC 3339)
+    pub fn gains_since(&self, account_id: i64, currency: &str, since: &str) -> DbResult<Vec<(String, i64)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT channel_login, SUM(amount) FROM points_events
-             WHERE account_id = ?1 AND at >= ?2 GROUP BY channel_login",
+             WHERE account_id = ?1 AND currency = ?2 AND at >= ?3 GROUP BY channel_login",
         )?;
-        let rows = stmt.query_map(params![account_id, since], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows = stmt.query_map(params![account_id, currency, since], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect()
     }
 
@@ -275,21 +380,64 @@ mod tests {
         assert_eq!(db.upsert_account("33", "powange_renamed", "autre").unwrap(), a);
         assert_eq!(db.accounts().unwrap()[0].login, "powange_renamed");
 
-        db.add_channel(a, "lunarsea", "11").unwrap();
-        db.add_channel(a, "kraken_tv", "12").unwrap();
-        db.add_channel(a, "lunarsea", "11").unwrap(); // doublon ignoré
+        db.add_channel(a, "lunarsea", "11", ChannelList::Points).unwrap();
+        db.add_channel(a, "kraken_tv", "12", ChannelList::Points).unwrap();
+        db.add_channel(a, "lunarsea", "11", ChannelList::Points).unwrap(); // doublon ignoré
         let channels = db.channels(a).unwrap();
         assert_eq!(channels.len(), 2);
         assert_eq!(channels[0].login, "lunarsea");
+        assert!(channels[0].in_points && !channels[0].in_se);
 
         db.reorder_channels(a, &[channels[1].id, channels[0].id]).unwrap();
         assert_eq!(db.channels(a).unwrap()[0].login, "kraken_tv");
 
-        db.record_gain(a, "kraken_tv", 50, "CLAIM").unwrap();
-        db.record_gain(a, "kraken_tv", 10, "WATCH").unwrap();
-        assert_eq!(db.gains_since(a, "2000-01-01T00:00:00Z").unwrap(), vec![("kraken_tv".into(), 60)]);
+        db.record_gain(a, "kraken_tv", TWITCH, 50, "CLAIM").unwrap();
+        db.record_gain(a, "kraken_tv", TWITCH, 10, "WATCH").unwrap();
+        db.record_gain(a, "kraken_tv", STREAMELEMENTS, 100, "WATCH").unwrap();
+        assert_eq!(db.gains_since(a, TWITCH, "2000-01-01T00:00:00Z").unwrap(), vec![("kraken_tv".into(), 60)]);
+        assert_eq!(db.gains_since(a, STREAMELEMENTS, "2000-01-01T00:00:00Z").unwrap(), vec![("kraken_tv".into(), 100)]);
+
+        let ch = db.channels(a).unwrap()[0].clone();
+        assert!(!ch.wants_chat());
+        assert_eq!(ch.se_channel_id, None);
+        db.set_se_channel(ch.id, "600abc").unwrap();
+        db.set_se_points(ch.id, 1500).unwrap();
+        let ch = db.channels(a).unwrap()[0].clone();
+        assert_eq!((ch.se_channel_id.as_deref(), ch.se_points), (Some("600abc"), Some(1500)));
 
         db.delete_account(a).unwrap();
+        assert!(db.channels(a).unwrap().is_empty());
+    }
+
+    #[test]
+    fn se_tickets() {
+        let db = Db::memory().unwrap();
+        let a = db.upsert_account("33", "powange", "dev").unwrap();
+        assert_eq!(db.se_tickets(a, "g1"), None);
+        db.set_se_tickets(a, "g1", 3).unwrap();
+        db.set_se_tickets(a, "g1", 8).unwrap();
+        assert_eq!(db.se_tickets(a, "g1"), Some(8));
+    }
+
+    #[test]
+    fn two_lists() {
+        let db = Db::memory().unwrap();
+        let a = db.upsert_account("33", "powange", "dev").unwrap();
+        db.add_channel(a, "spar", "1", ChannelList::Se).unwrap();
+        let ch = db.channels(a).unwrap()[0].clone();
+        assert!(ch.wants_chat() && !ch.farms_points());
+
+        // Ajoutée aussi aux points : même ligne, deux listes
+        db.add_channel(a, "spar", "1", ChannelList::Points).unwrap();
+        let ch = db.channels(a).unwrap()[0].clone();
+        assert!(ch.wants_chat() && ch.farms_points());
+
+        // Retirée des points : reste dans StreamElements
+        db.remove_channel(ch.id, ChannelList::Points).unwrap();
+        let ch = db.channels(a).unwrap()[0].clone();
+        assert!(ch.in_se && !ch.in_points);
+
+        db.remove_channel(ch.id, ChannelList::Se).unwrap();
         assert!(db.channels(a).unwrap().is_empty());
     }
 

@@ -55,6 +55,18 @@ pub struct ChannelView {
     pub state: ChannelState,
     pub error: Option<String>,
     pub last_bonus_at: Option<String>,
+    pub in_points: bool,
+    pub in_se: bool,
+    pub chat_presence: bool,
+    pub in_chat: bool,
+    pub se_rank: Option<i64>,
+    pub se_loyalty: Option<crate::streamelements::Loyalty>,
+    pub se_giveaway: Option<crate::streamelements::Giveaway>,
+    pub se_my_tickets: Option<i64>,
+    /// None : pas encore vérifié ; false : la chaîne n'utilise pas StreamElements
+    pub se_enabled: Option<bool>,
+    pub se_points: Option<i64>,
+    pub se_earned_today: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +79,7 @@ pub struct AccountView {
     pub status: AccountStatus,
     pub status_text: Option<String>,
     pub realtime: bool,
+    pub chat_connected: bool,
     pub channels: Vec<ChannelView>,
 }
 
@@ -236,6 +249,7 @@ impl App {
                     status: AccountStatus::Starting,
                     status_text: None,
                     realtime: false,
+                    chat_connected: false,
                     channels: vec![],
                 })
             })
