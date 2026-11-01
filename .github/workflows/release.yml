@@ -32,27 +32,23 @@ jobs:
             exit 1
           fi
 
+  # Tests sous Linux seulement : le code propre à Windows est compilé par le job build, et
+  # une compilation qui échoue laisse la release en brouillon (rien n'est publié)
   test:
-    name: Tests ${{ matrix.platform }}
+    name: Tests
     needs: version
-    strategy:
-      fail-fast: true
-      matrix:
-        platform: [windows-latest, ubuntu-22.04]
-    runs-on: ${{ matrix.platform }}
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
       - name: Dépendances Linux
-        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        if: matrix.platform == 'ubuntu-22.04'
         with:
           node-version: 24
 
@@ -61,26 +57,19 @@ jobs:
           toolchain: stable
           components: clippy
 
-      # Relu sans enregistrer (un cache enregistré sur un tag serait inutilisable) : sous Linux
-      # celui de ci.yml (même compilation), sous Windows celui de cache.yml (sources des crates)
+      # Relu sans enregistrer (un cache enregistré sur un tag serait inutilisable) : celui de
+      # ci.yml, même compilation
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri -> target
-          shared-key: ${{ matrix.platform == 'ubuntu-22.04' && 'ci' || 'release' }}
+          shared-key: ci
           save-if: false
 
-      # Interface : vérification des types (vue-tsc) et compilation, une fois (Linux)
+      # Interface : vérification des types (vue-tsc) et compilation
       - name: Interface
-        if: matrix.platform == 'ubuntu-22.04'
         run: |
           npm ci
           npm run build
-
-      # Sous Windows, l'interface n'est pas compilée : dossier vide pour generate_context!
-      - name: Dossier de l'interface
-        if: matrix.platform == 'windows-latest'
-        shell: bash
-        run: mkdir -p dist
 
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
