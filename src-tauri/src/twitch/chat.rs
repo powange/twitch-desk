@@ -231,7 +231,7 @@ async fn connect_once(
                                 let _ = events.send(ChatEvent::BotMessage { channel, bot: nick, text }).await;
                             }
                         }
-                        Line::Other => {}
+                        Line::Notice { .. } | Line::UserState(_) | Line::Other => {}
                     }
                 }
             }
@@ -242,36 +242,120 @@ async fn connect_once(
     }
 }
 
+/// Après le JOIN, attente de l'état du compte dans la chaîne (USERSTATE) avant d'écrire
+const JOIN_SETTLE: Duration = Duration::from_secs(2);
+/// Après l'envoi, délai laissé à Twitch pour refuser le message (NOTICE)
+const SEND_CONFIRM: Duration = Duration::from_millis(1500);
+
+/// Message refusé par Twitch (NOTICE avec msg-id), en clair ; None si ce n'est pas un refus
+pub fn refusal_message(msg_id: &str) -> Option<String> {
+    let text = match msg_id {
+        "msg_followersonly" | "msg_followersonly_zero" | "msg_followersonly_followed" => {
+            "chat réservé aux followers (depuis trop peu de temps ou pas du tout)"
+        }
+        "msg_subsonly" => "chat réservé aux abonnés",
+        "msg_slowmode" => "mode lent : message envoyé trop tôt après le précédent",
+        "msg_banned" => "compte banni de cette chaîne",
+        "msg_timedout" => "compte exclu temporairement de cette chaîne",
+        "msg_verified_email" => "chat réservé aux comptes avec une adresse e-mail vérifiée",
+        "msg_requires_verified_phone_number" => "chat réservé aux comptes avec un numéro de téléphone vérifié",
+        "msg_channel_suspended" => "chaîne suspendue",
+        "msg_duplicate" => "message identique au précédent, refusé par Twitch",
+        "msg_emoteonly" => "chat en mode émotes uniquement",
+        "msg_r9k" => "mode unique (r9k) : message déjà envoyé par quelqu'un",
+        "msg_ratelimit" => "trop de messages envoyés, réessaie dans un moment",
+        "msg_suspended" => "compte suspendu",
+        "msg_rejected" | "msg_rejected_mandatory" => "message bloqué par la modération automatique",
+        "msg_channel_blocked" => "chaîne bloquée",
+        "msg_bad_characters" => "caractères refusés par Twitch",
+        other if other.starts_with("msg_") => return Some(format!("message refusé par Twitch ({other})")),
+        _ => return None,
+    };
+    Some(text.to_owned())
+}
+
 /// Envoie un message dans le chat d'une chaîne avec le compte : connexion courte
 /// (connexion, JOIN, message, départ). Sert à la participation aux giveaways.
+/// Erreur si Twitch refuse le message (NOTICE) dans la seconde et demie qui suit
 pub async fn send_message(login: &str, token: &str, channel: &str, text: &str) -> Result<(), String> {
     let channel = channel.trim_start_matches('#').to_lowercase();
     let text = text.replace(['\r', '\n'], " ");
+    enum Phase {
+        Connecting,
+        Joining,
+        Joined(Instant),
+        Sent(Instant),
+    }
     let work = async {
         let (mut ws, _) = tokio_tungstenite::connect_async(IRC_URL).await.map_err(|e| e.to_string())?;
         let send = |m: String| Message::text(m);
+        // Étiquettes et commandes : msg-id des refus (NOTICE) et accusé (USERSTATE)
+        ws.send(send("CAP REQ :twitch.tv/tags twitch.tv/commands".to_owned())).await.map_err(|e| e.to_string())?;
         ws.send(send(format!("PASS oauth:{token}"))).await.map_err(|e| e.to_string())?;
         ws.send(send(format!("NICK {login}"))).await.map_err(|e| e.to_string())?;
-        while let Some(msg) = ws.next().await {
+        let mut phase = Phase::Connecting;
+        loop {
+            let deadline = match phase {
+                Phase::Joined(t) => Some(t + JOIN_SETTLE),
+                Phase::Sent(t) => Some(t + SEND_CONFIRM),
+                _ => None,
+            };
+            let next = match deadline {
+                Some(d) => tokio::time::timeout_at(d, ws.next()).await.ok(),
+                None => Some(ws.next().await),
+            };
+            let Some(next) = next else {
+                // Délai écoulé : état du compte jamais reçu (on écrit quand même), ou aucun refus
+                match phase {
+                    Phase::Joined(_) => {
+                        ws.send(send(format!("PRIVMSG #{channel} :{text}"))).await.map_err(|e| e.to_string())?;
+                        phase = Phase::Sent(Instant::now());
+                        continue;
+                    }
+                    _ => break,
+                }
+            };
+            let Some(msg) = next else { return Err("connexion au chat fermée".to_owned()) };
             let Message::Text(t) = msg.map_err(|e| e.to_string())? else { continue };
             for line in t.lines() {
                 match parse_line(line, login) {
                     Line::Ping(arg) => ws.send(send(format!("PONG :{arg}"))).await.map_err(|e| e.to_string())?,
-                    Line::Welcome => ws.send(send(format!("JOIN #{channel}"))).await.map_err(|e| e.to_string())?,
-                    Line::AuthFailed => return Err("jeton refusé par le chat : reconnecte ce compte".to_owned()),
-                    Line::SelfJoin(c) if c == channel => {
-                        ws.send(send(format!("PRIVMSG #{channel} :{text}"))).await.map_err(|e| e.to_string())?;
-                        // Laisser au serveur le temps de relayer avant de partir
-                        sleep(Duration::from_millis(800)).await;
-                        let _ = ws.send(send(format!("PART #{channel}"))).await;
-                        let _ = ws.close(None).await;
-                        return Ok(());
+                    Line::Welcome => {
+                        ws.send(send(format!("JOIN #{channel}"))).await.map_err(|e| e.to_string())?;
+                        phase = Phase::Joining;
                     }
+                    Line::AuthFailed => return Err("jeton refusé par le chat : reconnecte ce compte".to_owned()),
+                    Line::Notice { id, channel: c } if c == channel || c == "*" => {
+                        if let Some(why) = refusal_message(&id) {
+                            return Err(why);
+                        }
+                    }
+                    Line::SelfJoin(c) if c == channel => {
+                        if matches!(phase, Phase::Connecting | Phase::Joining) {
+                            phase = Phase::Joined(Instant::now());
+                        }
+                    }
+                    Line::UserState(c) if c == channel => match phase {
+                        // État du compte reçu après le JOIN : on peut écrire
+                        Phase::Joined(_) => {
+                            ws.send(send(format!("PRIVMSG #{channel} :{text}"))).await.map_err(|e| e.to_string())?;
+                            phase = Phase::Sent(Instant::now());
+                        }
+                        // Accusé de notre message
+                        Phase::Sent(_) => {
+                            let _ = ws.send(send(format!("PART #{channel}"))).await;
+                            let _ = ws.close(None).await;
+                            return Ok(());
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
         }
-        Err("connexion au chat fermée".to_owned())
+        let _ = ws.send(send(format!("PART #{channel}"))).await;
+        let _ = ws.close(None).await;
+        Ok(())
     };
     timeout(Duration::from_secs(20), work).await.map_err(|_| "le chat n'a pas répondu à temps".to_owned())?
 }
@@ -286,6 +370,10 @@ enum Line {
     SelfJoin(String),
     SelfPart(String),
     Privmsg { nick: String, channel: String, text: String, moderator: bool },
+    /// Avis du serveur ; `id` : étiquette msg-id (vide sans twitch.tv/tags)
+    Notice { id: String, channel: String },
+    /// État du compte dans une chaîne : après un JOIN, et après chaque message accepté
+    UserState(String),
     Other,
 }
 
@@ -326,6 +414,11 @@ fn parse_line(line: &str, login: &str) -> Line {
             text: parts.next().unwrap_or("").trim_start_matches(':').to_owned(),
             moderator,
         },
+        "NOTICE" => Line::Notice {
+            id: tags.split(';').find_map(|t| t.strip_prefix("msg-id=")).unwrap_or("").to_owned(),
+            channel: target.trim_start_matches('#').to_lowercase(),
+        },
+        "USERSTATE" => Line::UserState(target.trim_start_matches('#').to_lowercase()),
         _ => Line::Other,
     }
 }
@@ -362,5 +455,24 @@ mod tests {
             Line::Privmsg { moderator: false, .. }
         ));
         assert_eq!(parse_line(":tmi.twitch.tv RECONNECT", "me"), Line::Reconnect);
+    }
+
+    #[test]
+    fn notices_and_userstate() {
+        assert_eq!(
+            parse_line("@msg-id=msg_followersonly :tmi.twitch.tv NOTICE #SoT :This room is in followers-only mode.", "me"),
+            Line::Notice { id: "msg_followersonly".into(), channel: "sot".into() }
+        );
+        assert_eq!(
+            parse_line("@badge-info=;badges=;color=;display-name=Me;mod=0 :tmi.twitch.tv USERSTATE #sot", "me"),
+            Line::UserState("sot".into())
+        );
+        // L'échec d'authentification reste reconnu, étiquettes ou pas
+        assert_eq!(parse_line(":tmi.twitch.tv NOTICE * :Login authentication failed", "me"), Line::AuthFailed);
+        assert!(refusal_message("msg_followersonly").unwrap().contains("followers"));
+        assert!(refusal_message("msg_banned").unwrap().contains("banni"));
+        assert!(refusal_message("msg_something_new").unwrap().contains("msg_something_new"));
+        assert_eq!(refusal_message("emote_only_on"), None);
+        assert_eq!(refusal_message(""), None);
     }
 }

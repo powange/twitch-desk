@@ -24,7 +24,7 @@ pub const BROWSER_USER_AGENT: &str =
 #[derive(Debug, thiserror::Error)]
 pub enum TwitchError {
     #[error("réseau : {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
     #[error("jeton refusé par Twitch")]
     Unauthorized,
     #[error("requête Twitch inconnue ({0}) : empreinte à mettre à jour dans operations.json")]
@@ -33,6 +33,13 @@ pub enum TwitchError {
     Gql(String),
     #[error("réponse inattendue : {0}")]
     Unexpected(String),
+}
+
+impl From<reqwest::Error> for TwitchError {
+    /// Sans l'adresse : celle du lecteur (usher) porte la signature et le jeton de lecture
+    fn from(e: reqwest::Error) -> Self {
+        TwitchError::Http(e.without_url())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, TwitchError>;
@@ -52,4 +59,17 @@ pub fn http_client() -> reqwest::Client {
 pub fn random_device_id() -> String {
     use rand::distr::{Alphanumeric, SampleString};
     Alphanumeric.sample_string(&mut rand::rng(), 32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn http_errors_hide_url() {
+        // Port fermé : erreur de connexion immédiate, l'adresse ne doit pas apparaître
+        let e = reqwest::Client::new().get("http://127.0.0.1:9/x?token=secret").send().await.unwrap_err();
+        let shown = TwitchError::from(e).to_string();
+        assert!(!shown.contains("secret"), "{shown}");
+    }
 }

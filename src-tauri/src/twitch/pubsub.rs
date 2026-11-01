@@ -2,11 +2,14 @@
 //! début / fin de live, raids. Twitch accepte 50 sujets par connexion : au-delà,
 //! on ouvre une connexion de plus par tranche.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio::time::{interval, sleep, timeout, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -26,7 +29,10 @@ pub enum PubSubEvent {
     Raid { channel_id: String, raid_id: String, target_login: String },
     DropProgress { drop_id: String, current: i64 },
     DropClaim { instance_id: String },
+    /// true quand toutes les connexions sont abonnées (réponse de LISTEN reçue)
     Connection { connected: bool },
+    /// Jeton refusé par PubSub (ERR_BADAUTH) : la connexion s'arrête, un nouveau jeton est nécessaire
+    AuthFailed,
 }
 
 /// Sujets écoutés pour un compte et ses chaînes
@@ -39,54 +45,111 @@ pub fn topics_for(user_id: &str, channel_ids: &[String]) -> Vec<String> {
     topics
 }
 
-/// Garde les connexions ouvertes jusqu'à ce que `events` soit fermé côté réception
-pub async fn run(token: String, topics: Vec<String>, events: mpsc::Sender<PubSubEvent>) {
-    let mut tasks = Vec::new();
-    for chunk in topics.chunks(TOPICS_PER_CONNECTION) {
-        let chunk = chunk.to_vec();
-        let token = token.clone();
-        let events = events.clone();
-        tasks.push(tokio::spawn(async move { connection_loop(token, chunk, events).await }));
-    }
-    for task in tasks {
-        let _ = task.await;
+/// Connexions abonnées, sur le total : « temps réel » seulement quand toutes le sont
+struct Presence {
+    up: AtomicUsize,
+    total: usize,
+}
+
+impl Presence {
+    async fn set(&self, mine: &mut bool, connected: bool, events: &mpsc::Sender<PubSubEvent>) {
+        if *mine == connected {
+            return;
+        }
+        *mine = connected;
+        let up = if connected {
+            self.up.fetch_add(1, Ordering::SeqCst) + 1
+        } else {
+            self.up.fetch_sub(1, Ordering::SeqCst) - 1
+        };
+        let _ = events.send(PubSubEvent::Connection { connected: up == self.total }).await;
     }
 }
 
-async fn connection_loop(token: String, topics: Vec<String>, events: mpsc::Sender<PubSubEvent>) {
+enum Failure {
+    /// Jeton refusé : inutile de réessayer avec le même
+    Auth,
+    Other(String),
+}
+
+/// Garde les connexions ouvertes jusqu'à ce que `events` soit fermé côté réception.
+/// Les connexions sont des tâches filles d'un JoinSet : arrêter `run` les arrête toutes
+pub async fn run(token: String, topics: Vec<String>, events: mpsc::Sender<PubSubEvent>) {
+    let chunks: Vec<Vec<String>> = topics.chunks(TOPICS_PER_CONNECTION).map(<[String]>::to_vec).collect();
+    let presence = Arc::new(Presence { up: AtomicUsize::new(0), total: chunks.len() });
+    let mut tasks = JoinSet::new();
+    for chunk in chunks {
+        let token = token.clone();
+        let events = events.clone();
+        let presence = presence.clone();
+        tasks.spawn(async move { connection_loop(token, chunk, events, presence).await });
+    }
+    while tasks.join_next().await.is_some() {}
+}
+
+async fn connection_loop(token: String, topics: Vec<String>, events: mpsc::Sender<PubSubEvent>, presence: Arc<Presence>) {
     let mut backoff = Duration::from_secs(2);
+    let mut up = false;
     loop {
         let started = Instant::now();
-        let result = connect_once(&token, &topics, &events).await;
+        let result = connect_once(&token, &topics, &events, &presence, &mut up).await;
         if events.is_closed() {
             return;
         }
-        let _ = events.send(PubSubEvent::Connection { connected: false }).await;
-        if let Err(e) = result {
-            tracing::warn!("PubSub : {e}");
+        presence.set(&mut up, false, &events).await;
+        match result {
+            Err(Failure::Auth) => {
+                tracing::warn!("PubSub : jeton refusé (ERR_BADAUTH)");
+                let _ = events.send(PubSubEvent::AuthFailed).await;
+                return;
+            }
+            Err(Failure::Other(e)) => tracing::warn!("PubSub : {e}"),
+            Ok(()) => {}
         }
         // Connexion restée stable un moment : on repart du délai minimal
         if started.elapsed() > Duration::from_secs(300) {
             backoff = Duration::from_secs(2);
         }
-        sleep(backoff).await;
+        tokio::select! {
+            _ = sleep(backoff) => {}
+            _ = events.closed() => return,
+        }
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
+}
+
+/// Réponse à notre LISTEN : Ok abonné, Err refusé ; None si ce n'est pas notre réponse
+fn listen_response(envelope: &Value, nonce: &str) -> Option<Result<(), Failure>> {
+    if envelope.get("type").and_then(Value::as_str) != Some("RESPONSE") {
+        return None;
+    }
+    if envelope.get("nonce").and_then(Value::as_str).is_some_and(|n| n != nonce) {
+        return None;
+    }
+    let error = envelope.get("error").and_then(Value::as_str).unwrap_or("");
+    Some(match error {
+        "" => Ok(()),
+        "ERR_BADAUTH" => Err(Failure::Auth),
+        other => Err(Failure::Other(format!("abonnement refusé : {other}"))),
+    })
 }
 
 async fn connect_once(
     token: &str,
     topics: &[String],
     events: &mpsc::Sender<PubSubEvent>,
-) -> Result<(), String> {
-    let (mut ws, _) = tokio_tungstenite::connect_async(PUBSUB_URL).await.map_err(|e| e.to_string())?;
+    presence: &Presence,
+    up: &mut bool,
+) -> Result<(), Failure> {
+    let other = |e: tokio_tungstenite::tungstenite::Error| Failure::Other(e.to_string());
+    let (mut ws, _) = tokio_tungstenite::connect_async(PUBSUB_URL).await.map_err(other)?;
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
     let listen = json!({
         "type": "LISTEN",
-        "nonce": uuid::Uuid::new_v4().simple().to_string(),
+        "nonce": nonce,
         "data": { "topics": topics, "auth_token": token }
     });
-    ws.send(Message::text(listen.to_string())).await.map_err(|e| e.to_string())?;
-    let _ = events.send(PubSubEvent::Connection { connected: true }).await;
+    ws.send(Message::text(listen.to_string())).await.map_err(other)?;
 
     let mut ping = interval(PING_EVERY);
     ping.tick().await;
@@ -94,31 +157,32 @@ async fn connect_once(
     loop {
         let wait = awaiting_pong.map(|t| PONG_TIMEOUT.saturating_sub(t.elapsed())).unwrap_or(PING_EVERY);
         tokio::select! {
+            _ = events.closed() => return Ok(()),
             _ = ping.tick() => {
-                ws.send(Message::text(r#"{"type":"PING"}"#)).await.map_err(|e| e.to_string())?;
+                ws.send(Message::text(r#"{"type":"PING"}"#)).await.map_err(other)?;
                 awaiting_pong = Some(Instant::now());
             }
             _ = sleep(wait), if awaiting_pong.is_some() => {
-                return Err("pas de réponse au PING".into());
+                return Err(Failure::Other("pas de réponse au PING".into()));
             }
             msg = timeout(PING_EVERY * 2, ws.next()) => {
                 let msg = match msg {
-                    Err(_) => return Err("connexion muette".into()),
-                    Ok(None) => return Err("connexion fermée".into()),
-                    Ok(Some(Err(e))) => return Err(e.to_string()),
+                    Err(_) => return Err(Failure::Other("connexion muette".into())),
+                    Ok(None) => return Err(Failure::Other("connexion fermée".into())),
+                    Ok(Some(Err(e))) => return Err(other(e)),
                     Ok(Some(Ok(m))) => m,
                 };
                 let Message::Text(text) = msg else { continue };
                 let Ok(envelope) = serde_json::from_str::<Value>(&text) else { continue };
+                if let Some(response) = listen_response(&envelope, &nonce) {
+                    response?;
+                    // Abonnement confirmé : seulement maintenant la connexion compte
+                    presence.set(up, true, events).await;
+                    continue;
+                }
                 match envelope.get("type").and_then(Value::as_str) {
                     Some("PONG") => awaiting_pong = None,
-                    Some("RECONNECT") => return Err("Twitch demande une reconnexion".into()),
-                    Some("RESPONSE") => {
-                        let error = envelope.get("error").and_then(Value::as_str).unwrap_or("");
-                        if !error.is_empty() {
-                            return Err(format!("abonnement refusé : {error}"));
-                        }
-                    }
+                    Some("RECONNECT") => return Err(Failure::Other("Twitch demande une reconnexion".into())),
                     Some("MESSAGE") => {
                         for event in parse_message(&envelope) {
                             if events.send(event).await.is_err() {
@@ -254,6 +318,35 @@ mod tests {
     fn unknown_and_broken_messages() {
         assert!(parse_message(&envelope("whatever.1", json!({"type":"x"}))).is_empty());
         assert!(parse_message(&json!({"type":"MESSAGE","data":{"topic":"raid.1","message":"{pas du json"}})).is_empty());
+    }
+
+    #[test]
+    fn listen_responses() {
+        let ok = json!({"type":"RESPONSE","nonce":"n1","error":""});
+        assert!(matches!(listen_response(&ok, "n1"), Some(Ok(()))));
+        let bad = json!({"type":"RESPONSE","nonce":"n1","error":"ERR_BADAUTH"});
+        assert!(matches!(listen_response(&bad, "n1"), Some(Err(Failure::Auth))));
+        let other = json!({"type":"RESPONSE","nonce":"n1","error":"ERR_BADTOPIC"});
+        assert!(matches!(listen_response(&other, "n1"), Some(Err(Failure::Other(_)))));
+        // Réponse à une autre demande, ou message ordinaire
+        assert!(listen_response(&json!({"type":"RESPONSE","nonce":"x","error":""}), "n1").is_none());
+        assert!(listen_response(&json!({"type":"PONG"}), "n1").is_none());
+    }
+
+    #[tokio::test]
+    async fn realtime_needs_every_connection() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let p = Presence { up: AtomicUsize::new(0), total: 2 };
+        let (mut a, mut b) = (false, false);
+        p.set(&mut a, true, &tx).await;
+        assert_eq!(rx.recv().await, Some(PubSubEvent::Connection { connected: false }));
+        p.set(&mut b, true, &tx).await;
+        assert_eq!(rx.recv().await, Some(PubSubEvent::Connection { connected: true }));
+        // Pas de double comptage
+        p.set(&mut b, true, &tx).await;
+        p.set(&mut a, false, &tx).await;
+        assert_eq!(rx.recv().await, Some(PubSubEvent::Connection { connected: false }));
+        assert_eq!(p.up.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -19,11 +19,21 @@ pub struct DeviceCode {
     pub interval: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Tokens {
     pub access_token: String,
     #[serde(default)]
     pub refresh_token: Option<String>,
+}
+
+/// Jamais les valeurs dans les journaux
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens")
+            .field("access_token", &"<masqué>")
+            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<masqué>"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +79,10 @@ pub async fn poll_device_flow(http: &reqwest::Client, device_code: &str) -> Resu
     if res.status().is_success() {
         return Ok(PollResult::Done(res.json().await?));
     }
+    // Twitch en difficulté ou trop sollicité : on continue d'attendre
+    if res.status().is_server_error() || res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Ok(PollResult::Pending);
+    }
     let body = res.text().await.unwrap_or_default();
     Ok(classify_poll_error(&body))
 }
@@ -83,7 +97,9 @@ fn classify_poll_error(body: &str) -> PollResult {
         "slow_down" => PollResult::SlowDown,
         "access_denied" => PollResult::Denied,
         // « invalid device code » : le code a expiré
-        _ => PollResult::Expired,
+        "invalid device code" | "expired_token" => PollResult::Expired,
+        // Réponse inconnue : on continue jusqu'à l'expiration du code (délai connu)
+        _ => PollResult::Pending,
     }
 }
 
@@ -116,8 +132,13 @@ pub async fn refresh(http: &reqwest::Client, refresh_token: &str) -> Result<Toke
         ])
         .send()
         .await?;
-    if !res.status().is_success() {
+    let status = res.status();
+    // 400 / 401 : jeton de renouvellement invalide ou révoqué. Le reste (5xx, 429…) est passager
+    if status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(TwitchError::Unauthorized);
+    }
+    if !status.is_success() {
+        return Err(TwitchError::Unexpected(format!("renouvellement du jeton : HTTP {status}")));
     }
     Ok(res.json().await?)
 }
@@ -136,6 +157,15 @@ mod tests {
             classify_poll_error(r#"{"status":400,"message":"invalid device code"}"#),
             PollResult::Expired
         ));
-        assert!(matches!(classify_poll_error("pas du json"), PollResult::Expired));
+        assert!(matches!(classify_poll_error(r#"{"message":"slow_down"}"#), PollResult::SlowDown));
+        // Réponse inconnue : on continue d'attendre
+        assert!(matches!(classify_poll_error("pas du json"), PollResult::Pending));
+    }
+
+    #[test]
+    fn tokens_debug_is_redacted() {
+        let t = Tokens { access_token: "abc123".into(), refresh_token: Some("def456".into()) };
+        let shown = format!("{t:?}");
+        assert!(!shown.contains("abc123") && !shown.contains("def456"), "{shown}");
     }
 }

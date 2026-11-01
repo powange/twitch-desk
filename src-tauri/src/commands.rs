@@ -71,7 +71,7 @@ async fn poll_login(app: &Arc<App>, code: &DeviceCode) -> LoginEvent {
         }
         match auth::poll_device_flow(&app.http, &code.device_code).await {
             Ok(PollResult::Pending) => {}
-            Ok(PollResult::SlowDown) => every += Duration::from_secs(1),
+            Ok(PollResult::SlowDown) => every += Duration::from_secs(5),
             Ok(PollResult::Expired) => return LoginEvent::Expired,
             Ok(PollResult::Denied) => return LoginEvent::Denied,
             Ok(PollResult::Done(tokens)) => return finish_login(app, tokens).await,
