@@ -1,5 +1,7 @@
 # Mises à jour proposées par Dependabot, regroupées pour limiter le nombre de demandes de
-# fusion : actions GitHub (épinglées par commit) chaque semaine, le reste chaque mois
+# fusion : actions GitHub (épinglées par commit) chaque semaine, le reste chaque mois.
+# Les versions majeures des dépendances ne sont pas proposées : elles demandent une migration
+# faite à la main (rusqlite, TypeScript…)
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -15,10 +17,11 @@ updates:
     schedule:
       interval: monthly
     groups:
-      app-rust-minor:
+      app-rust:
         update-types: [minor, patch]
-      app-rust-major:
-        update-types: [major]
+    ignore:
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: cargo
     directory: /server
@@ -27,16 +30,20 @@ updates:
     groups:
       server-rust:
         patterns: ['*']
+    ignore:
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: monthly
     groups:
-      npm-minor:
+      npm:
         update-types: [minor, patch]
-      npm-major:
-        update-types: [major]
+    ignore:
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: docker
     directory: /server

@@ -65,7 +65,8 @@ const form = ref({
   chatMinutes: null as number | null,
   followDays: null as number | null,
   notes: '',
-  giftIds: [] as number[]
+  giftIds: [] as number[],
+  winner: ''
 })
 
 // Ce que le cœur sait de la chaîne saisie (fiche Twitch, StreamElements, streamer)
@@ -182,7 +183,8 @@ watch(open, (isOpen) => {
     chatMinutes: g?.minChatMinutes ? g.minChatMinutes : null,
     followDays: g?.followMinDays ?? null,
     notes: g?.notes ?? '',
-    giftIds: [...(g?.giftIds ?? [])]
+    giftIds: [...(g?.giftIds ?? [])],
+    winner: g?.winner ?? ''
   }
   giftSearch.value = ''
   // Chaîne connue (modification, fiche du streamer, chaîne pré-remplie) : fiche chargée tout de suite,
@@ -414,7 +416,15 @@ async function save() {
   saving.value = true
   try {
     const id = editId.value
-    if (id !== null) await invoke('update_giveaway', { id, input })
+    if (id !== null) {
+      await invoke('update_giveaway', { id, input })
+      // Gagnant changé à la main : désigné (le giveaway est clos), ou retiré (il est rouvert)
+      const winner = f.winner.trim().replace(/^@/, '').toLowerCase()
+      if (props.giveaway && props.giveaway.id === id && winner !== (props.giveaway.winner ?? '').toLowerCase()) {
+        if (winner) await invoke('set_manual_winner', { channel: f.channel, winner, giveawayId: id })
+        else await invoke('clear_giveaway_winner', { id })
+      }
+    }
     // Créé une seule fois : un nouvel essai modifie ce giveaway
     else createdId.value = await invoke<number>('create_giveaway', { input })
   } catch (e) {
@@ -588,9 +598,18 @@ async function save() {
               </UFormField>
             </div>
 
-            <UFormField label="Tirage" help="Un rappel est envoyé 5 min avant si la présence est requise" class="max-w-xs">
-              <UInput id="gw-draw" v-model="form.drawAt" type="datetime-local" class="w-full" />
-            </UFormField>
+            <div class="flex flex-wrap gap-4">
+              <UFormField label="Tirage" help="Un rappel est envoyé 5 min avant si la présence est requise" class="max-w-xs">
+                <UInput id="gw-draw" v-model="form.drawAt" type="datetime-local" class="w-full" />
+              </UFormField>
+              <UFormField v-if="giveaway" label="Gagnant" help="Le vider retire le gagnant et rouvre le giveaway" class="max-w-xs">
+                <UInput id="gw-winner" v-model="form.winner" icon="i-lucide-trophy" placeholder="Pas encore tiré" class="w-full">
+                  <template v-if="form.winner" #trailing>
+                    <UButton icon="i-lucide-x" size="xs" color="neutral" variant="link" aria-label="Retirer le gagnant" @click="form.winner = ''" />
+                  </template>
+                </UInput>
+              </UFormField>
+            </div>
             <UAlert
               v-if="form.kind === 'channelpoints'"
               icon="i-lucide-info"

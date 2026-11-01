@@ -1582,6 +1582,16 @@ impl Db {
         Ok(())
     }
 
+    /// Gagnant retiré (erreur de détection ou de saisie) : le giveaway est rouvert, les règles de
+    /// clôture habituelles s'appliquent ensuite
+    pub fn clear_giveaway_winner(&self, id: i64) -> DbResult<bool> {
+        let n = self.conn().execute(
+            "UPDATE giveaways SET winner = NULL, winner_chance = NULL, drawn_at = NULL, status = 'open' WHERE id = ?1",
+            [id],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Clôt les giveaways ouverts détectés avant `before` (date RFC 3339), sauf tirage annoncé plus tard
     pub fn close_giveaways_before(&self, before: &str) -> DbResult<usize> {
         self.conn().execute(

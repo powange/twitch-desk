@@ -473,6 +473,17 @@ pub fn set_manual_winner(app: AppState, channel: String, winner: String, giveawa
     Ok(())
 }
 
+/// Gagnant retiré d'un giveaway, qui est rouvert
+#[tauri::command]
+pub fn clear_giveaway_winner(app: AppState, id: i64) -> CmdResult<()> {
+    if !app.db.clear_giveaway_winner(id).map_err(db_err)? {
+        return Err("Ce giveaway n'existe plus".into());
+    }
+    app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_chat_log_meta(app: AppState, channel: String) -> CmdResult<ChatLogMeta> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;

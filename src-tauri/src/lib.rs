@@ -291,6 +291,7 @@ pub fn run() {
             commands::set_giveaway_command,
             commands::get_chat_log_meta,
             commands::set_manual_winner,
+            commands::clear_giveaway_winner,
             commands::streamer_discord,
             commands::follow_channel,
             commands::delete_gift,

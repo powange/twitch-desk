@@ -72,6 +72,7 @@
     "allow-set-giveaway-command",
     "allow-get-chat-log-meta",
     "allow-set-manual-winner",
+    "allow-clear-giveaway-winner",
     "allow-streamer-discord",
     "allow-follow-channel",
     "allow-delete-gift",

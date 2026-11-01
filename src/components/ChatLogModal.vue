@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { useSnapshot } from '../composables/useSnapshot'
+import { GIVEAWAY_KIND } from '../utils/giveaways'
 
 // Journal du chat d'une chaîne : commandes des spectateurs, nos messages, annonces de gagnant
 // et réponses des bots aux commandes d'information (!giveaway…), gardés 14 jours
@@ -118,14 +120,30 @@ watch(author, () => {
   authorTimer = setTimeout(reloadIfChanged, 300)
 })
 
-// Gagnant non détecté : désigné à la main (giveaway ouvert de la chaîne, sinon le plus récent)
+// Gagnant non détecté : désigné à la main, sur le giveaway de la commande du message (sinon
+// le giveaway ouvert de la chaîne, sinon le plus récent), modifiable avant de valider
+const { snapshot } = useSnapshot()
+const channelGiveaways = computed(() => (snapshot.value?.giveaways.giveaways ?? [])
+  .filter(g => g.channel === props.channel)
+  .sort((a, b) => Number(b.open) - Number(a.open) || b.detectedAt.localeCompare(a.detectedAt)))
+const giveawayItems = computed(() => channelGiveaways.value.map(g => ({
+  label: `${GIVEAWAY_KIND[g.kind].label}${g.command ? ` ${g.command}` : ''}${g.open ? '' : ' (clos)'}${g.winner ? ` · gagnant : ${g.winner}` : ''}`,
+  value: g.id
+})))
 const confirmWinner = ref<string | null>(null)
+const winnerGiveaway = ref<number | undefined>(undefined)
+function askWinner(e: ChatLogEntry) {
+  const list = channelGiveaways.value
+  const byCommand = e.command ? list.find(g => g.command?.toLowerCase() === e.command!.toLowerCase()) : undefined
+  winnerGiveaway.value = (byCommand ?? list[0])?.id
+  confirmWinner.value = e.author
+}
 async function setWinner() {
   const winner = confirmWinner.value
   if (!winner || !props.channel) return
   confirmWinner.value = null
   try {
-    await invoke('set_manual_winner', { channel: props.channel, winner })
+    await invoke('set_manual_winner', { channel: props.channel, winner, giveawayId: winnerGiveaway.value ?? null })
     toast.add({ title: `${winner} désigné gagnant`, color: 'success', icon: 'i-lucide-trophy' })
   } catch (e) {
     toast.add({ title: 'Gagnant non enregistré', description: String(e), color: 'error' })
@@ -217,7 +235,7 @@ function time(iso: string) {
                       variant="ghost"
                       :aria-label="`Désigner ${e.author} gagnant`"
                       title="Désigner gagnant du giveaway (tirage non détecté)"
-                      @click="confirmWinner = e.author"
+                      @click="askWinner(e)"
                     />
                   </div>
                 </td>
@@ -237,12 +255,18 @@ function time(iso: string) {
 
   <UModal :open="confirmWinner !== null" :title="`Désigner ${confirmWinner ?? ''} gagnant ?`" @update:open="v => { if (!v) confirmWinner = null }">
     <template #body>
-      <p class="text-sm">{{ confirmWinner }} sera enregistré comme gagnant du giveaway ouvert sur {{ channel }}, ou à défaut du plus récent de cette chaîne.</p>
+      <div class="flex flex-col gap-3 text-sm">
+        <UFormField v-if="giveawayItems.length" label="Giveaway">
+          <USelect id="winner-giveaway" v-model="winnerGiveaway" :items="giveawayItems" class="w-full" />
+        </UFormField>
+        <p v-else>Aucun giveaway connu sur {{ channel }} : ajoute-le d'abord.</p>
+        <p class="text-muted">{{ confirmWinner }} sera enregistré comme gagnant de ce giveaway, qui sera clos.</p>
+      </div>
     </template>
     <template #footer>
       <div class="flex justify-end gap-2 w-full">
         <UButton label="Annuler" color="neutral" variant="ghost" @click="confirmWinner = null" />
-        <UButton label="Désigner gagnant" icon="i-lucide-trophy" @click="setWinner" />
+        <UButton label="Désigner gagnant" icon="i-lucide-trophy" :disabled="winnerGiveaway === undefined" @click="setWinner" />
       </div>
     </template>
   </UModal>

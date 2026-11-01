@@ -62,6 +62,7 @@ const COMMANDS: &[&str] = &[
     "set_giveaway_command",
     "get_chat_log_meta",
     "set_manual_winner",
+    "clear_giveaway_winner",
     "streamer_discord",
     "follow_channel",
     "delete_gift",

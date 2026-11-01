@@ -316,8 +316,11 @@ function applyPause() {
         autoPaused.add(c)
       }
     } else if (autoPaused.has(c)) {
+      // isPaused() du lecteur intégré n'est pas toujours à jour : relance sans le consulter,
+      // puis une seconde fois si le lecteur n'a pas repris
       autoPaused.delete(c)
-      if (t.player.isPaused()) t.player.play()
+      t.player.play()
+      setTimeout(() => { if (!autoPaused.has(c) && t.player.isPaused()) t.player.play() }, 1000)
     }
   }
 }
