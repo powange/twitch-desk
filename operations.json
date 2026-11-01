@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "updated": "2026-11-01",
+  "operations": {
+    "VideoPlayerStreamInfoOverlayChannel": [
+      "198492e0857f6aedead9665c81c5a06d67b25b58034649687124083ff288597d",
+      "e785b65ff71ad7b363b34878335f27dd9372869ad0c5740a130b9268bcdbe7e7"
+    ],
+    "GetIDFromLogin": [
+      "94e82a7b1e3c21e186daa73ee2afc4b8f23bade1fbbff6fe8ac133f50a2f58ca"
+    ],
+    "ChannelPointsContext": [
+      "374314de591e69925fce3ddc2bcf085796f56ebb8cad67a0daa3165c03adc345",
+      "1530a003a7d374b0380b79db0be0534f30ff46e61cffa2bc0e2468a909fbc024",
+      "7fe050e3761eb2cf258d70ee1a21cbd76fa8cf3d7e7b12fc437e7029d446b5e3"
+    ],
+    "ClaimCommunityPoints": [
+      "46aaeebe02c99afdf4fc97c7c0cba964124bf6b0af229395f1f6d1feed05b3d0"
+    ],
+    "PlaybackAccessToken": [
+      "ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9",
+      "3093517e37e4f4cb48906155bcd894150aef92617939236d2508f3375ab732ce"
+    ],
+    "JoinRaid": [
+      "c6a332a86d1087fbbb1a8623aa01bd1313d2386e7c63be60fdb2d1901f01a4ae"
+    ]
+  }
+}
