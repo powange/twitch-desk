@@ -45,6 +45,8 @@ pub enum MonitorCmd {
     Close(i64),
     Delete(i64),
     DismissMention(u64),
+    /// Gagnant désigné à la main (journal du chat) : giveaway ouvert de la chaîne, sinon le plus récent
+    ManualWinner { channel: String, winner: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,7 +193,7 @@ struct Monitor {
     chat_log: Vec<crate::db::ChatLogEntry>,
     last_prune: Option<Instant>,
     /// Commandes des giveaways ouverts par chaîne : un mot-clé sans « ! » tapé est alors journalisé
-    open_commands: HashMap<String, HashSet<String>>,
+    open_commands: HashMap<String, Vec<(i64, String)>>,
     /// Commande d'information tapée, en attente de la réponse d'un bot : chaîne → (commande, pseudo, moment)
     pending_info: HashMap<String, (String, String, Instant)>,
 }
@@ -305,7 +307,7 @@ impl Monitor {
         self.open_commands.clear();
         for g in &open {
             if let Some(c) = &g.command {
-                self.open_commands.entry(g.channel.clone()).or_default().insert(c.to_lowercase());
+                self.open_commands.entry(g.channel.clone()).or_default().push((g.id, c.to_lowercase()));
             }
         }
         self.giveaway_only = open.into_iter().filter(|g| !self.monitored(&g.channel)).map(|g| g.channel).collect();
@@ -460,12 +462,12 @@ impl Monitor {
                 self.update_anonymous();
                 self.publish_channels();
             }
-            TapEvent::Message { source, channel, user, text } => {
+            TapEvent::Message { source, channel, user, text, moderator } => {
                 // Un seul lecteur par chaîne : sinon chaque message compterait double
                 if self.logged(&channel) && self.reader(&channel) == Some(source) {
-                    self.log_chat(&channel, &user, &text);
+                    self.log_chat(&channel, &user, &text, moderator);
                     if self.monitored(&channel) {
-                        self.on_message(&channel, &user, &text);
+                        self.on_message(&channel, &user, &text, moderator);
                     }
                 }
             }
@@ -487,6 +489,7 @@ impl Monitor {
                 let _ = self.app.db.delete_giveaway(id);
                 self.publish();
             }
+            MonitorCmd::ManualWinner { channel, winner } => self.on_winner(&channel, "manuel", &winner, None),
             MonitorCmd::DismissMention(id) => {
                 self.mentions.retain(|m| m.id != id);
                 self.publish();
@@ -505,12 +508,12 @@ impl Monitor {
     }
 
     /// Journal du chat : commandes des spectateurs, tous nos messages, annonces de gagnant
-    fn log_chat(&mut self, channel: &str, user: &str, text: &str) {
+    fn log_chat(&mut self, channel: &str, user: &str, text: &str, moderator: bool) {
         let author = user.to_lowercase();
         // Commande avec « ! », ou mot-clé d'un giveaway ouvert tapé seul (« bonbons »)
         let mut command = detect::extract_command(text).or_else(|| {
             let word = text.trim().to_lowercase();
-            self.open_commands.get(channel).is_some_and(|c| c.contains(&word)).then_some(word)
+            self.open_commands.get(channel).is_some_and(|c| c.iter().any(|(_, cmd)| *cmd == word)).then_some(word)
         });
         // Commande d'information (!giveaway…) : on attend la réponse d'un bot
         if let Some(cmd) = command.as_deref().filter(|c| INFO_COMMANDS.contains(&c.split(' ').next().unwrap_or(c))) {
@@ -518,10 +521,12 @@ impl Monitor {
             self.pending_info.insert(channel.to_owned(), (base, author.clone(), Instant::now()));
         }
         let reply = if is_reply_bot(&author) { self.take_info_reply(channel, &author, text) } else { None };
-        let kind = if self.accounts.iter().any(|(_, l)| *l == author) {
+        let kind = if let Some(account) = self.accounts.iter().find(|(_, l)| *l == author).map(|(id, _)| *id) {
+            self.own_participation(channel, account, text);
             "own"
-        } else if bots::is_bot_like(&author)
-            && bots::parse_bot_message(&author, text).iter().any(|e| matches!(e, BotEvent::Winner { .. }))
+        } else if (bots::is_bot_like(&author)
+            && bots::parse_bot_message(&author, text).iter().any(|e| matches!(e, BotEvent::Winner { .. })))
+            || ((moderator || author == channel) && bots::moderator_winner(&author, text).is_some())
         {
             "winner"
         } else if let Some(cmd) = reply {
@@ -544,6 +549,28 @@ impl Monitor {
         if self.chat_log.len() >= CHAT_LOG_FLUSH {
             self.flush_chat_log();
         }
+    }
+
+    /// Un de nos comptes tape la commande d'un giveaway ouvert dans le chat (depuis Twitch ou
+    /// ailleurs) : comptée comme participation de ce compte
+    fn own_participation(&mut self, channel: &str, account: i64, text: &str) {
+        let typed = text.trim().to_lowercase();
+        let Some(list) = self.open_commands.get(channel) else { return };
+        let ids: Vec<i64> = list
+            .iter()
+            .filter(|(_, cmd)| typed == *cmd || typed.starts_with(&format!("{cmd} ")))
+            .map(|(id, _)| *id)
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let at = now_rfc3339();
+        for id in ids {
+            if let Err(e) = self.app.db.add_giveaway_entry(id, account, &at, false) {
+                tracing::warn!("participation depuis le chat : {e}");
+            }
+        }
+        self.publish();
     }
 
     /// Message d'un bot juste après une commande d'information : enregistré comme sa réponse
@@ -592,8 +619,16 @@ impl Monitor {
         }
     }
 
-    fn on_message(&mut self, channel: &str, user: &str, text: &str) {
+    fn on_message(&mut self, channel: &str, user: &str, text: &str, moderator: bool) {
         let user_l = user.to_lowercase();
+        // Annonce du gagnant par un modérateur (bot ou humain) ou le streamer : badges du message,
+        // qu'un spectateur ne peut pas imiter
+        if (moderator || user_l == channel) && !bots::is_bot_like(&user_l) {
+            if let Some(BotEvent::Winner { bot, winner, chance }) = bots::moderator_winner(&user_l, text) {
+                self.on_winner(channel, &bot, &winner, chance.as_deref());
+                return;
+            }
+        }
         if bots::is_bot_like(&user_l) {
             for event in bots::parse_bot_message(&user_l, text) {
                 match event {
@@ -685,7 +720,13 @@ impl Monitor {
         let open = self.open_giveaways(channel);
         // Giveaway du type tiré par ce bot, sinon le plus récent
         let wanted_kind = if bot == "streamelements" { "streamelements" } else { "command" };
-        let target = open.iter().find(|g| g.kind == wanted_kind).or_else(|| open.first());
+        // Gagnant désigné à la main : à défaut de giveaway ouvert, le plus récent de la chaîne
+        let latest = if bot == "manuel" && open.is_empty() {
+            self.app.db.giveaways(RECENT_GIVEAWAYS).unwrap_or_default().into_iter().find(|g| g.channel == channel)
+        } else {
+            None
+        };
+        let target = open.iter().find(|g| g.kind == wanted_kind).or_else(|| open.first()).or(latest.as_ref());
         if let Some(g) = target {
             let _ = self.app.db.set_giveaway_winner(g.id, winner, chance, &now_rfc3339());
         }

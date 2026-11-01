@@ -382,10 +382,25 @@ pub fn get_chat_log(
     channel: String,
     kinds: Vec<String>,
     command: Option<String>,
+    author: Option<String>,
     before_id: Option<i64>,
 ) -> CmdResult<Vec<crate::db::ChatLogEntry>> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
-    app.db.chat_log(&channel, &kinds, command.as_deref(), before_id, 200).map_err(db_err)
+    app.db.chat_log(&channel, &kinds, command.as_deref(), author.as_deref(), before_id, 200).map_err(db_err)
+}
+
+/// Gagnant désigné à la main (tirage non détecté) : giveaway ouvert de la chaîne, sinon le plus récent
+#[tauri::command]
+pub fn set_manual_winner(app: AppState, channel: String, winner: String) -> CmdResult<()> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    let winner = normalize_login(&winner).ok_or("Pseudo du gagnant invalide")?;
+    let exists = app.db.giveaways(200).map_err(db_err)?.iter().any(|g| g.channel == channel);
+    if !exists {
+        return Err(format!("Aucun giveaway sur {channel} : ajoute-le d'abord"));
+    }
+    app.giveaways.send(MonitorCmd::ManualWinner { channel, winner });
+    app.sync.poke();
+    Ok(())
 }
 
 #[tauri::command]

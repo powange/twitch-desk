@@ -58,6 +58,17 @@ async function setCollection(col: string, on: boolean) {
   }
 }
 
+const resyncOpen = ref(false)
+async function resync() {
+  resyncOpen.value = false
+  try {
+    await invoke('sync_resync')
+    toast.add({ title: 'Relecture complète lancée', description: 'Tout le contenu du serveur va être relu.', color: 'success', icon: 'i-lucide-check' })
+  } catch (e) {
+    toast.add({ title: 'Relecture impossible', description: String(e), color: 'error' })
+  }
+}
+
 async function test() {
   testing.value = true
   tested.value = null
@@ -138,17 +149,49 @@ async function save(value = wanted.value) {
       <div v-if="offered.length" class="flex flex-col gap-2 pt-1">
         <div class="text-sm font-medium">Données synchronisées</div>
         <div class="text-xs text-muted">Celles que propose le serveur. Une donnée décochée reste sur ce poste sans être envoyée ni reçue.</div>
-        <div class="flex flex-col gap-1.5">
-          <UCheckbox
-            v-for="col in offered"
-            :key="col"
-            :model-value="syncing(col)"
-            :label="labelOf(col)"
-            @update:model-value="v => setCollection(col, v === true)"
-          />
+        <table class="text-sm w-full max-w-md">
+          <thead class="text-xs uppercase text-muted">
+            <tr>
+              <th class="text-left py-1 font-medium">Donnée</th>
+              <th class="text-right py-1 font-medium">Ici</th>
+              <th class="text-right py-1 font-medium">Serveur</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="col in offered" :key="col" class="border-t border-default">
+              <td class="py-1.5">
+                <UCheckbox :model-value="syncing(col)" :label="labelOf(col)" @update:model-value="v => setCollection(col, v === true)" />
+              </td>
+              <td class="py-1.5 text-right tabular-nums">{{ syncView.localCounts[col] ?? '—' }}</td>
+              <td
+                class="py-1.5 text-right tabular-nums"
+                :class="syncing(col) && syncView.serverCounts && syncView.serverCounts[col] !== undefined && syncView.serverCounts[col] !== syncView.localCounts[col] ? 'text-warning' : ''"
+              >
+                {{ syncView.serverCounts ? (syncView.serverCounts[col] ?? 0) : '?' }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="text-xs text-muted">
+          Un écart (en orange) peut venir d'éléments propres à ce poste ou de giveaways de plus de 60 jours.
+          <template v-if="!syncView.serverCounts">Mets le serveur à jour pour voir ses comptes.</template>
+        </div>
+        <div>
+          <UButton label="Tout relire depuis le serveur" icon="i-lucide-rotate-ccw" size="sm" color="neutral" variant="soft" @click="resyncOpen = true" />
         </div>
       </div>
       <div class="text-xs text-muted">Depuis le démarrage : {{ syncView.sent }} modification(s) envoyée(s), {{ syncView.received }} reçue(s).</div>
     </div>
+    <UModal v-model:open="resyncOpen" title="Tout relire depuis le serveur ?">
+      <template #body>
+        <p class="text-sm">Tout le contenu du serveur est relu. Pour ce qui est déjà partagé, la version du serveur remplace celle de ce poste ; ce qui n'existe qu'ici est envoyé au serveur.</p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Annuler" color="neutral" variant="ghost" @click="resyncOpen = false" />
+          <UButton label="Tout relire" @click="resync" />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

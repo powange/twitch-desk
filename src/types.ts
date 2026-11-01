@@ -92,6 +92,9 @@ export interface SyncView {
   error: string | null
   // Collections proposées par le serveur
   serverCollections: string[]
+  // Éléments par donnée, ici et sur le serveur (null : serveur trop ancien)
+  localCounts: Record<string, number>
+  serverCounts: Record<string, number> | null
   // Collections synchronisées (celles du serveur non décochées)
   collections: string[]
   sent: number

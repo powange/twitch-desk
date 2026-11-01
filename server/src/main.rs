@@ -50,6 +50,8 @@ struct Info {
     collections: Vec<String>,
     /// Numéro de la dernière modification
     seq: i64,
+    /// Documents présents (hors suppressions) par collection synchronisée
+    counts: std::collections::BTreeMap<String, i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,12 +164,22 @@ fn last_seq(conn: &Connection) -> rusqlite::Result<i64> {
 
 async fn info(State(server): State<Shared>, headers: HeaderMap) -> Result<Json<Info>, ApiError> {
     authorize(&server, &headers)?;
-    let seq = last_seq(&server.db.lock().unwrap())?;
+    let conn = server.db.lock().unwrap();
+    let seq = last_seq(&conn)?;
+    let mut counts = std::collections::BTreeMap::new();
+    let mut stmt = conn.prepare("SELECT collection, COUNT(*) FROM docs WHERE deleted = 0 GROUP BY collection")?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        let (collection, n) = row?;
+        if server.collections.contains(&collection) {
+            counts.insert(collection, n);
+        }
+    }
     Ok(Json(Info {
         name: "twitch-desk-sync",
         version: env!("CARGO_PKG_VERSION"),
         collections: COLLECTIONS.iter().filter(|c| server.collections.contains(**c)).map(|c| c.to_string()).collect(),
         seq,
+        counts,
     }))
 }
 

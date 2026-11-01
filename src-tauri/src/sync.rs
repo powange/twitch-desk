@@ -47,6 +47,9 @@ pub struct SyncView {
     pub server_collections: Vec<String>,
     /// Collections synchronisées : celles du serveur que l'utilisateur n'a pas décochées
     pub collections: Vec<String>,
+    /// Éléments par collection, ici et sur le serveur (diagnostic)
+    pub local_counts: BTreeMap<String, i64>,
+    pub server_counts: Option<BTreeMap<String, i64>>,
     /// Depuis le démarrage : modifications envoyées et reçues
     pub sent: u64,
     pub received: u64,
@@ -77,6 +80,9 @@ pub struct ServerInfo {
     pub version: String,
     pub collections: Vec<String>,
     pub seq: i64,
+    /// Documents par collection (serveur 0.2 et plus)
+    #[serde(default)]
+    pub counts: Option<BTreeMap<String, i64>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -650,6 +656,8 @@ async fn server_info(http: &reqwest::Client, url: &str, code: &str) -> Result<Se
 struct Outcome {
     server_collections: Vec<String>,
     collections: Vec<String>,
+    local_counts: BTreeMap<String, i64>,
+    server_counts: Option<BTreeMap<String, i64>>,
     sent: u64,
     received: u64,
 }
@@ -810,9 +818,20 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
     if received > 0 || sent > 0 {
         tracing::info!("synchronisation : {received} modification(s) reçue(s), {sent} envoyée(s)");
     }
+    // Comptes pour le diagnostic : ici, et sur le serveur une fois nos envois reçus
+    let mut local_counts = BTreeMap::new();
+    {
+        let conn = app.db.conn();
+        for c in &offered {
+            local_counts.insert(c.to_string(), export(&conn, c, &enabled).map_err(db_err)?.len() as i64);
+        }
+    }
+    let server_counts = server_info(&app.http, &cfg.url, &cfg.code).await.ok().and_then(|i| i.counts);
     Ok(Outcome {
         server_collections: offered.iter().map(|c| c.to_string()).collect(),
         collections: enabled.iter().map(|c| c.to_string()).collect(),
+        local_counts,
+        server_counts,
         sent,
         received,
     })
@@ -850,6 +869,8 @@ pub fn spawn(app: Arc<App>) {
                         v.status = "ok".into();
                         v.error = None;
                         v.server_collections = o.server_collections;
+                        v.local_counts = o.local_counts;
+                        v.server_counts = o.server_counts;
                         v.collections = o.collections;
                         v.last_sync = Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
                         v.sent += o.sent;
@@ -924,6 +945,19 @@ pub async fn test_sync(app: State<'_, Arc<App>>, url: String, code: Option<Strin
         None => app.secrets.load_raw(CODE_KEY).filter(|c| !c.is_empty()).ok_or("Indique le code du serveur")?,
     };
     server_info(&app.http, &url, &code).await
+}
+
+/// Tout relire depuis le serveur : état de synchronisation oublié, le serveur fait foi pour
+/// ce qu'il contient ; ce qui n'existe qu'ici est renvoyé
+#[tauri::command]
+pub fn sync_resync(app: State<'_, Arc<App>>) -> Result<(), String> {
+    let conn = app.db.conn();
+    conn.execute("DELETE FROM sync_state", []).map_err(db_err)?;
+    set_meta(&conn, "cursor", "0").map_err(db_err)?;
+    drop(conn);
+    tracing::info!("synchronisation : relecture complète demandée");
+    app.sync.poke();
+    Ok(())
 }
 
 /// Collections à ne pas synchroniser sur ce poste

@@ -32,6 +32,7 @@ const commands = ref<[string, number][]>([])
 const replies = ref<BotReply[]>([])
 const kind = ref<string>(ALL)
 const command = ref<string | undefined>(undefined)
+const author = ref('')
 const loading = ref(false)
 const more = ref(false)
 const PAGE = 200
@@ -47,6 +48,7 @@ async function load(append = false) {
       channel: props.channel,
       kinds: kind.value === ALL ? [] : [kind.value],
       command: command.value ?? null,
+      author: author.value.trim() || null,
       beforeId: before
     })
     entries.value = append ? [...entries.value, ...page] : page
@@ -74,10 +76,31 @@ watch(open, (isOpen) => {
   if (!isOpen) return
   kind.value = ALL
   command.value = undefined
+  author.value = ''
   entries.value = []
   void refresh()
 })
 watch([kind, command], () => { if (open.value) void load() })
+// Recherche par auteur : relue une fois la frappe terminée
+let authorTimer: ReturnType<typeof setTimeout> | null = null
+watch(author, () => {
+  if (authorTimer) clearTimeout(authorTimer)
+  authorTimer = setTimeout(() => { if (open.value) void load() }, 300)
+})
+
+// Gagnant non détecté : désigné à la main (giveaway ouvert de la chaîne, sinon le plus récent)
+const confirmWinner = ref<string | null>(null)
+async function setWinner() {
+  const winner = confirmWinner.value
+  if (!winner || !props.channel) return
+  confirmWinner.value = null
+  try {
+    await invoke('set_manual_winner', { channel: props.channel, winner })
+    toast.add({ title: `${winner} désigné gagnant`, color: 'success', icon: 'i-lucide-trophy' })
+  } catch (e) {
+    toast.add({ title: 'Gagnant non enregistré', description: String(e), color: 'error' })
+  }
+}
 
 function time(iso: string) {
   const d = new Date(iso)
@@ -118,6 +141,7 @@ function time(iso: string) {
             aria-label="Commande"
           />
           <UButton v-if="command" label="Toutes les commandes" size="xs" color="neutral" variant="ghost" icon="i-lucide-x" @click="command = undefined" />
+          <UInput id="chat-log-author" v-model="author" icon="i-lucide-search" placeholder="Rechercher un auteur" class="w-48" />
           <span class="flex-1" />
           <UButton icon="i-lucide-refresh-cw" color="neutral" variant="soft" :loading="loading" aria-label="Actualiser" title="Actualiser" @click="refresh" />
         </div>
@@ -131,6 +155,7 @@ function time(iso: string) {
                 <th class="text-left px-3 py-2">Type</th>
                 <th class="text-left px-3 py-2">Commande</th>
                 <th class="text-left px-3 py-2">Message</th>
+                <th class="text-center px-3 py-2">Gagnant</th>
               </tr>
             </thead>
             <tbody>
@@ -143,9 +168,23 @@ function time(iso: string) {
                   <span v-else class="text-muted">—</span>
                 </td>
                 <td class="px-3 py-1.5 break-words min-w-64">{{ e.message }}</td>
+                <td class="px-3 py-1.5">
+                  <div class="flex justify-center">
+                    <UButton
+                      v-if="e.kind !== 'winner' && e.kind !== 'reply'"
+                      icon="i-lucide-trophy"
+                      size="xs"
+                      color="neutral"
+                      variant="ghost"
+                      :aria-label="`Désigner ${e.author} gagnant`"
+                      title="Désigner gagnant du giveaway (tirage non détecté)"
+                      @click="confirmWinner = e.author"
+                    />
+                  </div>
+                </td>
               </tr>
               <tr v-if="!loading && entries.length === 0">
-                <td colspan="5" class="px-3 py-8 text-center text-muted">Rien d'enregistré pour l'instant sur cette chaîne avec ces filtres.</td>
+                <td colspan="6" class="px-3 py-8 text-center text-muted">Rien d'enregistré pour l'instant sur cette chaîne avec ces filtres.</td>
               </tr>
             </tbody>
           </table>
@@ -153,6 +192,18 @@ function time(iso: string) {
         <div v-if="more" class="flex justify-center">
           <UButton label="Messages plus anciens" color="neutral" variant="soft" :loading="loading" @click="load(true)" />
         </div>
+      </div>
+    </template>
+  </UModal>
+
+  <UModal :open="confirmWinner !== null" :title="`Désigner ${confirmWinner ?? ''} gagnant ?`" @update:open="v => { if (!v) confirmWinner = null }">
+    <template #body>
+      <p class="text-sm">{{ confirmWinner }} sera enregistré comme gagnant du giveaway ouvert sur {{ channel }}, ou à défaut du plus récent de cette chaîne.</p>
+    </template>
+    <template #footer>
+      <div class="flex justify-end gap-2 w-full">
+        <UButton label="Annuler" color="neutral" variant="ghost" @click="confirmWinner = null" />
+        <UButton label="Désigner gagnant" icon="i-lucide-trophy" @click="setWinner" />
       </div>
     </template>
   </UModal>

@@ -47,7 +47,8 @@ pub enum TapEvent {
     Joined { source: i64, channel: String },
     Parted { source: i64, channel: String },
     Disconnected { source: i64 },
-    Message { source: i64, channel: String, user: String, text: String },
+    /// `moderator` : modérateur ou streamer de la chaîne (badges du message, infalsifiables)
+    Message { source: i64, channel: String, user: String, text: String, moderator: bool },
 }
 
 /// Connexion vue par le moniteur : identifiant de la source (0 : anonyme, sinon compte)
@@ -133,6 +134,8 @@ async fn connect_once(
     tap: &Tap,
 ) -> Result<(), Failure> {
     let (mut ws, _) = tokio_tungstenite::connect_async(IRC_URL).await?;
+    // Étiquettes des messages : badges (modérateur, streamer) de l'auteur
+    ws.send(Message::text("CAP REQ :twitch.tv/tags")).await?;
     if let ChatAuth::Account { token, .. } = auth {
         ws.send(Message::text(format!("PASS oauth:{token}"))).await?;
     }
@@ -216,12 +219,13 @@ async fn connect_once(
                             tap_send(tap, |source| TapEvent::Parted { source, channel: channel.clone() });
                             let _ = events.send(ChatEvent::Parted(channel)).await;
                         }
-                        Line::Privmsg { nick, channel, text } => {
+                        Line::Privmsg { nick, channel, text, moderator } => {
                             tap_send(tap, |source| TapEvent::Message {
                                 source,
                                 channel: channel.clone(),
                                 user: nick.clone(),
                                 text: text.clone(),
+                                moderator,
                             });
                             if BOTS.contains(&nick.as_str()) {
                                 let _ = events.send(ChatEvent::BotMessage { channel, bot: nick, text }).await;
@@ -281,17 +285,20 @@ enum Line {
     Reconnect,
     SelfJoin(String),
     SelfPart(String),
-    Privmsg { nick: String, channel: String, text: String },
+    Privmsg { nick: String, channel: String, text: String, moderator: bool },
     Other,
 }
 
 fn parse_line(line: &str, login: &str) -> Line {
     let line = line.trim_end_matches('\r');
-    // Les étiquettes IRCv3 (@a=b;…) ne nous servent pas ici
-    let line = match line.strip_prefix('@') {
-        Some(rest) => rest.split_once(' ').map_or("", |(_, r)| r),
-        None => line,
+    // Étiquettes IRCv3 (@a=b;…) : seuls les badges de l'auteur servent
+    let (tags, line) = match line.strip_prefix('@') {
+        Some(rest) => rest.split_once(' ').unwrap_or(("", "")),
+        None => ("", line),
     };
+    let moderator = tags.split(';').filter_map(|t| t.strip_prefix("badges=")).any(|b| {
+        b.split(',').any(|badge| badge.starts_with("moderator/") || badge.starts_with("broadcaster/"))
+    });
     if let Some(arg) = line.strip_prefix("PING ") {
         return Line::Ping(arg.trim_start_matches(':').to_owned());
     }
@@ -317,6 +324,7 @@ fn parse_line(line: &str, login: &str) -> Line {
             nick: nick.to_lowercase(),
             channel: target.trim_start_matches('#').to_lowercase(),
             text: parts.next().unwrap_or("").trim_start_matches(':').to_owned(),
+            moderator,
         },
         _ => Line::Other,
     }
@@ -338,8 +346,21 @@ mod tests {
         assert_eq!(parse_line(":bob!bob@bob.tmi.twitch.tv JOIN #lunarsea", "me"), Line::Other);
         assert_eq!(
             parse_line("@badge-info=;color=#FF0000 :bob!bob@bob.tmi.twitch.tv PRIVMSG #lunarsea :!ticket 5", "me"),
-            Line::Privmsg { nick: "bob".into(), channel: "lunarsea".into(), text: "!ticket 5".into() }
+            Line::Privmsg { nick: "bob".into(), channel: "lunarsea".into(), text: "!ticket 5".into(), moderator: false }
         );
+        // Badges : modérateur ou streamer
+        assert_eq!(
+            parse_line("@badge-info=;badges=moderator/1,partner/1;color=#FF0000 :mwetton!m@m.tmi.twitch.tv PRIVMSG #sot :zalmomo a remporté le giveaway", "me"),
+            Line::Privmsg { nick: "mwetton".into(), channel: "sot".into(), text: "zalmomo a remporté le giveaway".into(), moderator: true }
+        );
+        assert!(matches!(
+            parse_line("@badges=broadcaster/1 :sot!sot@sot.tmi.twitch.tv PRIVMSG #sot :salut", "me"),
+            Line::Privmsg { moderator: true, .. }
+        ));
+        assert!(matches!(
+            parse_line("@badges=subscriber/12;display-name=moderator/x :bob!b@b.tmi.twitch.tv PRIVMSG #sot :hi", "me"),
+            Line::Privmsg { moderator: false, .. }
+        ));
         assert_eq!(parse_line(":tmi.twitch.tv RECONNECT", "me"), Line::Reconnect);
     }
 }

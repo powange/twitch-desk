@@ -22,7 +22,7 @@ pub enum BotEvent {
 pub const CHAT_BOTS: &[&str] = &["streamelements", "wizebot", "nightbot", "phuzzybot"];
 
 // Faux « gagnants » : « Nobody won… », « Personne a gagné… », « @x, you won… »
-const NON_WINNER_NAMES: &[&str] = &["nobody", "noone", "no", "personne", "someone", "somebody", "you"];
+const NON_WINNER_NAMES: &[&str] = &["nobody", "noone", "no", "one", "personne", "someone", "somebody", "you"];
 // Un login Twitch fait au plus 25 caractères
 const MAX_NAME_LENGTH: usize = 25;
 
@@ -48,6 +48,10 @@ static PURCHASE: LazyLock<Regex> =
 static GENERIC_WIN_FR: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?i)f[ée]licitations?\s*,?\s*@?([A-Za-z0-9_]{3,25})\b[^@]*?\b(?:vous\s+avez|tu\s+as|a)\s+gagn[ée]")
 });
+// « 🎉 zalmomo a remporté le giveaway, bravo ! », « Bob wins the raffle »
+static GENERIC_WIN_SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"(?i)(?:^|[\s:!,.])@?([A-Za-z0-9_]{3,25})\s+(?:a\s+(?:gagn[ée]|remport[ée])|remporte|gagne|has\s+won|won|wins)\s+(?:le|la|l'|the)\s*(?:giveaway|concours|tirage|raffle|loterie|cadeau)")
+});
 static GENERIC_WIN_EN: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?i)congrat(?:ulation)?s?\s*,?\s*@?([A-Za-z0-9_]{3,25})\b[^@]*?\b(?:you\s+(?:have\s+)?won|has\s+won)\b")
 });
@@ -59,8 +63,16 @@ pub fn is_bot_like(user: &str) -> bool {
 }
 
 fn generic_winner(bot: &str, message: &str) -> Option<BotEvent> {
-    let c = GENERIC_WIN_FR.captures(message).or_else(|| GENERIC_WIN_EN.captures(message))?;
+    let c = GENERIC_WIN_FR
+        .captures(message)
+        .or_else(|| GENERIC_WIN_EN.captures(message))
+        .or_else(|| GENERIC_WIN_SUBJECT.captures(message))?;
     winner(bot, c.get(1).map(|m| m.as_str()), None)
+}
+
+/// Annonce de gagnant écrite par un modérateur ou le streamer (formulations générales seulement)
+pub fn moderator_winner(author: &str, message: &str) -> Option<BotEvent> {
+    generic_winner(author, message)
 }
 
 pub fn is_non_winner_name(name: &str) -> bool {
@@ -116,8 +128,9 @@ pub fn parse_bot_message(user: &str, message: &str) -> Vec<BotEvent> {
         _ => vec![],
     };
     let mut events: Vec<BotEvent> = events.into_iter().flatten().collect();
-    // Format d'annonce non reconnu ci-dessus : formulation générale
-    if !events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) {
+    // Autre bot (moobot, sery_bot…) : formulations générales ; les bots connus gardent leurs
+    // formats, et un spectateur n'est jamais pris pour un bot
+    if !is_chat_bot(&bot) && is_bot_like(&bot) && !events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) {
         events.extend(generic_winner(&bot, message));
     }
     events
@@ -149,6 +162,18 @@ mod tests {
         );
         assert_eq!(parse_bot_message("moobot", "Congrats @Bob_42, you won the raffle!"), vec![win("moobot", "Bob_42", None)]);
         assert_eq!(parse_bot_message("fossabot", "Félicitations à tous, tu as gagné quoi ?"), vec![]);
+        assert_eq!(
+            parse_bot_message("moobot", "🎉🎉🎉 zalmomo a remporté le giveaway, bravo ! 🎉🎉🎉"),
+            vec![win("moobot", "zalmomo", None)]
+        );
+        assert_eq!(parse_bot_message("moobot", "Personne a gagné le tirage"), vec![]);
+        // Annonce réelle de MwettonBot sur seaofthieves_france
+        assert_eq!(
+            parse_bot_message("MwettonBot", "🎉🎉🎉 zalmomo a remporté le giveaway, bravo ! 🎉🎉🎉"),
+            vec![win("mwettonbot", "zalmomo", None)]
+        );
+        assert_eq!(moderator_winner("lunarsea", "Bob_42 wins the raffle!"), Some(win("lunarsea", "Bob_42", None)));
+        assert_eq!(moderator_winner("lunarsea", "le giveaway commence, tapez !join"), None);
         assert!(is_bot_like("Sery_Bot") && is_bot_like("streamelements") && !is_bot_like("bobby"));
     }
 

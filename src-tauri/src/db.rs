@@ -1415,6 +1415,7 @@ impl Db {
         channel: &str,
         kinds: &[String],
         command: Option<&str>,
+        author: Option<&str>,
         before_id: Option<i64>,
         limit: usize,
     ) -> DbResult<Vec<ChatLogEntry>> {
@@ -1426,9 +1427,11 @@ impl Db {
                AND (?2 = '[]' OR kind IN (SELECT value FROM json_each(?2)))
                AND (?3 IS NULL OR command = ?3)
                AND (?4 IS NULL OR id < ?4)
+               AND (?6 IS NULL OR instr(author, ?6) > 0)
              ORDER BY id DESC LIMIT ?5",
         )?;
-        let rows = stmt.query_map(params![channel, kinds_json, command, before_id, limit as i64], |r| {
+        let author = author.map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty());
+        let rows = stmt.query_map(params![channel, kinds_json, command, before_id, limit as i64, author], |r| {
             Ok(ChatLogEntry {
                 id: r.get(0)?,
                 channel: r.get(1)?,
@@ -1720,11 +1723,12 @@ mod tests {
             e("winner", "streamelements", None, "Le gagnant est bob", "2026-11-01T10:00:03Z"),
         ])
         .unwrap();
-        assert_eq!(db.chat_log("lunarsea", &[], None, None, 10).unwrap().len(), 4);
-        assert_eq!(db.chat_log("lunarsea", &["own".into(), "winner".into()], None, None, 10).unwrap().len(), 2);
-        let joins = db.chat_log("lunarsea", &[], Some("!join"), None, 10).unwrap();
+        assert_eq!(db.chat_log("lunarsea", &[], None, None, None, 10).unwrap().len(), 4);
+        assert_eq!(db.chat_log("lunarsea", &["own".into(), "winner".into()], None, None, None, 10).unwrap().len(), 2);
+        let joins = db.chat_log("lunarsea", &[], Some("!join"), None, None, 10).unwrap();
         assert_eq!(joins.iter().map(|x| x.author.as_str()).collect::<Vec<_>>(), vec!["eve", "bob"]);
-        assert_eq!(db.chat_log("lunarsea", &[], None, Some(joins[0].id), 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log("lunarsea", &[], None, None, Some(joins[0].id), 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log("lunarsea", &[], None, Some(" EV "), None, 10).unwrap().len(), 1);
         assert_eq!(db.chat_log_commands("lunarsea").unwrap(), vec![("!join".to_owned(), 2)]);
         assert_eq!(db.prune_chat_log("2026-11-01T10:00:02Z").unwrap(), 2);
 

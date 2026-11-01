@@ -231,7 +231,29 @@ function share(g: GiveawayView) {
           <UTooltip v-if="g.command" text="Copier la commande">
             <button type="button" class="font-mono bg-elevated px-1.5 py-0.5 rounded hover:text-primary" @click="copyCommand(g.command)">{{ g.command }}</button>
           </UTooltip>
-          <GiveawayConditions :details="g" :kind="g.kind" />
+          <!-- Follow requis : cœur rempli si suivie par tous tes comptes, sinon cliquable pour suivre -->
+          <UTooltip v-if="g.requireFollow" :text="followTooltip(g)">
+            <button
+              v-if="notFollowing(g.channel).length"
+              type="button"
+              class="inline-flex items-center gap-0.5 text-warning hover:text-pink-500 disabled:opacity-50"
+              :disabled="following === g.channel"
+              :aria-label="`Suivre ${g.channel}`"
+              @click="followChannel(g.channel)"
+            >
+              <UIcon :name="following === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="following === g.channel ? 'animate-spin' : ''" />
+              <span v-if="g.followMinDays" class="text-xs font-medium">{{ g.followMinDays }} j</span>
+            </button>
+            <span
+              v-else
+              class="inline-flex items-center gap-0.5"
+              :class="followOk(g) ? 'text-success' : tooRecent(g).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'"
+            >
+              <UIcon name="i-lucide-heart" class="size-4" :class="followOk(g) ? 'fill-current' : ''" />
+              <span v-if="g.followMinDays" class="text-xs font-medium">{{ g.followMinDays }} j</span>
+            </span>
+          </UTooltip>
+          <GiveawayConditions :details="{ ...g, requireFollow: g.requireFollow ? null : g.requireFollow }" :kind="g.kind" />
           <span v-if="g.drawAt" class="text-sm text-muted inline-flex items-center gap-1"><UIcon name="i-lucide-clock" class="size-4" />Tirage {{ formatDrawAt(g.drawAt) }}</span>
           <UTooltip v-if="g.evidence" :text="evidenceText(g)">
             <span class="text-sm text-muted underline decoration-dotted cursor-help">{{ share(g) }} % du chat</span>
