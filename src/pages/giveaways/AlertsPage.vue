@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
+import { useWatchStream } from '../../utils/viewer'
 import { channelUrl, timeAgo } from '../../utils/format'
 import type { GiveawayView, ParticipationResult } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
@@ -14,6 +15,7 @@ import { GIVEAWAY_KIND, formatDrawAt } from '../../utils/giveaways'
 const { snapshot, accounts } = useSnapshot()
 const toast = useToast()
 const openExternal = useOpenExternal()
+const watchStream = useWatchStream()
 
 const view = computed(() => snapshot.value?.giveaways)
 const giveaways = computed(() => view.value?.giveaways ?? [])
@@ -143,6 +145,7 @@ function share(g: GiveawayView) {
             <UButton v-if="g.url" label="Voir le giveaway" icon="i-lucide-external-link" size="sm" @click="openExternal(g.url)" />
             <UButton label="Acheter des tickets" icon="i-lucide-ticket" size="sm" color="neutral" variant="soft" to="/streamelements" />
           </template>
+          <UButton label="Regarder" icon="i-lucide-tv" size="sm" color="neutral" variant="soft" title="Ajouter le stream à la fenêtre multi-stream" @click="watchStream(g.channel)" />
           <UButton label="Modifier" icon="i-lucide-pencil" size="sm" color="neutral" variant="ghost" @click="openForm(g)" />
           <UButton label="Ignorer" size="sm" color="neutral" variant="ghost" @click="invoke('dismiss_giveaway', { id: g.id })" />
         </div>
@@ -245,6 +248,7 @@ function share(g: GiveawayView) {
                     :loading="participating === g.id"
                     @click="participate(g)"
                   />
+                  <UButton v-if="g.open" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${g.channel}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(g.channel)" />
                   <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
                   <UButton v-if="g.open" label="Clore" size="xs" color="neutral" variant="ghost" @click="invoke('close_giveaway', { id: g.id })" />
                   <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" aria-label="Supprimer" @click="invoke('delete_giveaway', { id: g.id })" />

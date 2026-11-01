@@ -3,6 +3,7 @@ import { computed, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
+import { useWatchStream } from '../../utils/viewer'
 import { boxArt, channelUrl, formatNumber } from '../../utils/format'
 import type { Gift, GiveawayChannelView, GiveawayView } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
@@ -13,6 +14,7 @@ import { GIVEAWAY_KIND } from '../../utils/giveaways'
 const { snapshot } = useSnapshot()
 const toast = useToast()
 const openExternal = useOpenExternal()
+const watchStream = useWatchStream()
 
 const view = computed(() => snapshot.value?.giveaways)
 const hasCategories = computed(() => (view.value?.games.length ?? 0) > 0)
@@ -320,6 +322,7 @@ async function confirmRemove() {
             </td>
             <td class="px-3 py-2">
               <div class="flex justify-end items-center gap-1">
+                <UButton v-if="c.live" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${c.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(c.login)" />
                 <UButton
                   v-if="openGiveaway(c)"
                   label="Modifier le giveaway"

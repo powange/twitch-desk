@@ -16,6 +16,26 @@ const lastCheck = ref<Date | null>(null)
 const error = ref<string | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
 
+// Messages du module de mise à jour traduits en phrases compréhensibles
+export function friendlyUpdateError(e: unknown): string {
+  const raw = String(e)
+  const m = raw.toLowerCase()
+  // latest.json publié par la compilation Linux avant celle de Windows
+  if (m.includes('platforms') && (m.includes('fallback') || m.includes('not found') || m.includes('were found'))) {
+    return 'Une nouvelle version est en cours de publication, mais celle pour Windows n\'est pas encore prête. Réessaie dans quelques minutes.'
+  }
+  if (m.includes('signature')) {
+    return 'La mise à jour téléchargée n\'a pas une signature valide : elle n\'a pas été installée.'
+  }
+  if (m.includes('successful status code') || m.includes('status code')) {
+    return 'Le serveur des mises à jour ne répond pas pour l\'instant. Réessaie plus tard.'
+  }
+  if (m.includes('error sending request') || m.includes('dns') || m.includes('timed out') || m.includes('connect')) {
+    return 'Impossible de joindre GitHub pour vérifier les mises à jour. Vérifie ta connexion à internet.'
+  }
+  return raw
+}
+
 async function checkNow(): Promise<boolean> {
   if (checking.value || installing.value) return available.value !== null
   checking.value = true
@@ -23,7 +43,7 @@ async function checkNow(): Promise<boolean> {
   try {
     available.value = await check()
   } catch (e) {
-    error.value = String(e)
+    error.value = friendlyUpdateError(e)
   } finally {
     checking.value = false
     lastCheck.value = new Date()
@@ -50,7 +70,7 @@ async function install() {
     })
     await relaunch()
   } catch (e) {
-    error.value = String(e)
+    error.value = friendlyUpdateError(e)
     installing.value = false
   }
 }

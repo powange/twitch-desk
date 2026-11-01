@@ -10,6 +10,7 @@ mod secrets;
 mod streamelements;
 mod sync;
 mod tray;
+mod viewer;
 mod twitch;
 
 use std::path::Path;
@@ -115,7 +116,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+            // Seule la fenêtre principale se cache dans la zone de notification ; les autres
+            // (multi-stream) se ferment vraiment
+            if let (WindowEvent::CloseRequested { api, .. }, "main") = (event, window.label()) {
                 let to_tray = window
                     .app_handle()
                     .try_state::<Arc<app::App>>()
@@ -148,6 +151,7 @@ pub fn run() {
             commands::buy_se_tickets,
             commands::set_se_refresh,
             commands::set_max_balance,
+            viewer::watch_stream,
             commands::list_logs,
             commands::read_log,
             commands::export_log,
