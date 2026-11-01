@@ -19,6 +19,7 @@ use tokio::time::interval;
 
 use crate::app::{AccountStatus, AccountView, App, ChannelState, ChannelView, EventKind, SeAccount};
 use crate::db::{Account, Channel, STREAMELEMENTS, TWITCH};
+use crate::drops::DropsEngine;
 use crate::secrets::Secrets;
 use crate::streamelements::{self, Giveaway, Loyalty, SeError, TicketUpdate};
 use crate::twitch::chat::{self, ChatEvent};
@@ -58,6 +59,8 @@ pub enum MinerCommand {
     Reload,
     /// Réévaluer tout de suite (pause / reprise)
     Wake,
+    /// Relire l'inventaire des drops tout de suite
+    RefreshDrops,
     /// Tickets connus après un achat depuis l'app
     SeTickets { channel_id: i64, giveaway_id: String, tickets: i64 },
 }
@@ -133,15 +136,16 @@ pub fn se_poll_minutes(setting: Option<i64>, loyalty_interval: Option<u64>) -> D
     Duration::from_secs(minutes * 60)
 }
 
-/// Indices des chaînes à regarder : les premières de la liste qui sont en live
-pub fn select_watched(candidates: &[(bool, bool, bool)]) -> Vec<usize> {
+/// Indices des chaînes à regarder : les premières de la liste qui sont en live,
+/// dans la limite des `slots` places restantes (les drops en prennent une)
+pub fn select_watched(candidates: &[(bool, bool, bool)], slots: usize) -> Vec<usize> {
     // (activée, en live, en pause après erreurs)
     candidates
         .iter()
         .enumerate()
         .filter(|(_, (enabled, live, cooling))| *enabled && *live && !*cooling)
         .map(|(i, _)| i)
-        .take(MAX_WATCHED)
+        .take(slots)
         .collect()
 }
 
@@ -169,6 +173,7 @@ struct Miner {
     /// Jeton du compte StreamElements (lecture exacte et achat de nos tickets)
     se_token: Option<String>,
     se_token_refused: bool,
+    drops: DropsEngine,
     last_validate: Instant,
     day: chrono::NaiveDate,
 }
@@ -192,6 +197,7 @@ pub async fn run(app: Arc<App>, account: Account, mut commands: mpsc::Receiver<M
         chat_refused: false,
         se_token: None,
         se_token_refused: false,
+        drops: DropsEngine::default(),
         last_validate: Instant::now(),
         day: chrono::Local::now().date_naive(),
     };
@@ -235,6 +241,7 @@ impl Miner {
             self.status = AccountStatus::Running;
             self.app.log(&self.account.login, EventKind::Info, "Compte connecté");
             self.reload_channels();
+            self.reload_drop_games();
             self.load_se_token();
             self.restart_pubsub();
             self.publish();
@@ -264,12 +271,14 @@ impl Miner {
                             self.reload_account();
                             self.load_se_token();
                             self.reload_channels();
+                            self.reload_drop_games();
                             // Simple changement d'ordre ou de réglage : pas de reconnexion
                             if self.channel_ids() != before {
                                 self.restart_pubsub();
                             }
                         }
                         Some(MinerCommand::Wake) => {}
+                        Some(MinerCommand::RefreshDrops) => self.drops.refresh_inventory(),
                         Some(MinerCommand::SeTickets { channel_id, giveaway_id, tickets }) => {
                             self.on_se_tickets(channel_id, &giveaway_id, tickets);
                         }
@@ -391,6 +400,10 @@ impl Miner {
         if let Some(a) = self.app.db.accounts().ok().and_then(|all| all.into_iter().find(|a| a.id == self.account.id)) {
             self.account = a;
         }
+    }
+
+    fn reload_drop_games(&mut self) {
+        self.drops.set_games(self.app.db.drop_games(self.account.id).unwrap_or_default());
     }
 
     fn reload_channels(&mut self) {
@@ -721,11 +734,26 @@ impl Miner {
 
         self.check_lives(&gql, now).await?;
 
-        // Choix des chaînes regardées
+        // Drops : passent avant les points et occupent une des 2 places
+        let not_paused = !self.app.is_paused();
+        match self.drops.step(&self.app, &self.account, &gql, not_paused).await {
+            Err(TwitchError::Unauthorized) => self.reauth().await?,
+            Err(e) => tracing::warn!("drops : {e}"),
+            Ok(()) => {}
+        }
+        let drop_login = self.drops.watching_login().map(str::to_owned);
+
+        // Choix des chaînes regardées pour les points
         let selected = if self.active() {
-            let candidates: Vec<_> =
-                self.channels.iter().map(|c| (c.ch.farms_points(), c.live.is_some(), c.cooling(now))).collect();
-            select_watched(&candidates)
+            let candidates: Vec<_> = self
+                .channels
+                .iter()
+                .map(|c| {
+                    let taken = drop_login.as_deref() == Some(c.ch.login.as_str());
+                    (c.ch.farms_points() && !taken, c.live.is_some(), c.cooling(now))
+                })
+                .collect();
+            select_watched(&candidates, MAX_WATCHED - usize::from(drop_login.is_some()))
         } else {
             vec![]
         };
@@ -734,7 +762,9 @@ impl Miner {
             if ch.watching && !watch {
                 ch.watch = ChannelWatch::default();
             }
-            ch.watching = watch;
+            // Chaîne déjà regardée pour les drops : ses points sont comptés aussi
+            let by_drops = ch.ch.farms_points() && drop_login.as_deref() == Some(ch.ch.login.as_str());
+            ch.watching = watch || by_drops;
         }
 
         for i in selected {
@@ -946,6 +976,19 @@ impl Miner {
                     live.viewers = viewers;
                 }
             }
+            PubSubEvent::DropProgress { drop_id, current } => {
+                self.drops.on_progress(&drop_id, current);
+                self.app.touch();
+            }
+            PubSubEvent::DropClaim { instance_id } => {
+                if let Some(gql) = self.gql.clone() {
+                    match self.drops.claim_now(&self.app, &self.account, &gql, &instance_id).await {
+                        Err(TwitchError::Unauthorized) => self.reauth().await?,
+                        Err(e) => tracing::warn!("drops : {e}"),
+                        Ok(()) => {}
+                    }
+                }
+            }
             PubSubEvent::Raid { channel_id, target_login, .. } => {
                 if let Some(i) = self.index_of(&channel_id) {
                     let login = self.channels[i].ch.login.clone();
@@ -1006,6 +1049,7 @@ impl Miner {
             status_text: self.status_text.clone(),
             realtime: self.realtime,
             chat_connected: self.chat_connected,
+            drops: self.drops.view(self.account.drops_enabled),
             se_account: match (&self.se_token, self.se_token_refused) {
                 (None, _) => SeAccount::None,
                 (Some(_), false) => SeAccount::Connected,
@@ -1046,7 +1090,8 @@ mod tests {
     fn selection_takes_first_two_live() {
         // (activée, en live, en pause après erreurs)
         let c = [(true, false, false), (true, true, false), (false, true, false), (true, true, true), (true, true, false), (true, true, false)];
-        assert_eq!(select_watched(&c), vec![1, 4]);
-        assert!(select_watched(&[(true, false, false)]).is_empty());
+        assert_eq!(select_watched(&c, 2), vec![1, 4]);
+        assert_eq!(select_watched(&c, 1), vec![1]);
+        assert!(select_watched(&[(true, false, false)], 2).is_empty());
     }
 }

@@ -60,6 +60,23 @@ const MIGRATIONS: &[&str] = &[r#"
 "#, r#"
     -- Relevé du solde StreamElements, en minutes (NULL : automatique, d'après le rythme de la chaîne)
     ALTER TABLE channels ADD COLUMN se_refresh INTEGER;
+"#, r#"
+    -- Drops : module activable par compte, et jeux souhaités par ordre de priorité.
+    -- Un jeu peut être ajouté sans campagne en cours : il est surveillé jusqu'à la suivante.
+    ALTER TABLE accounts ADD COLUMN drops_enabled INTEGER NOT NULL DEFAULT 1;
+    CREATE TABLE drop_games (
+        id INTEGER PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        game_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        UNIQUE (account_id, game_id)
+    );
+"#, r#"
+    -- Jaquette de la catégorie Twitch
+    ALTER TABLE drop_games ADD COLUMN box_art TEXT;
 "#];
 
 /// Liste d'une chaîne : une page de l'interface
@@ -91,6 +108,18 @@ pub struct Account {
     #[serde(skip)]
     pub device_id: String,
     pub points_enabled: bool,
+    pub drops_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DropGame {
+    pub id: i64,
+    pub game_id: String,
+    pub name: String,
+    pub slug: String,
+    pub enabled: bool,
+    pub box_art: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,7 +204,7 @@ impl Db {
 
     pub fn accounts(&self) -> DbResult<Vec<Account>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT id, user_id, login, device_id, points_enabled FROM accounts ORDER BY id")?;
+        let mut stmt = conn.prepare("SELECT id, user_id, login, device_id, points_enabled, drops_enabled FROM accounts ORDER BY id")?;
         let rows = stmt.query_map([], |r| {
             Ok(Account {
                 id: r.get(0)?,
@@ -183,6 +212,7 @@ impl Db {
                 login: r.get(2)?,
                 device_id: r.get(3)?,
                 points_enabled: r.get(4)?,
+                drops_enabled: r.get(5)?,
             })
         })?;
         rows.collect()
@@ -207,6 +237,88 @@ impl Db {
     pub fn set_points_enabled(&self, id: i64, enabled: bool) -> DbResult<()> {
         self.conn().execute("UPDATE accounts SET points_enabled = ?2 WHERE id = ?1", params![id, enabled])?;
         Ok(())
+    }
+
+    pub fn set_drops_enabled(&self, id: i64, enabled: bool) -> DbResult<()> {
+        self.conn().execute("UPDATE accounts SET drops_enabled = ?2 WHERE id = ?1", params![id, enabled])?;
+        Ok(())
+    }
+
+    // --- Jeux souhaités pour les drops ---
+
+    pub fn drop_games(&self, account_id: i64) -> DbResult<Vec<DropGame>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, game_id, name, slug, enabled, box_art FROM drop_games WHERE account_id = ?1 ORDER BY position, id",
+        )?;
+        let rows = stmt.query_map([account_id], |r| {
+            Ok(DropGame {
+                id: r.get(0)?,
+                game_id: r.get(1)?,
+                name: r.get(2)?,
+                slug: r.get(3)?,
+                enabled: r.get(4)?,
+                box_art: r.get(5)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn add_drop_game(
+        &self,
+        account_id: i64,
+        game_id: &str,
+        name: &str,
+        slug: &str,
+        box_art: Option<&str>,
+    ) -> DbResult<()> {
+        let conn = self.conn();
+        let next: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM drop_games WHERE account_id = ?1",
+            [account_id],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO drop_games (account_id, game_id, name, slug, position, box_art)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![account_id, game_id, name, slug, next, box_art],
+        )?;
+        Ok(())
+    }
+
+    /// Jaquette d'un jeu (tous comptes confondus), pour les jeux ajoutés sans
+    pub fn set_drop_game_box_art(&self, game_id: &str, box_art: &str) -> DbResult<()> {
+        self.conn().execute(
+            "UPDATE drop_games SET box_art = ?2 WHERE game_id = ?1 AND box_art IS NULL",
+            params![game_id, box_art],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_drop_game(&self, id: i64) -> DbResult<Option<i64>> {
+        let conn = self.conn();
+        let account: Option<i64> =
+            conn.query_row("SELECT account_id FROM drop_games WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        conn.execute("DELETE FROM drop_games WHERE id = ?1", [id])?;
+        Ok(account)
+    }
+
+    pub fn set_drop_game_enabled(&self, id: i64, enabled: bool) -> DbResult<Option<i64>> {
+        let conn = self.conn();
+        conn.execute("UPDATE drop_games SET enabled = ?2 WHERE id = ?1", params![id, enabled])?;
+        conn.query_row("SELECT account_id FROM drop_games WHERE id = ?1", [id], |r| r.get(0)).optional()
+    }
+
+    pub fn reorder_drop_games(&self, account_id: i64, ids: &[i64]) -> DbResult<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        for (position, id) in ids.iter().enumerate() {
+            tx.execute(
+                "UPDATE drop_games SET position = ?1 WHERE id = ?2 AND account_id = ?3",
+                params![position as i64, id, account_id],
+            )?;
+        }
+        tx.commit()
     }
 
     // --- Chaînes ---
@@ -418,6 +530,25 @@ mod tests {
 
         db.delete_account(a).unwrap();
         assert!(db.channels(a).unwrap().is_empty());
+    }
+
+    #[test]
+    fn drop_games() {
+        let db = Db::memory().unwrap();
+        let a = db.upsert_account("33", "powange", "dev").unwrap();
+        assert!(db.accounts().unwrap()[0].drops_enabled);
+        db.add_drop_game(a, "490377", "Sea of Thieves", "sea-of-thieves", None).unwrap();
+        db.add_drop_game(a, "464339927", "ARC Raiders", "arc-raiders", Some("https://x/arc.jpg")).unwrap();
+        db.add_drop_game(a, "490377", "Sea of Thieves", "sea-of-thieves", None).unwrap(); // doublon ignoré
+        let games = db.drop_games(a).unwrap();
+        assert_eq!(games.len(), 2);
+        db.reorder_drop_games(a, &[games[1].id, games[0].id]).unwrap();
+        assert_eq!(db.drop_games(a).unwrap()[0].name, "ARC Raiders");
+        db.set_drop_game_box_art("490377", "https://x/sot.jpg").unwrap();
+        assert_eq!(db.drop_games(a).unwrap()[1].box_art.as_deref(), Some("https://x/sot.jpg"));
+        assert_eq!(db.set_drop_game_enabled(games[0].id, false).unwrap(), Some(a));
+        assert_eq!(db.remove_drop_game(games[0].id).unwrap(), Some(a));
+        assert_eq!(db.drop_games(a).unwrap().len(), 1);
     }
 
     #[test]

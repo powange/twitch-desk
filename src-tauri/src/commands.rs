@@ -246,6 +246,75 @@ pub fn get_paths(app: AppState) -> Paths {
     }
 }
 
+// --- Drops ---
+
+#[tauri::command]
+pub fn set_drops_enabled(app: AppState, id: i64, enabled: bool) -> CmdResult<()> {
+    app.db.set_drops_enabled(id, enabled).map_err(db_err)?;
+    app.send(id, MinerCommand::Reload);
+    Ok(())
+}
+
+/// Ajoute un jeu souhaité, d'après son nom exact ou l'adresse de sa catégorie Twitch ;
+/// renvoie le nom du jeu
+#[tauri::command]
+pub async fn add_drop_game(app: AppState<'_>, account_id: i64, input: String) -> CmdResult<String> {
+    let input = input.trim().to_owned();
+    if input.is_empty() {
+        return Err("Indique le nom du jeu ou l'adresse de sa catégorie".into());
+    }
+    let account = find_account(&app, account_id)?;
+    let tokens = app.secrets.load(&account.user_id).ok_or("Reconnecte ce compte avant d'ajouter un jeu")?;
+    let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id));
+    let slug = match crate::drops::category_slug(&input) {
+        Some(slug) => slug,
+        None => gql
+            .game_by_name(&input)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|(_, slug)| slug)
+            .ok_or_else(|| format!("Jeu « {input} » introuvable : écris son nom exact comme sur Twitch, ou colle l'adresse de sa catégorie"))?,
+    };
+    let game = gql
+        .game_by_slug(&slug)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Catégorie « {slug} » introuvable sur Twitch"))?;
+    app.db
+        .add_drop_game(account_id, &game.id, &game.name, &slug, game.box_art.as_deref())
+        .map_err(db_err)?;
+    app.send(account_id, MinerCommand::Reload);
+    Ok(game.name)
+}
+
+#[tauri::command]
+pub fn remove_drop_game(app: AppState, id: i64) -> CmdResult<()> {
+    if let Some(account) = app.db.remove_drop_game(id).map_err(db_err)? {
+        app.send(account, MinerCommand::Reload);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_drop_game_enabled(app: AppState, id: i64, enabled: bool) -> CmdResult<()> {
+    if let Some(account) = app.db.set_drop_game_enabled(id, enabled).map_err(db_err)? {
+        app.send(account, MinerCommand::Reload);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn refresh_drops(app: AppState, account_id: i64) {
+    app.send(account_id, MinerCommand::RefreshDrops);
+}
+
+#[tauri::command]
+pub fn reorder_drop_games(app: AppState, account_id: i64, ids: Vec<i64>) -> CmdResult<()> {
+    app.db.reorder_drop_games(account_id, &ids).map_err(db_err)?;
+    app.send(account_id, MinerCommand::Reload);
+    Ok(())
+}
+
 // --- Compte StreamElements (lecture exacte et achat de nos tickets) ---
 
 const SE_LOGIN_URL: &str = "https://id.streamelements.com/auth/twitch?return=https%3A%2F%2Fstreamelements.com%2F";

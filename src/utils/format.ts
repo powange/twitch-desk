@@ -34,6 +34,7 @@ export const EVENT_KIND: Record<EventKind, { icon: string, color: string }> = {
   live: { icon: 'i-lucide-radio', color: 'text-error' },
   offline: { icon: 'i-lucide-moon', color: 'text-muted' },
   raid: { icon: 'i-lucide-swords', color: 'text-warning' },
+  drop: { icon: 'i-lucide-package-open', color: 'text-primary' },
   info: { icon: 'i-lucide-info', color: 'text-info' },
   error: { icon: 'i-lucide-triangle-alert', color: 'text-error' }
 }

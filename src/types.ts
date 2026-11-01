@@ -2,7 +2,7 @@
 
 export type AccountStatus = 'starting' | 'running' | 'expired' | 'error'
 export type ChannelState = 'watching' | 'waiting' | 'offline' | 'disabled' | 'unknown'
-export type EventKind = 'bonus' | 'gain' | 'live' | 'offline' | 'raid' | 'info' | 'error'
+export type EventKind = 'bonus' | 'gain' | 'live' | 'offline' | 'raid' | 'drop' | 'info' | 'error'
 
 export interface StreamInfo {
   broadcastId: string
@@ -54,6 +54,7 @@ export interface AccountView {
   chatConnected: boolean
   // Compte StreamElements du spectateur : lecture exacte et achat des tickets
   seAccount: 'none' | 'connected' | 'expired'
+  drops: DropsView
   channels: ChannelView[]
 }
 
@@ -121,4 +122,59 @@ export interface SeGiveaway {
   totalTickets: number
   totalUsers: number
   botResponses: boolean
+}
+
+// --- Drops ---
+
+export type DropGameStatus = 'unknown' | 'watching' | 'waiting' | 'noStreams' | 'done' | 'noProgress' | 'disabled'
+
+export interface DropGameView {
+  id: number
+  gameId: string
+  name: string
+  slug: string
+  boxArt: string | null
+  enabled: boolean
+  status: DropGameStatus
+  streams: number
+}
+
+export interface DropReward {
+  name: string
+  image: string | null
+}
+
+export interface TimedDrop {
+  id: string
+  name: string
+  requiredMinutes: number
+  currentMinutes: number
+  claimed: boolean
+  instanceId: string | null
+  startsAt: string
+  endsAt: string
+  rewards: DropReward[]
+  preconditions: string[]
+}
+
+export interface DropCampaign {
+  id: string
+  name: string
+  game: { id: string, name: string, slug: string | null, boxArt: string | null }
+  status: string
+  startsAt: string
+  endsAt: string
+  accountLinked: boolean
+  linkUrl: string | null
+  allowedChannels: string[]
+  drops: TimedDrop[]
+}
+
+export interface DropsView {
+  enabled: boolean
+  games: DropGameView[]
+  campaigns: DropCampaign[]
+  target: { gameName: string, login: string, viewers: number, title: string } | null
+  inventoryAt: string | null
+  error: string | null
 }

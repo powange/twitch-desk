@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "updated": "2026-11-01",
   "operations": {
     "VideoPlayerStreamInfoOverlayChannel": [
@@ -23,6 +23,37 @@
     ],
     "JoinRaid": [
       "c6a332a86d1087fbbb1a8623aa01bd1313d2386e7c63be60fdb2d1901f01a4ae"
+    ],
+    "Inventory": [
+      "8337eb8541b314040b0edde0c09c5c7a2783ba1960aa9edfbf3bac16d0fec404",
+      "d86775d0ef16a63a33ad52e80eaff963b2d5b72fada7c991504a57496e1d8e4b",
+      "e7197a7e03be13e423118005966d097a2f44045b3642bfdb70820e01c8129fd6"
+    ],
+    "ViewerDropsDashboard": [
+      "c16bb890cc8ce7647a96ee69cd313d423a378a3dedadf630a1017cde18975feb",
+      "5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619"
+    ],
+    "DropCampaignDetails": [
+      "039277bf98f3130929262cc7c6efd9c141ca3749cb6dca442fc8ead9a53f77c1",
+      "f6396f5ffdde867a8f6f6da18286e4baf02e5b98d14689a69b5af320a4c7b7b8"
+    ],
+    "DropCurrentSessionContext": [
+      "4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b"
+    ],
+    "DropsPage_ClaimDropRewards": [
+      "a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930"
+    ],
+    "DirectoryPage_Game": [
+      "86bcceb4e8b1a51256ff8eed8bd8aae4acacf80d737efe904f84f3aeadf8cafd",
+      "cb5dc816e139dcb8a118f14b4b677d59abc224a4b016c4bc2bb00a47fe0ddec4",
+      "76cb069d835b8a02914c08dc42c421d0dafda8af5b113a3f19141824b901402f"
+    ],
+    "DropsHighlightService_AvailableDrops": [
+      "782dad0f032942260171d2d80a654f88bdd0c5a9dddc392e9bc92218a0f42d20",
+      "9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f"
+    ],
+    "DirectoryGameRedirect": [
+      "1f0300090caceec51f33c5e20647aceff9017f740f223c3c532ba6fa59f6b6cc"
     ]
   }
 }

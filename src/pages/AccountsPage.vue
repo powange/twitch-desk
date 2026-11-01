@@ -183,6 +183,7 @@ async function confirmRemove() {
             <th class="text-left px-3 py-2">Chat</th>
             <th class="text-left px-3 py-2">StreamElements</th>
             <th class="text-center px-3 py-2">Points de chaîne</th>
+            <th class="text-center px-3 py-2">Drops</th>
             <th class="px-3 py-2" />
           </tr>
         </thead>
@@ -232,6 +233,11 @@ async function confirmRemove() {
                 <USwitch :model-value="account.pointsEnabled" :aria-label="`Points pour ${account.login}`" @update:model-value="v => setPoints(account, v)" />
               </div>
             </td>
+            <td class="px-3 py-2.5 text-center">
+              <div class="flex justify-center">
+                <USwitch :model-value="account.drops.enabled" :aria-label="`Drops pour ${account.login}`" @update:model-value="v => invoke('set_drops_enabled', { id: account.id, enabled: v })" />
+              </div>
+            </td>
             <td class="px-3 py-2.5">
               <div class="flex justify-end gap-1">
                 <UButton v-if="account.status === 'expired'" label="Reconnecter" size="xs" @click="connect" />
@@ -241,7 +247,7 @@ async function confirmRemove() {
             </td>
           </tr>
           <tr v-if="accounts.length === 0">
-            <td colspan="7" class="px-3 py-8 text-center text-muted">Aucun compte. Connecte ton premier compte Twitch avec le bouton en haut.</td>
+            <td colspan="8" class="px-3 py-8 text-center text-muted">Aucun compte. Connecte ton premier compte Twitch avec le bouton en haut.</td>
           </tr>
         </tbody>
       </table>

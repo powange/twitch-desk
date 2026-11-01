@@ -24,12 +24,14 @@ pub enum PubSubEvent {
     StreamDown { channel_id: String },
     Viewers { channel_id: String, viewers: u64 },
     Raid { channel_id: String, raid_id: String, target_login: String },
+    DropProgress { drop_id: String, current: i64 },
+    DropClaim { instance_id: String },
     Connection { connected: bool },
 }
 
 /// Sujets écoutés pour un compte et ses chaînes
 pub fn topics_for(user_id: &str, channel_ids: &[String]) -> Vec<String> {
-    let mut topics = vec![format!("community-points-user-v1.{user_id}")];
+    let mut topics = vec![format!("community-points-user-v1.{user_id}"), format!("user-drop-events.{user_id}")];
     for id in channel_ids {
         topics.push(format!("video-playback-by-id.{id}"));
         topics.push(format!("raid.{id}"));
@@ -169,6 +171,17 @@ pub fn parse_message(envelope: &Value) -> Vec<PubSubEvent> {
                 _ => vec![],
             }
         }
+        ("user-drop-events", "drop-progress") => match str_at(data, "/drop_id") {
+            Some(drop_id) => vec![PubSubEvent::DropProgress {
+                drop_id: drop_id.to_owned(),
+                current: data.get("current_progress_min").and_then(Value::as_i64).unwrap_or(0),
+            }],
+            None => vec![],
+        },
+        ("user-drop-events", "drop-claim") => match str_at(data, "/drop_instance_id") {
+            Some(id) => vec![PubSubEvent::DropClaim { instance_id: id.to_owned() }],
+            None => vec![],
+        },
         ("video-playback-by-id", "stream-up") => vec![PubSubEvent::StreamUp { channel_id: topic_id.to_owned() }],
         ("video-playback-by-id", "stream-down") => vec![PubSubEvent::StreamDown { channel_id: topic_id.to_owned() }],
         ("video-playback-by-id", "viewcount") => vec![PubSubEvent::Viewers {
@@ -230,6 +243,14 @@ mod tests {
     }
 
     #[test]
+    fn drop_events() {
+        let p = envelope("user-drop-events.33", json!({"type":"drop-progress","data":{"drop_id":"d1","current_progress_min":42,"required_progress_min":120}}));
+        assert_eq!(parse_message(&p), vec![PubSubEvent::DropProgress { drop_id: "d1".into(), current: 42 }]);
+        let c = envelope("user-drop-events.33", json!({"type":"drop-claim","data":{"drop_instance_id":"33#c#d","drop_id":"d1"}}));
+        assert_eq!(parse_message(&c), vec![PubSubEvent::DropClaim { instance_id: "33#c#d".into() }]);
+    }
+
+    #[test]
     fn unknown_and_broken_messages() {
         assert!(parse_message(&envelope("whatever.1", json!({"type":"x"}))).is_empty());
         assert!(parse_message(&json!({"type":"MESSAGE","data":{"topic":"raid.1","message":"{pas du json"}})).is_empty());
@@ -238,7 +259,8 @@ mod tests {
     #[test]
     fn topics() {
         let t = topics_for("33", &["11".into(), "12".into()]);
-        assert_eq!(t.len(), 5);
+        assert_eq!(t.len(), 6);
+        assert_eq!(t[1], "user-drop-events.33");
         assert_eq!(t[0], "community-points-user-v1.33");
     }
 }

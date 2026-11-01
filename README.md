@@ -6,9 +6,10 @@ Ce que fait l'application aujourd'hui :
 
 - **Points de chaîne Twitch** : visionnage simulé des chaînes choisies, sans lecteur ni téléchargement de la vidéo, et récupération automatique du bonus.
 - **Points StreamElements** : le compte reste connecté au chat des chaînes choisies, ce qui le place dans la liste des spectateurs où StreamElements distribue ses points, au rythme réglé par chaque streamer. Le solde, la règle de gain et le giveaway en cours sont lus sur l'API publique de StreamElements.
+- **Drops** : jeux souhaités par ordre de priorité (même sans campagne en cours), visionnage d'un stream avec les drops activés, réclamation automatique de chaque drop terminé.
 - **Tickets StreamElements** : avec le compte StreamElements connecté (fenêtre de connexion de l'app), lecture exacte de nos tickets et achat de tickets depuis l'application.
 
-Les drops et le suivi des giveaways arrivent dans les versions suivantes.
+Le suivi des giveaways arrive dans une version suivante.
 
 Stack : Tauri 2, cœur en Rust (tokio, reqwest, SQLite), interface Vue 3 + Nuxt UI.
 
@@ -31,6 +32,7 @@ npm run typecheck
 - **Chat** : connexion IRC authentifiée (`irc-ws.chat.twitch.tv`), JOIN des chaînes où la présence est activée, sans jamais envoyer de message. Une connexion anonyme ne suffirait pas : elle n'apparaît pas dans la liste des spectateurs. La présence n'a pas de limite de chaînes.
 - **Compte StreamElements** : l'app ouvre `id.streamelements.com/auth/twitch` dans une fenêtre privée et lit le jeton de session dans le cookie `id_token_creator` (ou `se-token`) de `.streamelements.com`, comme le site. Le jeton est vérifié (`kappa/v2/channels/me`, même identifiant Twitch que le compte) puis rangé dans le trousseau. Nos tickets : `GET kappa/v3/giveaways/{chaîne}/{giveaway}/entry` ; achat : `POST` sur la même adresse avec `{"tickets": n}` (en-tête `Authorization: Bearer <jeton>`).
 - **StreamElements** : `api.streamelements.com/kappa/v2/channels/{login}` donne l'identifiant de la chaîne, `kappa/v2/points/{id}/{pseudo}` le solde (404 tant que le pseudo n'a rien gagné). Adresses non documentées officiellement. Une baisse du solde (tickets achetés) n'est pas comptée comme un gain.
+- **Drops** : le jeton « Android TV » ne voit ni le tableau des campagnes ni leur détail (réponse vide), seulement l'inventaire (campagnes commencées, progression, identifiants de réclamation). Pour un jeu souhaité, l'app cherche dans l'annuaire du jeu les streams avec le filtre `DROPS_ENABLED` ; sans campagne connue, elle fait confirmer par Twitch qu'une campagne est ouverte sur la chaîne (`DropsHighlightService_AvailableDrops`), car un streamer peut garder le tag après une campagne. La chaîne des drops prend une des 2 places de visionnage du compte, avant les points. Progression et fin de drop arrivent par PubSub (`user-drop-events`), réclamation par `DropsPage_ClaimDropRewards`. Après 20 min sans campagne visible, le jeu est mis de côté 1 h.
 - **Requêtes internes (GQL)** : leurs empreintes sont dans [`operations.json`](operations.json). L'application embarque ce fichier et relit la version de la branche `main` au démarrage : quand Twitch change une empreinte, il suffit de corriger ce fichier, sans publier de nouvelle version. Chaque opération accepte plusieurs empreintes, essayées dans l'ordre.
 
 Ces mécanismes reprennent les principes de [TwitchDropsMiner](https://github.com/DevilXD/TwitchDropsMiner), [Twitch-Channel-Points-Miner-v2](https://github.com/rdavydov/Twitch-Channel-Points-Miner-v2) et [twitch-drops-miner](https://github.com/ohne-b/twitch-drops-miner). Aucun code n'en est copié.
@@ -40,7 +42,8 @@ Utiliser ces outils va contre l'esprit des conditions d'utilisation de Twitch : 
 ## Organisation
 
 - `src-tauri/src/twitch/` : connexion (`auth.rs`), requêtes GQL (`gql.rs`), PubSub (`pubsub.rs`), visionnage simulé (`watch.rs`), présence dans le chat (`chat.rs`).
-- `src-tauri/src/streamelements.rs` : solde StreamElements.
+- `src-tauri/src/streamelements.rs` : StreamElements (solde, giveaways, tickets).
+- `src-tauri/src/drops.rs` : drops (campagnes, choix du stream, réclamation).
 - `src-tauri/src/miner.rs` : superviseur d'un compte (choix des chaînes, bonus, événements). Un superviseur isolé par compte.
 - `src-tauri/src/app.rs` : état partagé, envoyé à l'interface par l'événement `snapshot`.
 - `src-tauri/src/db.rs` : base SQLite (comptes, chaînes, gains, réglages).

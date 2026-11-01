@@ -1,6 +1,7 @@
 mod app;
 mod commands;
 mod db;
+mod drops;
 mod miner;
 mod secrets;
 mod streamelements;
@@ -135,6 +136,12 @@ pub fn run() {
             commands::disconnect_streamelements,
             commands::buy_se_tickets,
             commands::set_se_refresh,
+            commands::set_drops_enabled,
+            commands::add_drop_game,
+            commands::remove_drop_game,
+            commands::set_drop_game_enabled,
+            commands::reorder_drop_games,
+            commands::refresh_drops,
         ])
         .run(tauri::generate_context!())
         .expect("démarrage de Twitch Desk");

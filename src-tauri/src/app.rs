@@ -83,6 +83,7 @@ pub struct AccountView {
     pub status_text: Option<String>,
     pub realtime: bool,
     pub chat_connected: bool,
+    pub drops: crate::drops::DropsView,
     pub se_account: SeAccount,
     pub channels: Vec<ChannelView>,
 }
@@ -105,6 +106,7 @@ pub enum EventKind {
     Live,
     Offline,
     Raid,
+    Drop,
     Info,
     Error,
 }
@@ -264,6 +266,7 @@ impl App {
                     status_text: None,
                     realtime: false,
                     chat_connected: false,
+                    drops: crate::drops::DropsEngine::default().view(a.drops_enabled),
                     se_account: SeAccount::None,
                     channels: vec![],
                 })
