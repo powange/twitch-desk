@@ -14,7 +14,9 @@ use crate::db::Settings;
 use crate::twitch::gql::{self, CategoryStream};
 
 const AUTO_EVERY: Duration = Duration::from_secs(3 * 60);
-const STREAMS_PER_CATEGORY: u32 = 100;
+/// Lives lus par catégorie (100 par page) : une grande catégorie dépasse souvent les 100 lives,
+/// et les petits streamers sont en fin de liste
+const STREAMS_PER_CATEGORY: usize = 1000;
 /// Au-delà, une seule notification résume les nouveaux streams
 const MAX_NOTIFICATIONS: usize = 3;
 /// Fiches lues par scan (description, message épinglé), streams les plus regardés d'abord
@@ -177,9 +179,14 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
     let (streams, errors) = if fetch || stale {
         let mut streams = vec![];
         let mut errors = vec![];
+        // Jeton du premier compte : sans lui, Twitch ne donne qu'une page de lives par requête
+        let account_gql = app.db.accounts().ok().and_then(|a| a.into_iter().next()).and_then(|account| {
+            let tokens = app.secrets.load(&account.user_id)?;
+            Some(gql::Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id)))
+        });
         // Toutes les catégories, même décochées : les recocher est alors immédiat
         for game in &games {
-            match gql::category_streams(&app.http, &game.slug, STREAMS_PER_CATEGORY).await {
+            match gql::category_streams(&app.http, account_gql.as_ref(), &game.slug, STREAMS_PER_CATEGORY).await {
                 Ok(list) => streams.extend(list),
                 Err(e) => errors.push(format!("{} : {e}", game.name)),
             }

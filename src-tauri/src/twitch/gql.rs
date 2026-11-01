@@ -134,7 +134,7 @@ impl Gql {
     }
 
     /// Requête écrite en clair (sans empreinte), avec le jeton du compte ; renvoie `data`
-    async fn query(&self, query: &str, variables: Value) -> Result<Value> {
+    pub async fn query(&self, query: &str, variables: Value) -> Result<Value> {
         self.throttle().await;
         let version = client_version(&self.http).await;
         let res = self
@@ -415,22 +415,93 @@ pub struct CategoryStream {
 }
 
 /// Streams en live d'une catégorie (slug), les plus regardés d'abord (requête sans connexion)
-pub async fn category_streams(http: &reqwest::Client, slug: &str, first: u32) -> Result<Vec<CategoryStream>> {
-    if slug.is_empty() || !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+/// Requête des lives d'une catégorie (une page de 100), triés par spectateurs
+fn category_query(slug: &str, sort: &str, after: Option<&str>) -> String {
+    let after_arg = after.map(|c| format!(", after: \"{c}\"")).unwrap_or_default();
+    format!(
+        "query {{ game(slug: \"{slug}\") {{ id displayName streams(first: 100{after_arg}, options: {{ sort: {sort} }}) {{ \
+         edges {{ cursor node {{ title viewersCount createdAt freeformTags {{ name }} \
+         broadcaster {{ login displayName profileImageURL(width: 50) broadcastSettings {{ language }} }} }} }} \
+         pageInfo {{ hasNextPage }} }} }} }}"
+    )
+}
+
+/// Curseur du dernier live d'une page (caractères sûrs seulement : il est recopié dans la requête)
+fn last_cursor(data: &Value) -> Option<String> {
+    data.pointer("/game/streams/edges")
+        .and_then(Value::as_array)
+        .and_then(|e| e.last())
+        .and_then(|e| e.get("cursor"))
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphanumeric() || "=_-+/".contains(ch)))
+        .map(str::to_owned)
+}
+
+fn valid_slug(slug: &str) -> bool {
+    !slug.is_empty() && slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Lives d'une catégorie jusqu'à `max`, les plus regardés d'abord.
+/// Avec un compte (`gql`), toutes les pages sont lues : Twitch exige une vérification
+/// d'intégrité pour les pages suivantes d'une requête anonyme. Sans compte, ou si Twitch
+/// refuse : les 100 plus regardés et les 100 moins regardés (deux requêtes anonymes), pour ne
+/// pas manquer les petits streamers. Tri explicite : sans lui, Twitch ne renvoie qu'une page
+/// « par pertinence »
+pub async fn category_streams(http: &reqwest::Client, gql: Option<&Gql>, slug: &str, max: usize) -> Result<Vec<CategoryStream>> {
+    if !valid_slug(slug) {
         return Ok(vec![]);
     }
-    let query = format!(
-        "query {{ game(slug: \"{slug}\") {{ id displayName streams(first: {first}) {{ edges {{ node {{ \
-         title viewersCount createdAt freeformTags {{ name }} \
-         broadcaster {{ login displayName profileImageURL(width: 50) broadcastSettings {{ language }} }} }} }} }} }} }}"
-    );
-    let value = raw_query(http, &query).await?;
-    if let Some(errors) = value.get("errors") {
-        if value.pointer("/data/game").is_none_or(Value::is_null) {
-            return Err(TwitchError::Gql(format!("streams de {slug} : {errors}")));
+    if let Some(gql) = gql {
+        let mut out: Vec<CategoryStream> = vec![];
+        let mut after: Option<String> = None;
+        let mut failed = false;
+        while out.len() < max {
+            match gql.query(&category_query(slug, "VIEWER_COUNT", after.as_deref()), json!({})).await {
+                Ok(data) => {
+                    let page = parse_category_streams(&json!({ "data": data }));
+                    if page.is_empty() {
+                        break;
+                    }
+                    out.extend(page);
+                    let next = data.pointer("/game/streams/pageInfo/hasNextPage").and_then(Value::as_bool).unwrap_or(false);
+                    after = last_cursor(&data);
+                    if !next || after.is_none() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("scanner : lives de {slug} avec le compte : {e}");
+                    failed = out.is_empty();
+                    break;
+                }
+            }
+        }
+        if !failed {
+            out.truncate(max);
+            return Ok(out);
         }
     }
-    Ok(parse_category_streams(&value))
+    // Anonyme : les plus regardés, puis les moins regardés
+    let mut out: Vec<CategoryStream> = vec![];
+    for sort in ["VIEWER_COUNT", "VIEWER_COUNT_ASC"] {
+        let value = raw_query(http, &category_query(slug, sort, None)).await?;
+        if value.pointer("/data/game").is_none_or(Value::is_null) {
+            if let Some(errors) = value.get("errors") {
+                if out.is_empty() {
+                    return Err(TwitchError::Gql(format!("streams de {slug} : {errors}")));
+                }
+            }
+            continue;
+        }
+        for s in parse_category_streams(&value) {
+            if !out.iter().any(|x| x.login == s.login) {
+                out.push(s);
+            }
+        }
+    }
+    out.sort_by_key(|s| std::cmp::Reverse(s.viewers));
+    out.truncate(max);
+    Ok(out)
 }
 
 fn parse_category_streams(value: &Value) -> Vec<CategoryStream> {
@@ -723,4 +794,5 @@ mod tests {
         assert_eq!(parse_points_context(&without).unwrap().claim_id, None);
         assert_eq!(parse_points_context(&json!({"community":{"channel":null}})), None);
     }
+
 }
