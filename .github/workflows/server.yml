@@ -1,6 +1,7 @@
 name: Serveur de synchronisation
 
-# Image Docker publiée sur ghcr.io/powange/twitch-desk-sync à chaque modification du serveur
+# Image Docker publiée sur ghcr.io/powange/twitch-desk-sync à chaque modification du serveur,
+# puis redéploiement par le webhook Portainer (secret PORTAINER_WEBHOOK_URL, facultatif)
 on:
   push:
     branches: [main]
@@ -14,6 +15,9 @@ permissions:
 jobs:
   image:
     runs-on: ubuntu-24.04
+    env:
+      # Webhook de la pile Portainer (secret du dépôt) : redéploiement une fois l'image publiée
+      PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -46,3 +50,7 @@ jobs:
             org.opencontainers.image.description=Serveur de synchronisation de Twitch Desk
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Déploiement (webhook Portainer)
+        if: env.PORTAINER_WEBHOOK_URL != ''
+        run: curl -fsS -X POST --max-time 60 "$PORTAINER_WEBHOOK_URL" -o /dev/null && echo "Redéploiement demandé à Portainer"
