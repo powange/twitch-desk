@@ -273,20 +273,26 @@ function share(g: GiveawayView) {
               <th class="text-left px-3 py-2">Type</th>
               <th class="text-left px-3 py-2">Commande</th>
               <th class="text-left px-3 py-2">Cadeaux</th>
-              <th class="text-center px-2 py-2">
-                <UTooltip text="Présence requise dans le chat au moment du tirage">
-                  <UIcon name="i-lucide-user-check" class="size-4 align-middle" aria-label="Présence au tirage" />
-                </UTooltip>
+              <th class="px-2 py-2">
+                <div class="flex justify-center">
+                  <UTooltip text="Présence requise dans le chat au moment du tirage">
+                  <UIcon name="i-lucide-user-check" class="size-4 block" aria-label="Présence au tirage" />
+                  </UTooltip>
+                </div>
               </th>
-              <th class="text-center px-2 py-2">
-                <UTooltip text="Être sur le Discord du streamer">
-                  <UIcon name="i-simple-icons-discord" class="size-4 align-middle" aria-label="Discord requis" />
-                </UTooltip>
+              <th class="px-2 py-2">
+                <div class="flex justify-center">
+                  <UTooltip text="Être sur le Discord du streamer">
+                  <UIcon name="i-simple-icons-discord" class="size-4 block" aria-label="Discord requis" />
+                  </UTooltip>
+                </div>
               </th>
-              <th class="text-center px-2 py-2">
-                <UTooltip text="Follow de la chaîne requis (vert : suivie par tous tes comptes ; clique pour suivre sinon)">
-                  <UIcon name="i-lucide-heart" class="size-4 align-middle" aria-label="Follow requis" />
-                </UTooltip>
+              <th class="px-2 py-2">
+                <div class="flex justify-center">
+                  <UTooltip text="Follow de la chaîne requis (vert : suivie par tous tes comptes ; clique pour suivre sinon)">
+                  <UIcon name="i-lucide-heart" class="size-4 block" aria-label="Follow requis" />
+                  </UTooltip>
+                </div>
               </th>
               <th class="text-left px-3 py-2">Tirage</th>
               <th class="text-left px-3 py-2">Participations</th>
@@ -350,46 +356,52 @@ function share(g: GiveawayView) {
                 </div>
               </td>
               <!-- Une colonne par condition : ? inconnu, picto si requis, rien sinon -->
-              <td class="px-2 py-2 text-center">
-                <span v-if="g.requirePresence === null" class="text-muted" title="On ne sait pas">?</span>
-                <UTooltip v-else-if="g.requirePresence" text="Présence requise au moment du tirage">
-                  <UIcon name="i-lucide-user-check" class="size-4 text-emerald-600 dark:text-emerald-400 align-middle" />
-                </UTooltip>
+              <td class="px-2 py-2">
+                <div class="flex justify-center items-center">
+                  <span v-if="g.requirePresence === null" class="text-muted" title="On ne sait pas">?</span>
+                  <UTooltip v-else-if="g.requirePresence" text="Présence requise au moment du tirage">
+                    <UIcon name="i-lucide-user-check" class="size-4 text-emerald-600 dark:text-emerald-400 block" />
+                  </UTooltip>
+                </div>
               </td>
-              <td class="px-2 py-2 text-center">
-                <span v-if="g.requireDiscord === null" class="text-muted" title="On ne sait pas">?</span>
-                <UTooltip v-else-if="g.requireDiscord" text="Être sur le Discord du streamer : clique pour ouvrir son invitation">
-                  <button
-                    type="button"
-                    class="inline-flex text-indigo-600 dark:text-indigo-400 hover:text-indigo-400 disabled:opacity-50"
-                    :disabled="openingDiscord === g.channel"
-                    :aria-label="`Ouvrir le Discord de ${g.channel}`"
-                    @click="openDiscord(g.channel)"
-                  >
-                    <UIcon :name="openingDiscord === g.channel ? 'i-lucide-loader-circle' : 'i-simple-icons-discord'" class="size-4" :class="openingDiscord === g.channel ? 'animate-spin' : ''" />
-                  </button>
-                </UTooltip>
+              <td class="px-2 py-2">
+                <div class="flex justify-center items-center">
+                  <span v-if="g.requireDiscord === null" class="text-muted" title="On ne sait pas">?</span>
+                  <UTooltip v-else-if="g.requireDiscord" text="Être sur le Discord du streamer : clique pour ouvrir son invitation">
+                    <button
+                      type="button"
+                      class="inline-flex text-indigo-600 dark:text-indigo-400 hover:text-indigo-400 disabled:opacity-50"
+                      :disabled="openingDiscord === g.channel"
+                      :aria-label="`Ouvrir le Discord de ${g.channel}`"
+                      @click="openDiscord(g.channel)"
+                    >
+                      <UIcon :name="openingDiscord === g.channel ? 'i-lucide-loader-circle' : 'i-simple-icons-discord'" class="size-4" :class="openingDiscord === g.channel ? 'animate-spin' : ''" />
+                    </button>
+                  </UTooltip>
+                </div>
               </td>
-              <td class="px-2 py-2 text-center">
-                <span v-if="g.requireFollow === null" class="text-muted" title="On ne sait pas">?</span>
-                <UTooltip v-else-if="g.requireFollow" :text="g.open ? followTooltip(g.channel) : 'Follow requis'">
-                  <button
-                    v-if="g.open && notFollowing(g.channel).length"
-                    type="button"
-                    class="inline-flex text-warning hover:text-pink-500 disabled:opacity-50"
-                    :disabled="following === g.channel"
-                    :aria-label="`Suivre ${g.channel}`"
-                    @click="followChannel(g.channel)"
-                  >
-                    <UIcon :name="following === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="following === g.channel ? 'animate-spin' : ''" />
-                  </button>
-                  <UIcon
-                    v-else
-                    name="i-lucide-heart"
-                    class="size-4 align-middle"
-                    :class="g.open && followList(g.channel) && followList(g.channel)!.every(f => f.follows) ? 'text-success fill-current' : 'text-pink-600 dark:text-pink-400'"
-                  />
-                </UTooltip>
+              <td class="px-2 py-2">
+                <div class="flex justify-center items-center">
+                  <span v-if="g.requireFollow === null" class="text-muted" title="On ne sait pas">?</span>
+                  <UTooltip v-else-if="g.requireFollow" :text="g.open ? followTooltip(g.channel) : 'Follow requis'">
+                    <button
+                      v-if="g.open && notFollowing(g.channel).length"
+                      type="button"
+                      class="inline-flex text-warning hover:text-pink-500 disabled:opacity-50"
+                      :disabled="following === g.channel"
+                      :aria-label="`Suivre ${g.channel}`"
+                      @click="followChannel(g.channel)"
+                    >
+                      <UIcon :name="following === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="following === g.channel ? 'animate-spin' : ''" />
+                    </button>
+                    <UIcon
+                      v-else
+                      name="i-lucide-heart"
+                      class="size-4 block"
+                      :class="g.open && followList(g.channel) && followList(g.channel)!.every(f => f.follows) ? 'text-success fill-current' : 'text-pink-600 dark:text-pink-400'"
+                    />
+                  </UTooltip>
+                </div>
               </td>
               <td class="px-3 py-2 whitespace-nowrap" :class="g.drawAt ? '' : 'text-muted'">{{ formatDrawAt(g.drawAt) }}</td>
               <td class="px-3 py-2">
