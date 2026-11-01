@@ -32,6 +32,10 @@ fn window_flags() -> tauri_plugin_window_state::StateFlags {
 /// par la fermeture normale (fenêtre cachée, « Quitter », installation d'une mise à jour)
 pub fn save_windows(app: &tauri::AppHandle) {
     use tauri_plugin_window_state::AppHandleExt;
+    // Fenêtre des streams ouverte : rouverte au prochain lancement
+    if let Some(state) = app.try_state::<Arc<app::App>>() {
+        viewer::remember(&state, true);
+    }
     if let Err(e) = app.save_window_state(window_flags()) {
         tracing::warn!("taille des fenêtres : {e}");
     }
@@ -135,6 +139,7 @@ pub fn run() {
             if let Some(main) = app.get_webview_window("main") {
                 viewer::allow_embedded_twitch_session(&main);
             }
+            viewer::restore(&state);
             sync::spawn(state.clone());
             Ok(())
         })
@@ -215,6 +220,8 @@ pub fn run() {
             commands::get_wins,
             commands::set_prize,
             commands::resolve_category,
+            commands::search_categories,
+            commands::game_box_arts,
             commands::save_streamer,
             scanner::scan_streams,
             scanner::scanner_ignore,

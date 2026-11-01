@@ -539,6 +539,68 @@ fn parse_category_streams(value: &Value) -> Vec<CategoryStream> {
         .unwrap_or_default()
 }
 
+/// Catégorie trouvée par la recherche
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryHit {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub box_art: Option<String>,
+}
+
+/// Recherche de catégories Twitch par nom (autocomplétion), sans compte
+pub async fn search_categories(http: &reqwest::Client, text: &str) -> Result<Vec<CategoryHit>> {
+    let text = text.trim();
+    if text.chars().count() < 2 {
+        return Ok(vec![]);
+    }
+    let value = raw_query(
+        http,
+        &format!(
+            "query {{ searchCategories(query: {}, first: 8) {{ edges {{ node {{ id displayName slug boxArtURL(width: 285, height: 380) }} }} }} }}",
+            Value::String(text.chars().take(60).collect())
+        ),
+    )
+    .await?;
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_owned);
+    Ok(value
+        .pointer("/data/searchCategories/edges")
+        .and_then(Value::as_array)
+        .map(|edges| {
+            edges
+                .iter()
+                .filter_map(|e| e.get("node"))
+                .filter_map(|n| Some(CategoryHit { id: s(n, "id")?, name: s(n, "displayName")?, slug: s(n, "slug")?, box_art: s(n, "boxArtURL") }))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Jaquettes de jeux d'après leur identifiant (50 au plus par appel), sans compte. L'adresse ne
+/// se déduit pas de l'identifiant : les jeux récents ont une forme `<id>_IGDB-…`
+pub async fn box_arts(http: &reqwest::Client, ids: &[String]) -> Result<HashMap<String, String>> {
+    let ids: Vec<&String> = ids.iter().filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit())).take(50).collect();
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let fields: String = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| format!("g{i}: game(id: \"{id}\") {{ id boxArtURL(width: 285, height: 380) }} "))
+        .collect();
+    let value = raw_query(http, &format!("query {{ {fields}}}")).await?;
+    let mut out = HashMap::new();
+    if let Some(data) = value.get("data").and_then(Value::as_object) {
+        for game in data.values() {
+            if let (Some(id), Some(url)) = (game.get("id").and_then(Value::as_str), game.get("boxArtURL").and_then(Value::as_str)) {
+                out.insert(id.to_owned(), url.to_owned());
+            }
+        }
+    }
+    Ok(out)
+}
+
 async fn raw_query(http: &reqwest::Client, query: &str) -> Result<Value> {
     let res = http
         .post(GQL_URL)

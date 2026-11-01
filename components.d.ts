@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AccountPicker: typeof import('./src/components/AccountPicker.vue')['default']
+    CategorySearchInput: typeof import('./src/components/CategorySearchInput.vue')['default']
     ChannelFlag: typeof import('./src/components/ChannelFlag.vue')['default']
     ChannelProfileCard: typeof import('./src/components/ChannelProfileCard.vue')['default']
     ChatLogModal: typeof import('./src/components/ChatLogModal.vue')['default']
@@ -25,6 +26,7 @@ declare module 'vue' {
     PointsChannelSettings: typeof import('./src/components/PointsChannelSettings.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    SolidIcon: typeof import('./src/components/SolidIcon.vue')['default']
     SyncSettings: typeof import('./src/components/SyncSettings.vue')['default']
     UAlert: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Alert.vue')['default']
     UApp: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/App.vue')['default']

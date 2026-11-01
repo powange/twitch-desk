@@ -8,3 +8,12 @@
 body {
   font-variant-numeric: tabular-nums;
 }
+
+/* Tailwind v4 ne met plus de main sur les boutons : tout bouton actif montre qu'il est cliquable
+   (pictos des conditions, commandes à copier, noms de chaîne…) */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+}

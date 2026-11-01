@@ -936,6 +936,18 @@ pub fn set_prize(app: AppState, id: i64, received: bool, note: Option<String>) -
 }
 
 /// Catégorie Twitch (jeu) d'après son nom exact ou l'adresse de sa catégorie
+/// Autocomplétion des catégories Twitch
+#[tauri::command]
+pub async fn search_categories(app: AppState<'_>, query: String) -> CmdResult<Vec<crate::twitch::gql::CategoryHit>> {
+    crate::twitch::gql::search_categories(&app.http, &query).await.map_err(|e| e.to_string())
+}
+
+/// Jaquettes de jeux d'après leur identifiant (identifiant → adresse)
+#[tauri::command]
+pub async fn game_box_arts(app: AppState<'_>, ids: Vec<String>) -> CmdResult<std::collections::HashMap<String, String>> {
+    crate::twitch::gql::box_arts(&app.http, &ids).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn resolve_category(app: AppState<'_>, input: String) -> CmdResult<crate::drops::Game> {
     let input = input.trim().to_owned();

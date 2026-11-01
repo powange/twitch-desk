@@ -12,6 +12,7 @@ import MonitoredChannelSettings from '../../components/MonitoredChannelSettings.
 import ChatLogModal from '../../components/ChatLogModal.vue'
 import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
+import SolidIcon from '../../components/SolidIcon.vue'
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
@@ -296,7 +297,7 @@ async function confirmRemove() {
                     <img v-if="x.gift.image" :src="x.gift.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
                     <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
                     <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
-                    <UIcon v-if="x.gift.favorite" name="i-lucide-star" class="absolute -bottom-1 -right-1 size-3 text-warning fill-current" />
+                    <SolidIcon v-if="x.gift.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
                   </span>
                 </UTooltip>
                 <span v-if="channelGifts(c).length === 0" class="text-muted">—</span>

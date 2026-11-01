@@ -61,7 +61,49 @@ pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(),
         let _ = window.set_focus();
         return Ok(());
     }
-    let query = format!("channels={login}&chat={login}");
+    open_window(&app, &format!("channels={login}&chat={login}"))?;
+    Ok(())
+}
+
+/// Adresse de la page multi-stream gardée : seuls les caractères qu'elle produit sont admis
+fn clean_query(query: &str) -> Option<String> {
+    let ok = !query.is_empty() && query.len() <= 4000 && query.chars().all(|c| c.is_ascii_alphanumeric() || "_,:=&.%-".contains(c));
+    ok.then(|| query.to_owned())
+}
+
+/// Garde la fenêtre des streams (streams, chat, vidéo, volume, qualité) pour la rouvrir au
+/// prochain lancement ; `open` : à rouvrir (faux quand l'utilisateur la ferme lui-même)
+pub fn remember(app: &App, open: bool) {
+    let Some(window) = app.handle().get_webview_window(LABEL) else { return };
+    if let Some(query) = window.url().ok().and_then(|u| u.query().and_then(clean_query)) {
+        let _ = app.db.set_state("viewer_query", &query);
+    }
+    let _ = app.db.set_state("viewer_open", if open { "1" } else { "0" });
+}
+
+/// Au lancement : rouvre la fenêtre des streams si elle était ouverte, telle qu'elle était ;
+/// puis la garde toutes les 20 s (mise à jour ou arrêt brutal)
+pub fn restore(app: &Arc<App>) {
+    if app.db.get_state("viewer_open").as_deref() == Some("1") {
+        if let Some(query) = app.db.get_state("viewer_query").and_then(|q| clean_query(&q)) {
+            if let Err(e) = open_window(app, &query) {
+                tracing::warn!("fenêtre des streams : {e}");
+            }
+        }
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+            if app.handle().get_webview_window(LABEL).is_some() {
+                remember(&app, true);
+            }
+        }
+    });
+}
+
+fn open_window(app: &App, query: &str) -> Result<(), String> {
+    let handle = app.handle();
     let source = if app.db.settings().viewer_source == "github" {
         let url = format!("{}?{query}", viewer_url());
         WebviewUrl::External(url.parse().map_err(|_| "Adresse de la page des streams invalide".to_owned())?)
@@ -80,6 +122,25 @@ pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(),
         .inner_size(1280.0, 760.0)
         .min_inner_size(480.0, 320.0)
         .menu(menu(handle).map_err(|e| format!("menu : {e}"))?)
+        // Bouton « Fermer la page » de la page vide : adresse convenue (…?close=1)
+        .on_navigation({
+            let handle = handle.clone();
+            move |url| {
+                if url.query() == Some("close=1") {
+                    let handle = handle.clone();
+                    let _ = handle.clone().run_on_main_thread(move || {
+                        if let Some(app) = handle.try_state::<Arc<App>>() {
+                            let _ = app.db.set_state("viewer_open", "0");
+                        }
+                        if let Some(w) = handle.get_webview_window(LABEL) {
+                            let _ = w.destroy();
+                        }
+                    });
+                    return false;
+                }
+                true
+            }
+        })
         // Fenêtres surgissantes : celles de Twitch (connexion au chat) s'ouvrent dans
         // l'application, les autres liens dans le navigateur
         .on_new_window({
@@ -112,6 +173,15 @@ pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(),
             }
         }
         _ => {}
+    });
+    // Fermée par l'utilisateur : ne pas la rouvrir au prochain lancement
+    let handle = handle.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { .. } = event {
+            if let Some(app) = handle.try_state::<Arc<App>>() {
+                remember(&app, false);
+            }
+        }
     });
     Ok(())
 }

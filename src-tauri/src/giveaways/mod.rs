@@ -249,6 +249,15 @@ impl Monitor {
     }
 
     async fn run(mut self, mut rx: MonitorReceivers) {
+        // Mentions encore en attente au dernier lancement
+        self.mentions = self
+            .app
+            .db
+            .mentions()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| MentionView { id: m.id as u64, at: m.at, channel: m.channel, account: m.account, author: m.author, message: m.message })
+            .collect();
         self.reload();
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         let mut live_tick = tokio::time::interval(Duration::from_secs(10));
@@ -494,6 +503,7 @@ impl Monitor {
             MonitorCmd::ManualWinner { channel, winner } => self.on_winner(&channel, "manuel", &winner, None),
             MonitorCmd::DismissMention(id) => {
                 self.mentions.retain(|m| m.id != id);
+                let _ = self.app.db.delete_mention(id as i64);
                 self.publish();
             }
         }
@@ -791,11 +801,20 @@ impl Monitor {
                 continue;
             }
             self.last_mention.insert(key, now);
-            self.mention_seq += 1;
             let message: String = text.chars().take(300).collect();
+            let at = now_rfc3339();
+            // Gardée en base : la file d'alertes survit au redémarrage
+            let id = match self.app.db.add_mention(&at, channel, &login, author, &message, MAX_MENTIONS) {
+                Ok(id) => id as u64,
+                Err(e) => {
+                    tracing::warn!("mention non enregistrée : {e}");
+                    self.mention_seq += 1;
+                    u64::MAX - self.mention_seq
+                }
+            };
             self.mentions.push_front(MentionView {
-                id: self.mention_seq,
-                at: now_rfc3339(),
+                id,
+                at,
                 channel: channel.to_owned(),
                 account: login.clone(),
                 author: author.to_owned(),

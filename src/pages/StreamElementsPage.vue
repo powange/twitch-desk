@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { useChannelList } from '../composables/useChannelList'
 import { useOpenExternal } from '../utils/external'
@@ -10,6 +11,16 @@ import AccountPicker from '../components/AccountPicker.vue'
 
 const openExternal = useOpenExternal()
 const { accounts, account, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove } = useChannelList('se')
+
+// Filtre par streamer (choix multiple) ; « ?channels=a,b » le préremplit (lien depuis les alertes)
+const route = useRoute()
+const streamerFilter = ref<string[]>([])
+watch(() => route.query.channels, (q) => {
+  const value = Array.isArray(q) ? q.join(',') : (q ?? '')
+  if (value) streamerFilter.value = value.toLowerCase().split(',').map(s => s.trim()).filter(Boolean)
+}, { immediate: true })
+const streamerItems = computed(() => channels.value.map(c => c.login).sort())
+const shown = computed(() => streamerFilter.value.length ? channels.value.filter(c => streamerFilter.value.includes(c.login)) : channels.value)
 
 // Pourquoi une chaîne ne rapporte pas (ou rien : elle rapporte)
 function status(channel: ChannelView): { label: string, color: 'success' | 'warning' | 'neutral' | 'error' } {
@@ -160,6 +171,21 @@ function affordable(channel: ChannelView): number | null {
         <UButton type="submit" label="Ajouter" :loading="adding" />
       </form>
 
+      <div class="flex items-center gap-2 flex-wrap">
+        <USelectMenu
+          v-model="streamerFilter"
+          :items="streamerItems"
+          multiple
+          icon="i-lucide-filter"
+          placeholder="Tous les streamers"
+          :search-input="{ placeholder: 'Rechercher un streamer' }"
+          class="w-72"
+          aria-label="Filtrer par streamer"
+        />
+        <UButton v-if="streamerFilter.length" label="Tous les streamers" icon="i-lucide-x" size="sm" color="neutral" variant="ghost" @click="streamerFilter = []" />
+        <span v-if="streamerFilter.length" class="text-sm text-muted">{{ shown.length }} chaîne(s) sur {{ channels.length }}</span>
+      </div>
+
       <div class="border border-default rounded-lg overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
@@ -179,7 +205,7 @@ function affordable(channel: ChannelView): number | null {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="channel in channels" :key="channel.id" class="border-t border-default" :class="channel.seGiveaway ? 'bg-primary/5' : ''">
+            <tr v-for="channel in shown" :key="channel.id" class="border-t border-default" :class="channel.seGiveaway ? 'bg-primary/5' : ''">
               <td class="px-1.5 py-2 min-w-0">
                 <div class="flex items-center gap-1.5">
                   <ChannelFlag :login="channel.login" />
@@ -292,6 +318,9 @@ function affordable(channel: ChannelView): number | null {
               <td class="px-1.5 py-2 text-right">
                 <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Retirer de la liste" @click="toRemove = channel" />
               </td>
+            </tr>
+            <tr v-if="shown.length === 0 && channels.length">
+              <td colspan="12" class="px-3 py-8 text-center text-muted">Aucune chaîne ne correspond au filtre.</td>
             </tr>
             <tr v-if="channels.length === 0">
               <td colspan="12" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>

@@ -5,6 +5,7 @@ import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
 import { boxArt } from '../../utils/format'
 import type { GiveawayGame } from '../../types'
+import CategorySearchInput from '../../components/CategorySearchInput.vue'
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
@@ -23,11 +24,11 @@ const liveCount = computed(() => {
 
 const input = ref('')
 const adding = ref(false)
-async function addGame() {
-  if (!input.value.trim()) return
+async function addGame(value = input.value) {
+  if (!value.trim()) return
   adding.value = true
   try {
-    const name = await invoke<string>('add_giveaway_game', { input: input.value })
+    const name = await invoke<string>('add_giveaway_game', { input: value })
     input.value = ''
     toast.add({ title: `${name} ajoutée`, color: 'success', icon: 'i-lucide-check' })
   } catch (e) {
@@ -58,10 +59,10 @@ function categoryUrl(slug: string) {
       description="Une chaîne en live dans une autre catégorie passe en bas de la liste des chaînes en live et ne déclenche pas d'alerte. Sans aucune catégorie, tout est surveillé."
     />
 
-    <form class="flex gap-2" @submit.prevent="addGame">
-      <UInput id="new-giveaway-game" v-model="input" placeholder="Nom exact de la catégorie (ex. Sea of Thieves) ou son adresse Twitch" class="flex-1" icon="i-lucide-plus" />
-      <UButton type="submit" label="Ajouter" :loading="adding" />
-    </form>
+    <div class="flex gap-2">
+      <CategorySearchInput id="new-giveaway-game" v-model="input" placeholder="Rechercher une catégorie (ex. Sea of Thieves) ou coller son adresse Twitch" :loading="adding" @submit="addGame" />
+      <UButton label="Ajouter" :loading="adding" :disabled="!input.trim()" @click="addGame()" />
+    </div>
 
     <div v-if="games.length" class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
       <div v-for="game in games" :key="game.id" class="border border-default rounded-lg p-3 flex items-center gap-3">

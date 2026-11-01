@@ -7,6 +7,7 @@ import GiftGroupsModal from '../../components/GiftGroupsModal.vue'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { boxArt } from '../../utils/format'
 import type { Gift } from '../../types'
+import SolidIcon from '../../components/SolidIcon.vue'
 
 const { gifts, groups, usage, refresh } = useGiftCatalog()
 const toast = useToast()
@@ -198,7 +199,8 @@ async function confirmRemove() {
                   :title="g.favorite ? 'Cadeau recherché (favori)' : 'Mettre en favori : cadeau recherché'"
                   @click="toggleFavorite(g)"
                 >
-                  <UIcon name="i-lucide-star" class="size-4 block" :class="g.favorite ? 'fill-current' : ''" />
+                  <SolidIcon v-if="g.favorite" name="star" class="size-4 block" />
+                  <UIcon v-else name="i-lucide-star" class="size-4 block" />
                 </button>
               </div>
               <div class="p-3 flex flex-col gap-1.5 flex-1">

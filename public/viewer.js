@@ -15,6 +15,19 @@ let channels = readList('channels')
 const chats = new Set(readList('chat'))
 const noVideo = new Set(readList('novideo'))
 let featured = readList('featured')[0] || null
+// Réglages de lecture par chaîne, gardés dans l'adresse : volume (0 à 1), son coupé, qualité
+function readMap(key) {
+  const out = new Map()
+  for (const part of (params.get(key) || '').split(',')) {
+    const [c, v] = part.split(':')
+    if (c && v && LOGIN.test(c.toLowerCase())) out.set(c.toLowerCase(), v)
+  }
+  return out
+}
+const volumes = readMap('vol')
+const qualities = readMap('q')
+const mutedSet = new Set(readList('muted'))
+const unmutedSet = new Set(readList('unmuted'))
 // Chaîne → { el, player, setChat }
 const tiles = new Map()
 
@@ -27,6 +40,14 @@ function saveState() {
   const hidden = channels.filter(c => noVideo.has(c))
   if (hidden.length) p.set('novideo', hidden.join(','))
   if (featured) p.set('featured', featured)
+  const vol = channels.filter(c => volumes.has(c)).map(c => `${c}:${volumes.get(c)}`)
+  if (vol.length) p.set('vol', vol.join(','))
+  const q = channels.filter(c => qualities.has(c)).map(c => `${c}:${qualities.get(c)}`)
+  if (q.length) p.set('q', q.join(','))
+  const muted = channels.filter(c => mutedSet.has(c))
+  if (muted.length) p.set('muted', muted.join(','))
+  const unmuted = channels.filter(c => unmutedSet.has(c))
+  if (unmuted.length) p.set('unmuted', unmuted.join(','))
   history.replaceState(null, '', `${location.pathname}?${p}`)
   document.title = channels.length ? `Streams : ${channels.join(', ')}` : 'Streams'
   document.getElementById('hint').textContent = channels.length ? `${channels.length} stream(s)` : ''
@@ -106,14 +127,20 @@ function createTile(channel) {
   el.append(bar, body)
   grid.append(el)
 
-  // Lecteur officiel : son coupé sauf pour le premier stream ouvert
+  // Lecteur officiel : réglages retrouvés, sinon son coupé sauf pour le premier stream ouvert
+  const startMuted = mutedSet.has(channel) || (!unmutedSet.has(channel) && tiles.size > 0)
   const player = new Twitch.Player(holder, {
     channel,
     parent: [parent],
     width: '100%',
     height: '100%',
     autoplay: true,
-    muted: tiles.size > 0
+    muted: startMuted
+  })
+  player.addEventListener(Twitch.Player.READY, () => {
+    const v = parseFloat(volumes.get(channel))
+    if (!Number.isNaN(v)) player.setVolume(Math.min(1, Math.max(0, v)))
+    if (qualities.has(channel)) player.setQuality(qualities.get(channel))
   })
 
   let chatFrame = null
@@ -173,7 +200,18 @@ function showEmpty() {
   if (channels.length) return
   const empty = document.createElement('div')
   empty.className = 'empty'
-  empty.textContent = 'Aucun stream. Ouvre-en un depuis Twitch Desk (bouton « Regarder »).'
+  const title = document.createElement('div')
+  title.className = 'empty-title'
+  title.textContent = 'Aucun stream'
+  const hint = document.createElement('div')
+  hint.textContent = 'Ouvre-en un depuis Twitch Desk (bouton « Regarder »).'
+  const close = document.createElement('button')
+  close.className = 'empty-close'
+  close.textContent = 'Fermer la page'
+  // La page n'a aucun accès à l'application : elle demande sa fermeture par une adresse
+  // convenue, interceptée par l'application
+  close.addEventListener('click', () => { location.href = `${location.pathname}?close=1` })
+  empty.append(title, hint, close)
   grid.append(empty)
 }
 
@@ -248,6 +286,27 @@ pauseButton.addEventListener('click', () => {
 
 // Twitch Desk ajoute un stream sans recharger les autres
 window.twitchDeskAdd = addChannel
+
+// Volume, son et qualité choisis dans chaque lecteur : relevés régulièrement pour l'adresse
+setInterval(() => {
+  let changed = false
+  for (const [c, t] of tiles) {
+    try {
+      const v = String(Math.round(t.player.getVolume() * 100) / 100)
+      const muted = t.player.getMuted()
+      const q = t.player.getQuality()
+      if (volumes.get(c) !== v) { volumes.set(c, v); changed = true }
+      if (muted !== mutedSet.has(c)) {
+        if (muted) { mutedSet.add(c); unmutedSet.delete(c) } else { mutedSet.delete(c); unmutedSet.add(c) }
+        changed = true
+      }
+      if (q && /^[a-z0-9_]+$/i.test(q) && qualities.get(c) !== q) { qualities.set(c, q); changed = true }
+    } catch {
+      // Lecteur pas encore prêt
+    }
+  }
+  if (changed) saveState()
+}, 3000)
 
 addEventListener('resize', layout)
 for (const c of channels) createTile(c)

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { RouterLink } from 'vue-router'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
 import { useWatchStream } from '../../utils/viewer'
@@ -12,6 +13,7 @@ import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, formatDrawAt } from '../../utils/giveaways'
+import SolidIcon from '../../components/SolidIcon.vue'
 
 const { snapshot, accounts } = useSnapshot()
 const toast = useToast()
@@ -255,7 +257,8 @@ function share(g: GiveawayView) {
               class="inline-flex items-center gap-0.5"
               :class="followOk(g) ? 'text-success' : tooRecent(g).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'"
             >
-              <UIcon name="i-lucide-heart" class="size-4" :class="followOk(g) ? 'fill-current' : ''" />
+              <SolidIcon v-if="followOk(g)" name="heart" class="size-4" />
+              <UIcon v-else name="i-lucide-heart" class="size-4" />
               <span v-if="g.followMinDays" class="text-xs font-medium">{{ g.followMinDays }} j</span>
             </span>
           </UTooltip>
@@ -464,12 +467,8 @@ function share(g: GiveawayView) {
                     >
                       <UIcon :name="following === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="following === g.channel ? 'animate-spin' : ''" />
                     </button>
-                    <UIcon
-                      v-else
-                      name="i-lucide-heart"
-                      class="size-4 block"
-                      :class="followOk(g) ? 'text-success fill-current' : tooRecent(g).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'"
-                    />
+                    <SolidIcon v-else-if="followOk(g)" name="heart" class="size-4 block text-success" />
+                    <UIcon v-else name="i-lucide-heart" class="size-4 block" :class="tooRecent(g).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'" />
                   </UTooltip>
                   <span v-if="g.requireFollow && g.followMinDays" class="text-xs text-muted ml-1 whitespace-nowrap">{{ g.followMinDays }} j</span>
                 </div>
@@ -495,17 +494,24 @@ function share(g: GiveawayView) {
               <td class="px-3 py-2 whitespace-nowrap" :class="g.drawAt ? '' : 'text-muted'">{{ formatDrawAt(g.drawAt) }}</td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap gap-1">
-                  <UBadge
+                  <component
+                    :is="g.kind === 'streamelements' ? RouterLink : 'span'"
                     v-for="e in g.entriesView"
                     :key="e.accountId"
-                    :label="e.tickets !== null ? `${e.login} · ${e.tickets} ticket${e.tickets > 1 ? 's' : ''}` : e.login"
-                    :icon="e.tickets !== null ? 'i-lucide-ticket' : e.auto ? 'i-lucide-bot' : 'i-lucide-check'"
-                    color="success"
-                    variant="subtle"
-                    size="sm"
-                    class="whitespace-nowrap"
-                    :title="e.tickets !== null ? 'Tickets StreamElements relevés sur StreamElements' : e.auto ? 'Participation automatique' : 'Participation envoyée par l\'application'"
-                  />
+                    v-bind="g.kind === 'streamelements' ? { to: { path: '/streamelements', query: { channels: g.channel } } } : {}"
+                    :title="g.kind === 'streamelements' ? 'Voir sur la page StreamElements' : undefined"
+                  >
+                    <UBadge
+                      :label="e.tickets !== null ? `${e.login} · ${e.tickets} ticket${e.tickets > 1 ? 's' : ''}` : e.login"
+                      :icon="e.tickets !== null ? 'i-lucide-ticket' : e.auto ? 'i-lucide-bot' : 'i-lucide-check'"
+                      color="success"
+                      variant="subtle"
+                      size="sm"
+                      class="whitespace-nowrap"
+                      :class="g.kind === 'streamelements' ? 'hover:bg-success/20 cursor-pointer' : ''"
+                      :title="e.tickets !== null ? 'Tickets StreamElements relevés sur StreamElements' : e.auto ? 'Participation automatique' : 'Participation envoyée par l\'application'"
+                    />
+                  </component>
                   <span v-if="g.entriesView.length === 0" class="text-muted">—</span>
                 </div>
               </td>

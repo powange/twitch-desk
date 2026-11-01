@@ -1,3 +1,5 @@
+import { reactive } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import type { AccountStatus, ChannelState, EventKind } from '../types'
 
 const numberFormat = new Intl.NumberFormat('fr-FR')
@@ -52,9 +54,36 @@ export function timeAgo(iso: string, now = Date.now()): string {
 
 // Jaquette d'une catégorie Twitch, en double résolution. Adresse inconnue : construite
 // à partir de l'identifiant du jeu (ttv-boxart/<id>-<l>x<h>.jpg)
+// Jaquettes connues par identifiant de jeu. L'adresse ne se déduit pas de l'identifiant (les
+// jeux récents sont en « <id>_IGDB-… ») : une adresse inconnue est demandée à Twitch, par lots
+const boxArts = reactive(new Map<string, string>())
+const pendingIds = new Set<string>()
+const requestedIds = new Set<string>()
+let boxArtTimer: ReturnType<typeof setTimeout> | null = null
+
+function requestBoxArt(gameId: string) {
+  if (!gameId || requestedIds.has(gameId)) return
+  requestedIds.add(gameId)
+  pendingIds.add(gameId)
+  boxArtTimer ??= setTimeout(() => {
+    boxArtTimer = null
+    const ids = [...pendingIds]
+    pendingIds.clear()
+    for (let i = 0; i < ids.length; i += 50) {
+      invoke<Record<string, string>>('game_box_arts', { ids: ids.slice(i, i + 50) })
+        .then((found) => { for (const [id, url] of Object.entries(found)) boxArts.set(id, url) })
+        .catch(() => { /* Jaquette de secours */ })
+    }
+  }, 100)
+}
+
 export function boxArt(url: string | null, gameId: string): string {
-  if (!url) return `https://static-cdn.jtvnw.net/ttv-boxart/${gameId}-80x112.jpg`
-  return url.replace(/-\d+x\d+\./, '-80x112.').replace('{width}', '80').replace('{height}', '112')
+  const known = url ?? boxArts.get(gameId)
+  if (!known) {
+    requestBoxArt(gameId)
+    return `https://static-cdn.jtvnw.net/ttv-boxart/${gameId}-80x112.jpg`
+  }
+  return known.replace(/-\d+x\d+\./, '-80x112.').replace('{width}', '80').replace('{height}', '112')
 }
 
 export function channelUrl(login: string): string {

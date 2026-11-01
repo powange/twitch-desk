@@ -5,9 +5,10 @@ import { useSnapshot } from '../composables/useSnapshot'
 import { useSelectedAccount } from '../composables/useSelectedAccount'
 import AccountPicker from '../components/AccountPicker.vue'
 import { useOpenExternal } from '../utils/external'
-import { formatNumber } from '../utils/format'
+import { boxArt, formatNumber } from '../utils/format'
 import type { DropCampaign, DropGameStatus, DropGameView, TimedDrop } from '../types'
 import ChannelFlag from '../components/ChannelFlag.vue'
+import CategorySearchInput from '../components/CategorySearchInput.vue'
 
 const { accounts } = useSnapshot()
 const toast = useToast()
@@ -25,7 +26,7 @@ async function addGame(input = newGame.value) {
   adding.value = true
   try {
     const name = await invoke<string>('add_drop_game', { accountId: account.value.id, input })
-    if (input === newGame.value) newGame.value = ''
+    newGame.value = ''
     toast.add({ title: `${name} ajouté`, color: 'success', icon: 'i-lucide-check' })
   } catch (e) {
     toast.add({ title: 'Jeu non ajouté', description: String(e), color: 'error' })
@@ -128,11 +129,6 @@ const wantedIds = computed(() => new Set(games.value.map(g => g.gameId)))
 
 // Jaquette Twitch : l'adresse porte sa taille (…-40x56.jpg), on demande le double pour un rendu net.
 // Inconnue (jeu sans stream en live) : adresse construite à partir de l'identifiant du jeu
-function boxArt(url: string | null, gameId: string) {
-  if (!url) return `https://static-cdn.jtvnw.net/ttv-boxart/${gameId}-80x112.jpg`
-  return url.replace(/-\d+x\d+\./, '-80x112.').replace('{width}', '80').replace('{height}', '112')
-}
-
 function categoryUrl(slug: string | null) {
   return slug ? `https://www.twitch.tv/directory/category/${slug}` : null
 }
@@ -217,16 +213,10 @@ async function setDropsEnabled(enabled: boolean) {
       <!-- Jeux souhaités -->
       <section class="flex flex-col gap-2">
         <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">Jeux souhaités</h2>
-        <form class="flex gap-2" @submit.prevent="addGame()">
-          <UInput
-            id="new-drop-game"
-            v-model="newGame"
-            placeholder="Nom exact du jeu (ex. Sea of Thieves) ou adresse de sa catégorie Twitch"
-            class="flex-1"
-            icon="i-lucide-plus"
-          />
-          <UButton type="submit" label="Ajouter" :loading="adding" />
-        </form>
+        <div class="flex gap-2">
+          <CategorySearchInput id="new-drop-game" v-model="newGame" placeholder="Rechercher un jeu (ex. Sea of Thieves) ou coller l'adresse de sa catégorie Twitch" :loading="adding" @submit="addGame" />
+          <UButton label="Ajouter" :loading="adding" :disabled="!newGame.trim()" @click="addGame()" />
+        </div>
 
         <div class="border border-default rounded-lg overflow-x-auto">
           <table class="w-full text-sm">

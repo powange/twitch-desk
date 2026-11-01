@@ -247,6 +247,19 @@ const MIGRATIONS: &[&str] = &[r#"
     ALTER TABLE giveaways ADD COLUMN require_greeting INTEGER;
     ALTER TABLE giveaways ADD COLUMN min_chat_minutes INTEGER;
     ALTER TABLE giveaways ADD COLUMN follow_min_days INTEGER;
+"#, r#"
+    -- État de l'interface gardé d'un lancement à l'autre (fenêtre des streams…)
+    CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+"#, r#"
+    -- Mentions de nos pseudos en attente dans la file d'alertes (gardées d'un lancement à l'autre)
+    CREATE TABLE mentions (
+        id INTEGER PRIMARY KEY,
+        at TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        account TEXT NOT NULL,
+        author TEXT NOT NULL,
+        message TEXT NOT NULL
+    );
 "#];
 
 /// Types de giveaway
@@ -382,6 +395,16 @@ pub fn gifts_in_text(gifts: &[Gift], text: &str) -> Vec<i64> {
         .filter(|g| std::iter::once(&g.title).chain(g.keywords.iter()).any(|term| starts_word(&t, &fold(term.trim()))))
         .map(|g| g.id)
         .collect()
+}
+
+/// Mention de nos pseudos en attente dans la file d'alertes
+pub struct StoredMention {
+    pub id: i64,
+    pub at: String,
+    pub channel: String,
+    pub account: String,
+    pub author: String,
+    pub message: String,
 }
 
 /// Dernière réponse d'un bot à une commande d'information sur une chaîne
@@ -1550,6 +1573,49 @@ impl Db {
         )?;
         let rows = stmt.query_map([channel], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect()
+    }
+
+    // --- Mentions (file d'alertes) ---
+
+    /// Ajoute une mention et ne garde que les `keep` plus récentes ; renvoie son identifiant
+    pub fn add_mention(&self, at: &str, channel: &str, account: &str, author: &str, message: &str, keep: usize) -> DbResult<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO mentions (at, channel, account, author, message) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![at, channel, account, author, message],
+        )?;
+        let id = conn.last_insert_rowid();
+        conn.execute("DELETE FROM mentions WHERE id <= ?1 - ?2", params![id, keep as i64])?;
+        Ok(id)
+    }
+
+    /// Mentions en attente, les plus récentes d'abord
+    pub fn mentions(&self) -> DbResult<Vec<StoredMention>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT id, at, channel, account, author, message FROM mentions ORDER BY id DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(StoredMention { id: r.get(0)?, at: r.get(1)?, channel: r.get(2)?, account: r.get(3)?, author: r.get(4)?, message: r.get(5)? })
+        })?;
+        rows.collect()
+    }
+
+    pub fn delete_mention(&self, id: i64) -> DbResult<()> {
+        self.conn().execute("DELETE FROM mentions WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    // --- État de l'interface ---
+
+    pub fn get_state(&self, key: &str) -> Option<String> {
+        self.conn().query_row("SELECT value FROM app_state WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
+    }
+
+    pub fn set_state(&self, key: &str, value: &str) -> DbResult<()> {
+        self.conn().execute(
+            "INSERT INTO app_state (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     // --- Fil d'événements ---

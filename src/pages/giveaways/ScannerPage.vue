@@ -9,6 +9,7 @@ import ChannelFlag from '../../components/ChannelFlag.vue'
 import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import type { ScanMatch, Settings } from '../../types'
+import SolidIcon from '../../components/SolidIcon.vue'
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
@@ -341,7 +342,7 @@ function liveFor(iso: string | null) {
                     <span class="relative">
                       <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
                       <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
-                      <UIcon v-if="g.favorite" name="i-lucide-star" class="absolute -bottom-1 -right-1 size-3 text-warning fill-current" />
+                      <SolidIcon v-if="g.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
                     </span>
                   </UTooltip>
                   <span v-if="giftsOf(m).length === 0" class="text-muted">—</span>
