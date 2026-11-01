@@ -16,10 +16,16 @@ services:
       SYNC_COLLECTIONS: ${SYNC_COLLECTIONS:-groups,gifts,giveaways,channels,streamers,detection}
       # Durée de conservation de l'historique des modifications, en jours
       SYNC_HISTORY_DAYS: ${SYNC_HISTORY_DAYS:-90}
+      # Proxys devant le serveur (adresse du client lue dans X-Forwarded-For, pour bloquer
+      # les essais de code répétés) ; 0 si le serveur est joint directement
+      SYNC_PROXY_HOPS: ${SYNC_PROXY_HOPS:-1}
     volumes:
       - twitch-desk-sync:/data
+    # Port publié sur l'hôte en HTTP simple : limité à l'hôte lui-même par défaut (le proxy
+    # HTTPS joint le serveur par le réseau proxy-network). SYNC_HOST_BIND=0.0.0.0 l'ouvre à
+    # toutes les interfaces (déconseillé : le code circulerait en clair)
     ports:
-      - "${SYNC_HOST_PORT:-8787}:8787"
+      - "${SYNC_HOST_BIND:-127.0.0.1}:${SYNC_HOST_PORT:-8787}:8787"
 
 volumes:
   twitch-desk-sync:

@@ -2,8 +2,8 @@
 //!
 //! Chaque application envoie ses modifications (ajout, modification, suppression) et récupère
 //! celles des autres depuis son dernier passage. Les données sont des documents JSON rangés
-//! par collection ; la dernière modification reçue l'emporte. Chaque modification est gardée
-//! dans un historique.
+//! par collection ; la dernière modification reçue l'emporte. Chaque modification est notée
+//! dans un historique (qui, quand, quel document ; sans le contenu).
 //!
 //! Configuration (variables d'environnement) :
 //! - `SYNC_CODE` (obligatoire) : code à communiquer aux utilisateurs, 8 caractères au moins
@@ -12,34 +12,112 @@
 //! - `SYNC_DB` : fichier SQLite (défaut : /data/sync.db)
 //! - `SYNC_PORT` : port d'écoute (défaut : 8787)
 //! - `SYNC_HISTORY_DAYS` : durée de conservation de l'historique (défaut : 90 jours)
+//! - `SYNC_PROXY_HOPS` : proxys devant le serveur, pour lire l'adresse du client dans
+//!   `X-Forwarded-For` (défaut : 1 ; 0 quand le serveur est joint directement)
 
-use std::collections::BTreeSet;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::collections::{BTreeSet, HashMap};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::{Arc, Mutex, TryLockError};
+use std::time::{Duration, Instant};
 
-use axum::extract::{DefaultBodyLimit, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, Request, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use tower::limit::GlobalConcurrencyLimitLayer;
+use tower_http::timeout::TimeoutLayer;
 
 /// Collections connues, dans l'ordre où les appliquer (les groupes avant les cadeaux, etc.)
 const COLLECTIONS: &[&str] = &["groups", "gifts", "giveaways", "channels", "streamers", "detection"];
 /// Un document : une image de cadeau en data URL fait 2 Mo au plus
 const MAX_DOCUMENT: usize = 4 * 1024 * 1024;
-const MAX_BODY: usize = 32 * 1024 * 1024;
+/// Envoi : l'application regroupe jusqu'à 8 Mo de documents (PUSH_BATCH_BYTES), plus le
+/// dernier ajouté (4 Mo au plus)
+const MAX_BODY: usize = 16 * 1024 * 1024;
 const MAX_PAGE: usize = 500;
+/// Réception : page coupée à 16 Mo de documents (au moins un document par page)
+const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
+/// Requêtes de l'API traitées en même temps (les suivantes attendent leur tour)
+const MAX_CONCURRENT: usize = 16;
+/// Au-delà, la requête est abandonnée (l'application attend 60 s)
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+/// Codes refusés : après MAX_FAILURES essais en FAILURE_WINDOW, l'adresse attend BLOCK_TIME
+const MAX_FAILURES: u32 = 10;
+const FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
+const BLOCK_TIME: Duration = Duration::from_secs(15 * 60);
+/// Adresses suivies au plus (au-delà, les plus anciennes sont oubliées)
+const MAX_TRACKED: usize = 10_000;
 
 struct Server {
     code: String,
     collections: BTreeSet<String>,
     db: Mutex<Connection>,
+    /// Proxys devant le serveur (voir `SYNC_PROXY_HOPS`)
+    proxy_hops: usize,
+    guard: Guard,
 }
 
 type Shared = Arc<Server>;
+
+/// Essais de code refusés, par adresse
+#[derive(Default)]
+struct Guard {
+    attempts: Mutex<HashMap<IpAddr, Attempts>>,
+}
+
+struct Attempts {
+    count: u32,
+    since: Instant,
+    blocked_until: Option<Instant>,
+}
+
+impl Attempts {
+    fn fresh(now: Instant) -> Self {
+        Attempts { count: 0, since: now, blocked_until: None }
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        match self.blocked_until {
+            Some(until) => until <= now,
+            None => now.duration_since(self.since) > FAILURE_WINDOW,
+        }
+    }
+}
+
+impl Guard {
+    /// Temps d'attente restant quand l'adresse est bloquée
+    fn blocked(&self, ip: IpAddr, now: Instant) -> Option<Duration> {
+        let map = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(&ip).and_then(|a| a.blocked_until).filter(|until| *until > now).map(|until| until - now)
+    }
+
+    fn failed(&self, ip: IpAddr, now: Instant) {
+        let mut map = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= MAX_TRACKED && !map.contains_key(&ip) {
+            map.retain(|_, a| !a.expired(now));
+            if map.len() >= MAX_TRACKED {
+                map.clear();
+            }
+        }
+        let a = map.entry(ip).or_insert_with(|| Attempts::fresh(now));
+        if a.expired(now) {
+            *a = Attempts::fresh(now);
+        }
+        a.count += 1;
+        if a.count >= MAX_FAILURES {
+            a.blocked_until = Some(now + BLOCK_TIME);
+        }
+    }
+
+    fn succeeded(&self, ip: IpAddr) {
+        let mut map = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        map.remove(&ip);
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,8 +187,11 @@ struct PushResult {
     seq: i64,
 }
 
+#[derive(Debug)]
 enum ApiError {
     Unauthorized,
+    /// Trop de codes refusés depuis cette adresse : temps d'attente
+    TooManyAttempts(Duration),
     BadRequest(String),
     Internal(String),
 }
@@ -119,6 +200,13 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "Code de synchronisation incorrect".to_owned()),
+            ApiError::TooManyAttempts(wait) => {
+                let minutes = wait.as_secs().div_ceil(60).max(1);
+                let body = Json(serde_json::json!({
+                    "error": format!("Trop de codes incorrects : réessayer dans {minutes} min")
+                }));
+                return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, wait.as_secs().max(1).to_string())], body).into_response();
+            }
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Internal(m) => {
                 tracing::error!("{m}");
@@ -145,35 +233,90 @@ fn same_code(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-fn authorize(server: &Server, headers: &HeaderMap) -> Result<(), ApiError> {
+fn code_given(server: &Server, headers: &HeaderMap) -> bool {
     let given = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or_default();
-    if same_code(given.trim(), &server.code) {
-        Ok(())
-    } else {
-        Err(ApiError::Unauthorized)
+    same_code(given.trim(), &server.code)
+}
+
+/// Adresse du client : derrière `hops` proxys, celle ajoutée par le premier d'entre eux à
+/// `X-Forwarded-For` (en partant de la droite : les adresses plus à gauche viennent du client
+/// et ne prouvent rien) ; sinon celle de la connexion
+fn client_ip(headers: &HeaderMap, peer: Option<IpAddr>, hops: usize) -> IpAddr {
+    let peer = peer.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    if hops == 0 {
+        return peer;
     }
+    let forwarded: Vec<&str> = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .collect();
+    if forwarded.is_empty() {
+        return peer;
+    }
+    let pick = forwarded[forwarded.len().saturating_sub(hops)];
+    pick.parse().unwrap_or(peer)
+}
+
+/// Code vérifié avant toute lecture du corps de la requête ; trop d'essais refusés depuis
+/// une adresse : refus (429) pendant BLOCK_TIME
+async fn require_code(State(server): State<Shared>, request: Request, next: Next) -> Response {
+    let peer = request.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
+    let ip = client_ip(request.headers(), peer, server.proxy_hops);
+    let now = Instant::now();
+    if let Some(wait) = server.guard.blocked(ip, now) {
+        return ApiError::TooManyAttempts(wait).into_response();
+    }
+    if !code_given(&server, request.headers()) {
+        server.guard.failed(ip, now);
+        tracing::warn!("code refusé pour {ip}");
+        return ApiError::Unauthorized.into_response();
+    }
+    server.guard.succeeded(ip);
+    next.run(request).await
+}
+
+/// Travail sur la base hors des fils de tokio (une grosse transaction ne bloque pas les autres
+/// requêtes)
+async fn with_db<T: Send + 'static>(
+    server: &Shared,
+    f: impl FnOnce(&mut Connection) -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    let server = server.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut conn = server.db.lock().unwrap_or_else(|e| e.into_inner());
+        f(&mut conn)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("tâche de la base : {e}")))?
 }
 
 fn last_seq(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM history", [], |r| r.get(0))
 }
 
-async fn info(State(server): State<Shared>, headers: HeaderMap) -> Result<Json<Info>, ApiError> {
-    authorize(&server, &headers)?;
-    let conn = server.db.lock().unwrap();
-    let seq = last_seq(&conn)?;
-    let mut counts = std::collections::BTreeMap::new();
-    let mut stmt = conn.prepare("SELECT collection, COUNT(*) FROM docs WHERE deleted = 0 GROUP BY collection")?;
-    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-        let (collection, n) = row?;
-        if server.collections.contains(&collection) {
-            counts.insert(collection, n);
+async fn info(State(server): State<Shared>) -> Result<Json<Info>, ApiError> {
+    let s = server.clone();
+    let (seq, counts) = with_db(&server, move |conn| {
+        let seq = last_seq(conn)?;
+        let mut counts = std::collections::BTreeMap::new();
+        let mut stmt = conn.prepare("SELECT collection, COUNT(*) FROM docs WHERE deleted = 0 GROUP BY collection")?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+            let (collection, n) = row?;
+            if s.collections.contains(&collection) {
+                counts.insert(collection, n);
+            }
         }
-    }
+        Ok((seq, counts))
+    })
+    .await?;
     Ok(Json(Info {
         name: "twitch-desk-sync",
         version: env!("CARGO_PKG_VERSION"),
@@ -183,44 +326,57 @@ async fn info(State(server): State<Shared>, headers: HeaderMap) -> Result<Json<I
     }))
 }
 
-async fn changes(
-    State(server): State<Shared>,
-    headers: HeaderMap,
-    Query(q): Query<Since>,
-) -> Result<Json<ChangesPage>, ApiError> {
-    authorize(&server, &headers)?;
-    let limit = q.limit.unwrap_or(200).clamp(1, MAX_PAGE);
-    let conn = server.db.lock().unwrap();
+/// Modifications après `since` : `limit` documents et `max_bytes` de contenu au plus (au
+/// moins un document)
+fn read_changes(
+    conn: &Connection,
+    collections: &BTreeSet<String>,
+    since: i64,
+    limit: usize,
+    max_bytes: usize,
+) -> Result<ChangesPage, ApiError> {
     let mut stmt = conn.prepare(
         "SELECT seq, collection, id, data, deleted, updated_at, author FROM docs WHERE seq > ?1 ORDER BY seq LIMIT ?2",
     )?;
-    let mut list: Vec<Change> = stmt
-        .query_map(params![q.since, limit as i64 + 1], |r| {
-            let data: Option<String> = r.get(3)?;
-            Ok(Change {
-                seq: r.get(0)?,
-                collection: r.get(1)?,
-                id: r.get(2)?,
-                data: data.and_then(|d| serde_json::from_str(&d).ok()),
-                deleted: r.get(4)?,
-                updated_at: r.get(5)?,
-                author: r.get(6)?,
-            })
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    // Une collection désactivée depuis n'est plus envoyée
-    let more = list.len() > limit;
-    list.truncate(limit);
+    let mut rows = stmt.query(params![since, limit as i64 + 1])?;
+    let mut list: Vec<Change> = vec![];
+    let mut bytes = 0;
+    let mut more = false;
+    while let Some(r) = rows.next()? {
+        let data: Option<String> = r.get(3)?;
+        let size = data.as_ref().map_or(0, |d| d.len());
+        if list.len() >= limit || (!list.is_empty() && bytes + size > max_bytes) {
+            more = true;
+            break;
+        }
+        bytes += size;
+        list.push(Change {
+            seq: r.get(0)?,
+            collection: r.get(1)?,
+            id: r.get(2)?,
+            data: data.and_then(|d| serde_json::from_str(&d).ok()),
+            deleted: r.get(4)?,
+            updated_at: r.get(5)?,
+            author: r.get(6)?,
+        });
+    }
     let seq = match list.last() {
         Some(c) => c.seq,
-        None => q.since.max(0).min(last_seq(&conn)?),
+        None => since.max(0).min(last_seq(conn)?),
     };
-    list.retain(|c| server.collections.contains(&c.collection));
-    Ok(Json(ChangesPage { changes: list, seq, more }))
+    // Une collection désactivée depuis n'est plus envoyée
+    list.retain(|c| collections.contains(&c.collection));
+    Ok(ChangesPage { changes: list, seq, more })
 }
 
-async fn push(State(server): State<Shared>, headers: HeaderMap, Json(body): Json<Push>) -> Result<Json<PushResult>, ApiError> {
-    authorize(&server, &headers)?;
+async fn changes(State(server): State<Shared>, Query(q): Query<Since>) -> Result<Json<ChangesPage>, ApiError> {
+    let limit = q.limit.unwrap_or(200).clamp(1, MAX_PAGE);
+    let s = server.clone();
+    let page = with_db(&server, move |conn| read_changes(conn, &s.collections, q.since, limit, MAX_PAGE_BYTES)).await?;
+    Ok(Json(page))
+}
+
+async fn push(State(server): State<Shared>, Json(body): Json<Push>) -> Result<Json<PushResult>, ApiError> {
     for c in &body.changes {
         if !server.collections.contains(&c.collection) {
             return Err(ApiError::BadRequest(format!("Collection non synchronisée par ce serveur : {}", c.collection)));
@@ -234,48 +390,68 @@ async fn push(State(server): State<Shared>, headers: HeaderMap, Json(body): Json
     }
     let author = body.author.map(|a| a.chars().take(60).collect::<String>());
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let mut conn = server.db.lock().unwrap();
-    let tx = conn.transaction()?;
-    let mut accepted = 0;
-    for c in body.changes {
-        let data = if c.deleted { None } else { c.data.map(|d| d.to_string()) };
-        if data.as_ref().is_some_and(|d| d.len() > MAX_DOCUMENT) {
-            return Err(ApiError::BadRequest(format!("Document trop volumineux : {}/{}", c.collection, c.id)));
+    let who = author.clone();
+    let (accepted, seq) = with_db(&server, move |conn| {
+        let tx = conn.transaction()?;
+        let mut accepted = 0;
+        for c in body.changes {
+            let data = if c.deleted { None } else { c.data.map(|d| d.to_string()) };
+            if data.as_ref().is_some_and(|d| d.len() > MAX_DOCUMENT) {
+                return Err(ApiError::BadRequest(format!("Document trop volumineux : {}/{}", c.collection, c.id)));
+            }
+            let current: Option<(Option<String>, bool)> = tx
+                .query_row(
+                    "SELECT data, deleted FROM docs WHERE collection = ?1 AND id = ?2",
+                    params![c.collection, c.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            // Rien de nouveau : pas de modification enregistrée (évite les allers-retours)
+            let unchanged = match &current {
+                Some((d, deleted)) => *deleted == c.deleted && (c.deleted || d == &data),
+                None => c.deleted,
+            };
+            if unchanged {
+                continue;
+            }
+            // Historique : qui, quand, quel document ; le contenu n'est gardé que dans `docs`
+            tx.execute(
+                "INSERT INTO history (collection, id, data, deleted, at, author) VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
+                params![c.collection, c.id, c.deleted, now, author],
+            )?;
+            let seq = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO docs (collection, id, data, deleted, seq, updated_at, author) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(collection, id) DO UPDATE SET data = excluded.data, deleted = excluded.deleted,
+                     seq = excluded.seq, updated_at = excluded.updated_at, author = excluded.author",
+                params![c.collection, c.id, data, c.deleted, seq, now, author],
+            )?;
+            accepted += 1;
         }
-        let current: Option<(Option<String>, bool)> = tx
-            .query_row(
-                "SELECT data, deleted FROM docs WHERE collection = ?1 AND id = ?2",
-                params![c.collection, c.id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        // Rien de nouveau : pas de modification enregistrée (évite les allers-retours)
-        let unchanged = match &current {
-            Some((d, deleted)) => *deleted == c.deleted && (c.deleted || d == &data),
-            None => c.deleted,
-        };
-        if unchanged {
-            continue;
-        }
-        tx.execute(
-            "INSERT INTO history (collection, id, data, deleted, at, author) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![c.collection, c.id, data, c.deleted, now, author],
-        )?;
-        let seq = tx.last_insert_rowid();
-        tx.execute(
-            "INSERT INTO docs (collection, id, data, deleted, seq, updated_at, author) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(collection, id) DO UPDATE SET data = excluded.data, deleted = excluded.deleted,
-                 seq = excluded.seq, updated_at = excluded.updated_at, author = excluded.author",
-            params![c.collection, c.id, data, c.deleted, seq, now, author],
-        )?;
-        accepted += 1;
-    }
-    tx.commit()?;
-    let seq = last_seq(&conn)?;
+        tx.commit()?;
+        Ok((accepted, last_seq(conn)?))
+    })
+    .await?;
     if accepted > 0 {
-        tracing::info!("{accepted} modification(s) de {}", author.as_deref().unwrap_or("?"));
+        tracing::info!("{accepted} modification(s) de {}", who.as_deref().unwrap_or("?"));
     }
     Ok(Json(PushResult { accepted, seq }))
+}
+
+/// `/health` : le serveur répond et la base aussi
+async fn health(State(server): State<Shared>) -> Response {
+    let select = |conn: &Connection| conn.query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).is_ok();
+    let ok = match server.db.try_lock() {
+        Ok(conn) => select(&conn),
+        // Base occupée par une requête : elle fonctionne
+        Err(TryLockError::WouldBlock) => true,
+        Err(TryLockError::Poisoned(e)) => select(&e.into_inner()),
+    };
+    if ok {
+        "ok".into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "base de données indisponible").into_response()
+    }
 }
 
 fn open_db(path: &str) -> rusqlite::Result<Connection> {
@@ -303,6 +479,17 @@ fn open_db(path: &str) -> rusqlite::Result<Connection> {
          );
          CREATE INDEX IF NOT EXISTS docs_seq ON docs (seq);",
     )?;
+    // Bases d'avant la 0.4 : l'historique gardait le contenu de chaque version (lu par
+    // personne) ; il est vidé de ce contenu et la place libérée au fil des ménages
+    // (auto_vacuum incrémental, pris en compte par un VACUUM complet, une seule fois)
+    let auto_vacuum: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+    if auto_vacuum != 2 {
+        let emptied = conn.execute("UPDATE history SET data = NULL WHERE data IS NOT NULL", [])?;
+        conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
+        if emptied > 0 {
+            tracing::info!("historique : contenu retiré de {emptied} entrée(s), base compactée");
+        }
+    }
     Ok(conn)
 }
 
@@ -310,7 +497,10 @@ fn open_db(path: &str) -> rusqlite::Result<Connection> {
 fn prune_history(conn: &Connection, days: i64) -> rusqlite::Result<usize> {
     let before = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     // La dernière modification de chaque document reste : c'est elle qui porte le curseur
-    conn.execute("DELETE FROM history WHERE at < ?1 AND seq NOT IN (SELECT seq FROM docs)", [before])
+    let n = conn.execute("DELETE FROM history WHERE at < ?1 AND seq NOT IN (SELECT seq FROM docs)", [before])?;
+    // Place libérée rendue au système
+    conn.execute_batch("PRAGMA incremental_vacuum;")?;
+    Ok(n)
 }
 
 fn parse_collections(value: Option<String>) -> Result<BTreeSet<String>, String> {
@@ -328,7 +518,7 @@ fn parse_collections(value: Option<String>) -> Result<BTreeSet<String>, String> 
 }
 
 /// `twitch-desk-sync health` : vérification de santé pour Docker (sans curl dans l'image)
-fn health(port: u16) -> std::process::ExitCode {
+fn health_check(port: u16) -> std::process::ExitCode {
     use std::io::{Read, Write};
     let ok = (|| -> std::io::Result<bool> {
         let mut s = std::net::TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_secs(3))?;
@@ -347,12 +537,15 @@ fn health(port: u16) -> std::process::ExitCode {
 }
 
 fn app(server: Shared) -> Router {
-    Router::new()
-        .route("/health", get(|| async { "ok" }))
+    let api = Router::new()
         .route("/api/v1/info", get(info))
         .route("/api/v1/changes", get(changes).post(push))
+        // Code vérifié avant la lecture du corps (route_layer : routes connues seulement)
+        .route_layer(middleware::from_fn_with_state(server.clone(), require_code))
         .layer(DefaultBodyLimit::max(MAX_BODY))
-        .with_state(server)
+        .layer(GlobalConcurrencyLimitLayer::new(MAX_CONCURRENT))
+        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, REQUEST_TIMEOUT));
+    Router::new().route("/health", get(health)).merge(api).with_state(server)
 }
 
 #[tokio::main]
@@ -362,7 +555,7 @@ async fn main() -> std::process::ExitCode {
         .init();
     let port: u16 = std::env::var("SYNC_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8787);
     if std::env::args().nth(1).as_deref() == Some("health") {
-        return health(port);
+        return health_check(port);
     }
 
     let code = std::env::var("SYNC_CODE").unwrap_or_default().trim().to_owned();
@@ -390,16 +583,19 @@ async fn main() -> std::process::ExitCode {
         }
     };
     let days: i64 = std::env::var("SYNC_HISTORY_DAYS").ok().and_then(|d| d.parse().ok()).unwrap_or(90).max(1);
-    let server = Arc::new(Server { code, collections, db: Mutex::new(conn) });
+    let proxy_hops: usize = std::env::var("SYNC_PROXY_HOPS").ok().and_then(|d| d.trim().parse().ok()).unwrap_or(1);
+    let server = Arc::new(Server { code, collections, db: Mutex::new(conn), proxy_hops, guard: Guard::default() });
 
     // Ménage quotidien de l'historique
     let pruner = server.clone();
     tokio::spawn(async move {
         loop {
-            match prune_history(&pruner.db.lock().unwrap(), days) {
+            let result = with_db(&pruner, move |conn| Ok(prune_history(conn, days)?)).await;
+            match result {
                 Ok(n) if n > 0 => tracing::info!("historique : {n} entrée(s) de plus de {days} jours effacée(s)"),
                 Ok(_) => {}
-                Err(e) => tracing::warn!("ménage de l'historique : {e}"),
+                Err(ApiError::Internal(e)) => tracing::warn!("ménage de l'historique : {e}"),
+                Err(_) => {}
             }
             tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
         }
@@ -428,7 +624,8 @@ async fn main() -> std::process::ExitCode {
         #[cfg(not(unix))]
         let _ = ctrl_c.await;
     };
-    if let Err(e) = axum::serve(listener, app(server)).with_graceful_shutdown(shutdown).await {
+    let service = app(server).into_make_service_with_connect_info::<SocketAddr>();
+    if let Err(e) = axum::serve(listener, service).with_graceful_shutdown(shutdown).await {
         tracing::error!("serveur : {e}");
         return std::process::ExitCode::FAILURE;
     }
@@ -438,19 +635,17 @@ async fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt;
 
     fn server(collections: &[&str]) -> Shared {
         Arc::new(Server {
             code: "code-secret".into(),
             collections: collections.iter().map(|c| c.to_string()).collect(),
             db: Mutex::new(open_db(":memory:").unwrap()),
+            proxy_hops: 1,
+            guard: Guard::default(),
         })
-    }
-
-    fn auth() -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert("authorization", "Bearer code-secret".parse().unwrap());
-        h
     }
 
     fn change(collection: &str, id: &str, data: Option<serde_json::Value>) -> IncomingChange {
@@ -458,8 +653,20 @@ mod tests {
     }
 
     async fn pull(s: &Shared, since: i64) -> ChangesPage {
-        let Json(page) = changes(State(s.clone()), auth(), Query(Since { since, limit: None })).await.ok().unwrap();
+        let Json(page) = changes(State(s.clone()), Query(Since { since, limit: None })).await.ok().unwrap();
         page
+    }
+
+    fn request(method: &str, uri: &str, code: Option<&str>, ip: &str, body: &str) -> Request {
+        let mut r = Request::builder().method(method).uri(uri).header("x-forwarded-for", ip).header("content-type", "application/json");
+        if let Some(code) = code {
+            r = r.header("authorization", format!("Bearer {code}"));
+        }
+        r.body(Body::from(body.to_owned())).unwrap()
+    }
+
+    async fn status(s: &Shared, r: Request) -> StatusCode {
+        app(s.clone()).oneshot(r).await.unwrap().status()
     }
 
     #[test]
@@ -477,10 +684,65 @@ mod tests {
         assert!(parse_collections(Some("gifts,accounts".into())).is_err());
     }
 
+    #[test]
+    fn client_address() {
+        let peer: IpAddr = "10.0.0.2".parse().unwrap();
+        let mut h = HeaderMap::new();
+        assert_eq!(client_ip(&h, Some(peer), 1), peer);
+        h.insert("x-forwarded-for", "1.1.1.1, 2.2.2.2".parse().unwrap());
+        // Le proxy ajoute l'adresse réelle à droite ; celle de gauche vient du client
+        assert_eq!(client_ip(&h, Some(peer), 1), "2.2.2.2".parse::<IpAddr>().unwrap());
+        assert_eq!(client_ip(&h, Some(peer), 2), "1.1.1.1".parse::<IpAddr>().unwrap());
+        assert_eq!(client_ip(&h, Some(peer), 5), "1.1.1.1".parse::<IpAddr>().unwrap());
+        assert_eq!(client_ip(&h, Some(peer), 0), peer);
+    }
+
+    #[test]
+    fn repeated_wrong_codes_block_the_address() {
+        let g = Guard::default();
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let t0 = Instant::now();
+        for _ in 0..MAX_FAILURES - 1 {
+            g.failed(ip, t0);
+        }
+        assert!(g.blocked(ip, t0).is_none());
+        g.failed(ip, t0);
+        assert!(g.blocked(ip, t0).is_some());
+        assert!(g.blocked("1.2.3.5".parse().unwrap(), t0).is_none());
+        assert!(g.blocked(ip, t0 + BLOCK_TIME + Duration::from_secs(1)).is_none());
+        // Essais espacés : la fenêtre repart de zéro
+        let other: IpAddr = "5.6.7.8".parse().unwrap();
+        for _ in 0..MAX_FAILURES - 1 {
+            g.failed(other, t0);
+        }
+        let later = t0 + FAILURE_WINDOW + Duration::from_secs(1);
+        g.failed(other, later);
+        assert!(g.blocked(other, later).is_none());
+    }
+
+    #[tokio::test]
+    async fn code_checked_before_the_body() {
+        let s = server(&["gifts"]);
+        assert_eq!(status(&s, request("GET", "/health", None, "9.9.9.9", "")).await, StatusCode::OK);
+        assert_eq!(status(&s, request("GET", "/api/v1/info", None, "9.9.9.9", "")).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status(&s, request("GET", "/api/v1/info", Some("code-secret"), "9.9.9.9", "")).await, StatusCode::OK);
+        // Corps invalide sans le bon code : refusé pour le code, le corps n'est pas lu
+        assert_eq!(status(&s, request("POST", "/api/v1/changes", Some("faux"), "9.9.9.9", "{pas du json")).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status(&s, request("POST", "/api/v1/changes", Some("code-secret"), "9.9.9.9", "{pas du json")).await,
+            StatusCode::BAD_REQUEST
+        );
+        // Trop d'essais : l'adresse attend, même avec le bon code ; les autres non
+        for _ in 0..MAX_FAILURES {
+            assert_eq!(status(&s, request("GET", "/api/v1/info", Some("faux"), "8.8.8.8", "")).await, StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(status(&s, request("GET", "/api/v1/info", Some("code-secret"), "8.8.8.8", "")).await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(status(&s, request("GET", "/api/v1/info", Some("code-secret"), "9.9.9.9", "")).await, StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn push_pull_and_last_write_wins() {
         let s = server(&["gifts", "groups"]);
-        assert!(info(State(s.clone()), HeaderMap::new()).await.is_err());
 
         let body = Push {
             author: Some("alice".into()),
@@ -489,12 +751,12 @@ mod tests {
                 change("gifts", "a", Some(serde_json::json!({"title": "Obsidian Sails"}))),
             ],
         };
-        let Json(r) = push(State(s.clone()), auth(), Json(body)).await.ok().unwrap();
+        let Json(r) = push(State(s.clone()), Json(body)).await.ok().unwrap();
         assert_eq!((r.accepted, r.seq), (2, 2));
 
         // Le même contenu renvoyé n'est pas une modification
         let again = Push { author: None, changes: vec![change("gifts", "a", Some(serde_json::json!({"title": "Obsidian Sails"})))] };
-        let Json(r) = push(State(s.clone()), auth(), Json(again)).await.ok().unwrap();
+        let Json(r) = push(State(s.clone()), Json(again)).await.ok().unwrap();
         assert_eq!(r.accepted, 0);
 
         let page = pull(&s, 0).await;
@@ -504,27 +766,65 @@ mod tests {
 
         // Modification puis suppression : seule la dernière version est renvoyée
         let edit = Push { author: Some("bob".into()), changes: vec![change("gifts", "a", Some(serde_json::json!({"title": "Voiles"})))] };
-        let _ = push(State(s.clone()), auth(), Json(edit)).await.ok().unwrap();
+        let _ = push(State(s.clone()), Json(edit)).await.ok().unwrap();
         let delete = Push { author: Some("bob".into()), changes: vec![change("gifts", "a", None)] };
-        let _ = push(State(s.clone()), auth(), Json(delete)).await.ok().unwrap();
+        let _ = push(State(s.clone()), Json(delete)).await.ok().unwrap();
         let page = pull(&s, 2).await;
         assert_eq!(page.changes.len(), 1);
         assert!(page.changes[0].deleted && page.changes[0].data.is_none());
         assert_eq!(page.seq, 4);
 
+        // L'historique ne garde pas le contenu
+        let stored: i64 = s.db.lock().unwrap().query_row("SELECT COUNT(*) FROM history WHERE data IS NOT NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored, 0);
+
         // Collection non synchronisée refusée
         let other = Push { author: None, changes: vec![change("channels", "x", Some(serde_json::json!({})))] };
-        assert!(push(State(s.clone()), auth(), Json(other)).await.is_err());
+        assert!(push(State(s.clone()), Json(other)).await.is_err());
     }
 
     #[tokio::test]
     async fn paging() {
         let s = server(&["gifts"]);
         let many = (0..250).map(|i| change("gifts", &format!("g{i}"), Some(serde_json::json!({"n": i})))).collect();
-        let _ = push(State(s.clone()), auth(), Json(Push { author: None, changes: many })).await.ok().unwrap();
+        let _ = push(State(s.clone()), Json(Push { author: None, changes: many })).await.ok().unwrap();
         let first = pull(&s, 0).await;
         assert_eq!((first.changes.len(), first.more), (200, true));
         let second = pull(&s, first.seq).await;
         assert_eq!((second.changes.len(), second.more, second.seq), (50, false, 250));
+
+        // Page coupée par la taille : au moins un document, la suite au prochain appel
+        let conn = s.db.lock().unwrap();
+        let page = read_changes(&conn, &s.collections, 0, 200, 20).unwrap();
+        assert_eq!((page.changes.len(), page.more, page.seq), (2, true, 2));
+        let page = read_changes(&conn, &s.collections, 0, 200, 1).unwrap();
+        assert_eq!((page.changes.len(), page.more, page.seq), (1, true, 1));
+    }
+
+    #[test]
+    fn old_history_content_is_dropped() {
+        let dir = std::env::temp_dir().join(format!("tdsync-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.db");
+        let path = path.to_str().unwrap();
+        {
+            // Base d'avant la 0.4 : contenu dans l'historique, sans auto_vacuum
+            let conn = Connection::open(path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE history (seq INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, id TEXT NOT NULL,
+                     data TEXT, deleted INTEGER NOT NULL, at TEXT NOT NULL, author TEXT);
+                 INSERT INTO history (collection, id, data, deleted, at) VALUES ('gifts', 'a', '{\"n\":1}', 0, '2020-01-01T00:00:00Z');",
+            )
+            .unwrap();
+        }
+        let conn = open_db(path).unwrap();
+        let (rows, with_data): (i64, i64) =
+            conn.query_row("SELECT COUNT(*), COUNT(data) FROM history", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((rows, with_data), (1, 0));
+        let mode: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode, 2);
+        assert_eq!(prune_history(&conn, 1).unwrap(), 1);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
