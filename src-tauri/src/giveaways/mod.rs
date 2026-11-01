@@ -112,6 +112,8 @@ pub struct GiveawaysView {
     pub giveaways: Vec<GiveawayView>,
     pub mentions: Vec<MentionView>,
     pub anonymous_connected: bool,
+    /// Réponses des bots aux commandes d'information (!giveaway…), par chaîne
+    pub bot_replies: HashMap<String, Vec<crate::db::BotReply>>,
 }
 
 pub struct MonitorReceivers {
@@ -507,7 +509,8 @@ impl Monitor {
             .collect()
     }
 
-    /// Journal du chat : commandes des spectateurs, tous nos messages, annonces de gagnant
+    /// Journal du chat : commandes des spectateurs, tous nos messages et ceux du streamer,
+    /// annonces de gagnant, réponses des bots
     fn log_chat(&mut self, channel: &str, user: &str, text: &str, moderator: bool) {
         let author = user.to_lowercase();
         // Commande avec « ! », ou mot-clé d'un giveaway ouvert tapé seul (« bonbons »)
@@ -532,6 +535,9 @@ impl Monitor {
         } else if let Some(cmd) = reply {
             command = Some(cmd);
             "reply"
+        } else if author == channel {
+            // Tous les messages du streamer (règles, annonces, tirage…)
+            "streamer"
         } else if command.is_some() && !is_reply_bot(&author) {
             "command"
         } else {
@@ -548,6 +554,32 @@ impl Monitor {
         });
         if self.chat_log.len() >= CHAT_LOG_FLUSH {
             self.flush_chat_log();
+        }
+    }
+
+    /// Réponse de bot nouvelle ou changée : cadeaux du catalogue repérés dedans ajoutés aux
+    /// giveaways ouverts de la chaîne (ceux déjà rattachés restent)
+    fn gifts_from_reply(&mut self, channel: &str, message: &str) {
+        let gifts = self.app.db.gifts().unwrap_or_default();
+        let found = crate::db::gifts_in_text(&gifts, message);
+        if found.is_empty() {
+            return;
+        }
+        let mut added = 0;
+        for g in self.open_giveaways(channel) {
+            added += self.app.db.attach_gifts(g.id, &found).unwrap_or(0);
+        }
+        if added > 0 {
+            let names: Vec<&str> = gifts.iter().filter(|g| found.contains(&g.id)).map(|g| g.title.as_str()).collect();
+            self.app.log("giveaways", EventKind::Giveaway, format!("Cadeaux repérés dans la réponse du bot sur {channel} : {}", names.join(", ")));
+            self.app.sync.poke();
+        }
+    }
+
+    /// Nouveau giveaway sur une chaîne : cadeaux des réponses de bot déjà connues
+    fn gifts_from_known_replies(&mut self, channel: &str) {
+        for r in self.app.db.bot_replies(channel).unwrap_or_default() {
+            self.gifts_from_reply(channel, &r.message);
         }
     }
 
@@ -597,7 +629,11 @@ impl Monitor {
             seen_at: now,
         };
         match self.app.db.save_bot_reply(&reply) {
-            Ok(true) => self.app.log("giveaways", EventKind::Info, format!("Réponse de {bot} à {command} sur {channel} enregistrée")),
+            Ok(true) => {
+                self.app.log("giveaways", EventKind::Info, format!("Réponse de {bot} à {command} sur {channel} enregistrée"));
+                self.gifts_from_reply(channel, &reply.message);
+                self.publish();
+            }
             Ok(false) => {}
             Err(e) => tracing::warn!("réponse de bot : {e}"),
         }
@@ -690,6 +726,7 @@ impl Monitor {
         let share = evidence.count * 100 / evidence.window.max(1);
         self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway détecté sur {channel} : {command} ({share} % du chat)"));
         self.app.notify(Alert::Giveaway, &format!("Giveaway sur {channel}"), &format!("Commande {command}, reprise par {share} % du chat"));
+        self.gifts_from_known_replies(channel);
         self.publish();
         schedule_auto_participation(self.app.clone(), id);
     }
@@ -713,6 +750,7 @@ impl Monitor {
         let channel_id = self.channels.iter().find(|c| c.login == channel).map(|c| c.channel_id.clone());
         tauri::async_runtime::spawn(async move { ensure_channel_in_list(&app, &login, channel_id, crate::db::ChannelList::Se).await });
         self.app.notify(Alert::Giveaway, &format!("Giveaway StreamElements sur {channel}"), "Tickets à acheter avec tes points StreamElements");
+        self.gifts_from_known_replies(channel);
         self.publish();
     }
 
@@ -804,6 +842,13 @@ impl Monitor {
             giveaways: build_views(&self.app, &self.accounts),
             mentions: self.mentions.iter().cloned().collect(),
             anonymous_connected: self.anon_connected,
+            bot_replies: {
+                let mut map: HashMap<String, Vec<crate::db::BotReply>> = HashMap::new();
+                for r in self.app.db.all_bot_replies().unwrap_or_default() {
+                    map.entry(r.channel.clone()).or_default().push(r);
+                }
+                map
+            },
         };
         *self.view.write().unwrap() = view;
         self.app.touch();

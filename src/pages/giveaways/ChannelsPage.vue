@@ -41,7 +41,8 @@ function currentKind(c: GiveawayChannelView) {
 function giftsOf(c: GiveawayChannelView): { gift: Gift, attached: boolean }[] {
   const attached = (openGiveaway(c)?.giftIds ?? []).map(id => byId.value.get(id)).filter((g): g is Gift => !!g)
   const i = insightOf(c)
-  const text = c.live ? [c.live.title, i?.description, i?.pinnedMessage, i?.streamelements?.title, i?.streamelements?.description].filter(Boolean).join('\n') : ''
+  const replies = (view.value?.botReplies[c.login] ?? []).map(r => r.message)
+  const text = c.live ? [c.live.title, i?.description, i?.pinnedMessage, i?.streamelements?.title, i?.streamelements?.description, ...replies].filter(Boolean).join('\n') : ''
   const found = suggestGifts(gifts.value, text).filter(g => !attached.some(a => a.id === g.id))
   return [...attached.map(gift => ({ gift, attached: true })), ...found.map(gift => ({ gift, attached: false }))]
 }

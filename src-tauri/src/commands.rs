@@ -381,12 +381,12 @@ pub fn get_chat_log(
     app: AppState,
     channel: String,
     kinds: Vec<String>,
-    command: Option<String>,
+    commands: Vec<String>,
     author: Option<String>,
     before_id: Option<i64>,
 ) -> CmdResult<Vec<crate::db::ChatLogEntry>> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
-    app.db.chat_log(&channel, &kinds, command.as_deref(), author.as_deref(), before_id, 200).map_err(db_err)
+    app.db.chat_log(&channel, &kinds, &commands, author.as_deref(), before_id, 200).map_err(db_err)
 }
 
 /// Gagnant désigné à la main (tirage non détecté) : giveaway ouvert de la chaîne, sinon le plus récent

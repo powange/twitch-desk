@@ -74,10 +74,13 @@ const suggestion = ref<ChannelSuggestion | null>(null)
 const giftSearch = ref('')
 // Cadeaux dont le titre ou un mot-clé apparaît dans le titre du live, la description de la chaîne
 // ou son message épinglé (comme sur le site Giveaway Twitch)
+// Réponses des bots de la chaîne à !giveaway… (souvent la description du giveaway)
+const botReplies = computed(() => snapshot.value?.giveaways.botReplies[form.value.channel.trim().toLowerCase()] ?? [])
 const suggestionText = computed(() => {
   const login = form.value.channel.trim().toLowerCase()
   const p = suggestion.value?.profile
   return [
+    ...botReplies.value.map(r => r.message),
     snapshot.value?.giveaways.channels.find(c => c.login === login)?.live?.title,
     p?.title,
     p?.description,
@@ -369,6 +372,13 @@ async function save() {
               variant="subtle"
               :title="`Commande détectée dans le chat : ${suggestion.detectedCommand}`"
             />
+            <div v-if="botReplies.length" class="flex flex-col gap-1.5">
+              <div class="text-sm font-medium">Réponses des bots</div>
+              <div v-for="r in botReplies" :key="r.command" class="border border-default rounded-md px-3 py-2 text-sm flex flex-col gap-0.5">
+                <div class="text-xs text-muted"><span class="font-mono text-default">{{ r.command }}</span> → {{ r.bot }}</div>
+                <div class="break-words">{{ r.message }}</div>
+              </div>
+            </div>
             <div class="flex flex-col gap-3 border-t border-default pt-4">
               <div class="text-xs uppercase tracking-wide text-muted">Sur ce streamer (gardé pour ses prochains giveaways)</div>
               <UFormField label="Discord du streamer" :help="profile?.discord && streamerDiscord === profile.discord && !streamerLoaded.discord ? 'Trouvé sur sa chaîne Twitch' : undefined">
@@ -502,7 +512,7 @@ async function save() {
                         <span class="leading-tight line-clamp-2">{{ g.title }}</span>
                         <span v-if="g.gameName" class="text-xs text-muted truncate">{{ g.gameName }}</span>
                       </span>
-                      <UIcon v-if="suggested.has(g.id)" name="i-lucide-sparkles" class="absolute top-1 right-1 size-3.5 text-primary" title="Suggéré : le titre du cadeau ou un mot-clé apparaît dans le titre, la description, le message épinglé ou le giveaway StreamElements de la chaîne" />
+                      <UIcon v-if="suggested.has(g.id)" name="i-lucide-sparkles" class="absolute top-1 right-1 size-3.5 text-primary" title="Suggéré : le titre du cadeau ou un mot-clé apparaît dans le titre, la description, le message épinglé, le giveaway StreamElements ou la réponse d'un bot à !giveaway" />
                     </button>
                   </div>
                 </div>

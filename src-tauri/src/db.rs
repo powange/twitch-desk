@@ -327,6 +327,63 @@ pub struct Gift {
     pub favorite: bool,
 }
 
+/// Texte sans accents ni majuscules (repérage des cadeaux)
+fn fold(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'à' | 'â' | 'ä' | 'á' | 'ã' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'î' | 'ï' | 'í' => 'i',
+            'ô' | 'ö' | 'ó' | 'õ' => 'o',
+            'ù' | 'û' | 'ü' | 'ú' => 'u',
+            'ç' => 'c',
+            'ñ' => 'n',
+            c => c,
+        })
+        .collect()
+}
+
+/// `term` présent au début d'un mot de `text` (mots séparés par n'importe quels espaces)
+fn starts_word(text: &str, term: &str) -> bool {
+    let words: Vec<&str> = term.split_whitespace().collect();
+    let Some(first) = words.first() else { return false };
+    let mut from = 0;
+    while let Some(pos) = text[from..].find(first) {
+        let start = from + pos;
+        let before_ok = text[..start].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+        if before_ok {
+            // Mots suivants, séparés par des espaces
+            let mut rest = &text[start + first.len()..];
+            let mut ok = true;
+            for w in &words[1..] {
+                let trimmed = rest.trim_start();
+                if trimmed.len() == rest.len() || !trimmed.starts_with(w) {
+                    ok = false;
+                    break;
+                }
+                rest = &trimmed[w.len()..];
+            }
+            if ok {
+                return true;
+            }
+        }
+        from = start + first.len().max(1);
+    }
+    false
+}
+
+/// Cadeaux du catalogue dont le titre ou un mot-clé apparaît dans le texte (même règle que
+/// l'interface : début de mot, majuscules et accents ignorés)
+pub fn gifts_in_text(gifts: &[Gift], text: &str) -> Vec<i64> {
+    let t = fold(text);
+    gifts
+        .iter()
+        .filter(|g| std::iter::once(&g.title).chain(g.keywords.iter()).any(|term| starts_word(&t, &fold(term.trim()))))
+        .map(|g| g.id)
+        .collect()
+}
+
 /// Dernière réponse d'un bot à une commande d'information sur une chaîne
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -351,7 +408,8 @@ pub struct ChatLogEntry {
     pub channel: String,
     pub at: String,
     pub author: String,
-    /// « command » (commande d'un spectateur), « own » (un de nos comptes), « winner » (bot)
+    /// « command » (commande d'un spectateur), « own » (un de nos comptes), « streamer » (message
+    /// du streamer), « winner » (annonce de gagnant), « reply » (réponse d'un bot)
     pub kind: String,
     pub command: Option<String>,
     pub message: String,
@@ -1387,6 +1445,40 @@ impl Db {
         Ok(changed)
     }
 
+    /// Réponses des bots de toutes les chaînes (affichage dans les giveaways et les alertes)
+    pub fn all_bot_replies(&self) -> DbResult<Vec<BotReply>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT channel, command, bot, message, asked_by, updated_at, seen_at FROM bot_replies
+             ORDER BY updated_at DESC LIMIT 500",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(BotReply {
+                channel: r.get(0)?,
+                command: r.get(1)?,
+                bot: r.get(2)?,
+                message: r.get(3)?,
+                asked_by: r.get(4)?,
+                updated_at: r.get(5)?,
+                seen_at: r.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Ajoute des cadeaux à un giveaway (ceux déjà rattachés restent) ; renvoie le nombre ajouté
+    pub fn attach_gifts(&self, giveaway_id: i64, gift_ids: &[i64]) -> DbResult<usize> {
+        let conn = self.conn();
+        let mut added = 0;
+        for gift in gift_ids {
+            added += conn.execute(
+                "INSERT OR IGNORE INTO giveaway_gifts (giveaway_id, gift_id) VALUES (?1, ?2)",
+                params![giveaway_id, gift],
+            )?;
+        }
+        Ok(added)
+    }
+
     pub fn bot_replies(&self, channel: &str) -> DbResult<Vec<BotReply>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -1417,7 +1509,7 @@ impl Db {
         &self,
         channel: &str,
         kinds: &[String],
-        command: Option<&str>,
+        commands: &[String],
         author: Option<&str>,
         before_id: Option<i64>,
         limit: usize,
@@ -1428,13 +1520,14 @@ impl Db {
             "SELECT id, channel, at, author, kind, command, message FROM chat_log
              WHERE channel = ?1
                AND (?2 = '[]' OR kind IN (SELECT value FROM json_each(?2)))
-               AND (?3 IS NULL OR command = ?3)
+               AND (?3 = '[]' OR command IN (SELECT value FROM json_each(?3)))
                AND (?4 IS NULL OR id < ?4)
                AND (?6 IS NULL OR instr(author, ?6) > 0)
              ORDER BY id DESC LIMIT ?5",
         )?;
         let author = author.map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty());
-        let rows = stmt.query_map(params![channel, kinds_json, command, before_id, limit as i64, author], |r| {
+        let commands_json = serde_json::to_string(commands).expect("liste sérialisable");
+        let rows = stmt.query_map(params![channel, kinds_json, commands_json, before_id, limit as i64, author], |r| {
             Ok(ChatLogEntry {
                 id: r.get(0)?,
                 channel: r.get(1)?,
@@ -1708,6 +1801,24 @@ mod tests {
     }
 
     #[test]
+    fn gifts_found_in_text() {
+        let gift = |id: i64, title: &str, keywords: &[&str]| Gift {
+            id,
+            title: title.into(),
+            image: None,
+            group_id: None,
+            keywords: keywords.iter().map(|k| k.to_string()).collect(),
+            game_id: None,
+            game_name: None,
+            favorite: false,
+        };
+        let gifts = vec![gift(1, "Obsidian Sails", &[]), gift(2, "Coffre", &["épée"]), gift(3, "Key", &[])];
+        assert_eq!(gifts_in_text(&gifts, "Giveaway : OBSIDIAN   sails + une Epee"), vec![1, 2]);
+        assert!(gifts_in_text(&gifts, "monkey business").is_empty());
+        assert_eq!(gifts_in_text(&gifts, "3 keys"), vec![3]);
+    }
+
+    #[test]
     fn chat_log_filters() {
         let db = Db::memory().unwrap();
         let e = |kind: &str, author: &str, command: Option<&str>, message: &str, at: &str| ChatLogEntry {
@@ -1726,12 +1837,12 @@ mod tests {
             e("winner", "streamelements", None, "Le gagnant est bob", "2026-11-01T10:00:03Z"),
         ])
         .unwrap();
-        assert_eq!(db.chat_log("lunarsea", &[], None, None, None, 10).unwrap().len(), 4);
-        assert_eq!(db.chat_log("lunarsea", &["own".into(), "winner".into()], None, None, None, 10).unwrap().len(), 2);
-        let joins = db.chat_log("lunarsea", &[], Some("!join"), None, None, 10).unwrap();
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, None, 10).unwrap().len(), 4);
+        assert_eq!(db.chat_log("lunarsea", &["own".into(), "winner".into()], &[], None, None, 10).unwrap().len(), 2);
+        let joins = db.chat_log("lunarsea", &[], &["!join".into()], None, None, 10).unwrap();
         assert_eq!(joins.iter().map(|x| x.author.as_str()).collect::<Vec<_>>(), vec!["eve", "bob"]);
-        assert_eq!(db.chat_log("lunarsea", &[], None, None, Some(joins[0].id), 10).unwrap().len(), 1);
-        assert_eq!(db.chat_log("lunarsea", &[], None, Some(" EV "), None, 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some(joins[0].id), 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], Some(" EV "), None, 10).unwrap().len(), 1);
         assert_eq!(db.chat_log_commands("lunarsea").unwrap(), vec![("!join".to_owned(), 2)]);
         assert_eq!(db.prune_chat_log("2026-11-01T10:00:02Z").unwrap(), 2);
 

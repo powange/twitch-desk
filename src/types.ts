@@ -377,6 +377,18 @@ export interface GiveawaysView {
   giveaways: GiveawayView[]
   mentions: MentionView[]
   anonymousConnected: boolean
+  // Réponses des bots aux commandes d'information (!giveaway…), par chaîne
+  botReplies: Record<string, BotReply[]>
+}
+
+export interface BotReply {
+  channel: string
+  command: string
+  bot: string
+  message: string
+  askedBy: string
+  updatedAt: string
+  seenAt: string
 }
 
 export interface ParticipationResult {

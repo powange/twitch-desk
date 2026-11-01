@@ -6,23 +6,24 @@ import { invoke } from '@tauri-apps/api/core'
 // et réponses des bots aux commandes d'information (!giveaway…), gardés 14 jours
 interface ChatLogEntry { id: number, channel: string, at: string, author: string, kind: Kind, command: string | null, message: string }
 interface BotReply { channel: string, command: string, bot: string, message: string, askedBy: string, updatedAt: string, seenAt: string }
-type Kind = 'command' | 'own' | 'winner' | 'reply'
+type Kind = 'command' | 'own' | 'streamer' | 'winner' | 'reply'
 
 const props = defineProps<{ channel: string | null }>()
 const open = defineModel<boolean>('open', { required: true })
 const toast = useToast()
 
-const KINDS: Record<Kind, { label: string, color: 'neutral' | 'primary' | 'success' | 'info' }> = {
+const KINDS: Record<Kind, { label: string, color: 'neutral' | 'primary' | 'success' | 'info' | 'warning' }> = {
   command: { label: 'Commande', color: 'neutral' },
   own: { label: 'Mon message', color: 'primary' },
+  streamer: { label: 'Streamer', color: 'warning' },
   winner: { label: 'Gagnant', color: 'success' },
   reply: { label: 'Réponse de bot', color: 'info' }
 }
-const ALL = 'all'
+// Filtres à choix multiples ; rien de choisi : tout
 const kindItems = [
-  { label: 'Tous les messages', value: ALL },
   { label: 'Commandes', value: 'command' },
   { label: 'Mes messages', value: 'own' },
+  { label: 'Messages du streamer', value: 'streamer' },
   { label: 'Gagnants', value: 'winner' },
   { label: 'Réponses de bots', value: 'reply' }
 ]
@@ -30,8 +31,8 @@ const kindItems = [
 const entries = ref<ChatLogEntry[]>([])
 const commands = ref<[string, number][]>([])
 const replies = ref<BotReply[]>([])
-const kind = ref<string>(ALL)
-const command = ref<string | undefined>(undefined)
+const kinds = ref<Kind[]>([])
+const selectedCommands = ref<string[]>([])
 const author = ref('')
 const loading = ref(false)
 const more = ref(false)
@@ -46,8 +47,8 @@ async function load(append = false) {
     const before = append ? entries.value.at(-1)?.id ?? null : null
     const page = await invoke<ChatLogEntry[]>('get_chat_log', {
       channel: props.channel,
-      kinds: kind.value === ALL ? [] : [kind.value],
-      command: command.value ?? null,
+      kinds: kinds.value,
+      commands: selectedCommands.value,
       author: author.value.trim() || null,
       beforeId: before
     })
@@ -74,13 +75,17 @@ async function refresh() {
 
 watch(open, (isOpen) => {
   if (!isOpen) return
-  kind.value = ALL
-  command.value = undefined
+  kinds.value = []
+  selectedCommands.value = []
   author.value = ''
   entries.value = []
   void refresh()
 })
-watch([kind, command], () => { if (open.value) void load() })
+watch([kinds, selectedCommands], () => { if (open.value) void load() }, { deep: true })
+// Clic sur une commande du tableau : ajoutée au filtre, ou retirée
+function toggleCommand(c: string) {
+  selectedCommands.value = selectedCommands.value.includes(c) ? selectedCommands.value.filter(x => x !== c) : [...selectedCommands.value, c]
+}
 // Recherche par auteur : relue une fois la frappe terminée
 let authorTimer: ReturnType<typeof setTimeout> | null = null
 watch(author, () => {
@@ -111,7 +116,7 @@ function time(iso: string) {
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="`Journal du chat de ${channel ?? ''}`" description="Commandes des spectateurs, tes messages, annonces de gagnant et réponses des bots, gardés 14 jours." :ui="{ content: 'max-w-5xl' }">
+  <UModal v-model:open="open" :title="`Journal du chat de ${channel ?? ''}`" description="Commandes des spectateurs, tes messages, ceux du streamer, annonces de gagnant et réponses des bots, gardés 14 jours." :ui="{ content: 'max-w-5xl' }">
     <template #body>
       <div class="flex flex-col gap-3">
         <!-- Réponses des bots aux commandes d'information -->
@@ -130,17 +135,19 @@ function time(iso: string) {
         </div>
 
         <div class="flex items-center gap-2 flex-wrap">
-          <USelect v-model="kind" :items="kindItems" class="w-52" aria-label="Type de message" />
+          <USelect v-model="kinds" :items="kindItems" multiple placeholder="Tous les messages" class="w-56" aria-label="Types de message" />
+          <UButton v-if="kinds.length" label="Tous les messages" size="xs" color="neutral" variant="ghost" icon="i-lucide-x" @click="kinds = []" />
           <USelectMenu
-            v-model="command"
+            v-model="selectedCommands"
             :items="commandItems"
             value-key="value"
+            multiple
             placeholder="Toutes les commandes"
             :search-input="{ placeholder: 'Rechercher une commande' }"
             class="w-60"
-            aria-label="Commande"
+            aria-label="Commandes"
           />
-          <UButton v-if="command" label="Toutes les commandes" size="xs" color="neutral" variant="ghost" icon="i-lucide-x" @click="command = undefined" />
+          <UButton v-if="selectedCommands.length" label="Toutes les commandes" size="xs" color="neutral" variant="ghost" icon="i-lucide-x" @click="selectedCommands = []" />
           <UInput id="chat-log-author" v-model="author" icon="i-lucide-search" placeholder="Rechercher un auteur" class="w-48" />
           <span class="flex-1" />
           <UButton icon="i-lucide-refresh-cw" color="neutral" variant="soft" :loading="loading" aria-label="Actualiser" title="Actualiser" @click="refresh" />
@@ -164,7 +171,14 @@ function time(iso: string) {
                 <td class="px-3 py-1.5 whitespace-nowrap font-medium">{{ e.author }}</td>
                 <td class="px-3 py-1.5"><UBadge :label="KINDS[e.kind]?.label ?? e.kind" :color="KINDS[e.kind]?.color ?? 'neutral'" variant="subtle" size="sm" class="whitespace-nowrap" /></td>
                 <td class="px-3 py-1.5 whitespace-nowrap font-mono">
-                  <button v-if="e.command" type="button" class="hover:underline" title="Filtrer sur cette commande" @click="command = e.command">{{ e.command }}</button>
+                  <button
+                    v-if="e.command"
+                    type="button"
+                    class="hover:underline"
+                    :class="selectedCommands.includes(e.command) ? 'text-primary' : ''"
+                    :title="selectedCommands.includes(e.command) ? 'Retirer du filtre' : 'Ajouter au filtre'"
+                    @click="toggleCommand(e.command)"
+                  >{{ e.command }}</button>
                   <span v-else class="text-muted">—</span>
                 </td>
                 <td class="px-3 py-1.5 break-words min-w-64">{{ e.message }}</td>
