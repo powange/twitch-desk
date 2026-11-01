@@ -30,6 +30,8 @@ jobs:
         with:
           # Après une release : le tag publié ; à la main : la branche choisie
           ref: ${{ github.event.workflow_run.head_branch || github.ref }}
+      # Page multi-stream : intégrée à l'application (public/), copie de secours sur GitHub Pages
+      - run: cp public/viewer.html public/viewer.js site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

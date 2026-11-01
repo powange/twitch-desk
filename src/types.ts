@@ -187,6 +187,8 @@ export interface Settings {
   detectCooldownSecs: number
   // Compter aussi les mots-clés tapés seuls, sans « ! »
   detectKeywords: boolean
+  // Page multi-stream : intégrée à l'application, ou page GitHub (secours)
+  viewerSource: 'local' | 'github'
 }
 
 export type ChannelList = 'points' | 'se'

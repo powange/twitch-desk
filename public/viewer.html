@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Streams</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <style>
+    /* Multi-stream de Twitch Desk : ouvert par l'application dans sa propre fenêtre, servi par
+       l'application (https://tauri.localhost) ou, en secours, par la page GitHub du projet.
+       Le lecteur et le chat de Twitch exigent le domaine de la page (paramètre parent). */
+    :root {
+      --bg: #0e0c14;
+      --bar: #1a1724;
+      --border: #2e2943;
+      --text: #ece9f6;
+      --muted: #a39dba;
+      --accent: #9277ff;
+      --gold: #ffc94d;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--text); overflow: hidden;
+      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: flex; flex-direction: column;
+    }
+    button {
+      background: transparent; color: var(--muted); border: 1px solid transparent; border-radius: 6px;
+      padding: 3px 8px; font: inherit; cursor: pointer; white-space: nowrap;
+    }
+    button:hover { color: var(--text); background: #2a2538; }
+    button.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+    button.star.on { color: var(--gold); border-color: color-mix(in srgb, var(--gold) 45%, transparent); }
+
+    #toolbar {
+      display: flex; align-items: center; gap: 4px; flex-wrap: wrap; flex: none;
+      padding: 4px 8px; background: var(--bar); border-bottom: 1px solid var(--border);
+    }
+    #toolbar .label { color: var(--muted); margin-right: 2px; }
+    #toolbar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 6px; }
+    #toolbar .hint { margin-left: auto; color: var(--muted); }
+
+    #grid { display: grid; flex: 1; min-height: 0; gap: 4px; padding: 4px; }
+    .tile { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #000; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .tile.featured { border-color: color-mix(in srgb, var(--gold) 55%, var(--border)); }
+    .bar { display: flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; background: var(--bar); border-bottom: 1px solid var(--border); flex: none; }
+    .bar .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .body { display: flex; flex: 1; min-height: 0; }
+    .player { flex: 1; min-width: 0; }
+    .player iframe, .chat { border: 0; display: block; width: 100%; height: 100%; }
+    .chat { width: 340px; flex: none; border-left: 1px solid var(--border); }
+    /* Vidéo masquée : le lecteur continue (le son reste), le chat prend toute la place */
+    .tile.no-video .player { display: none; }
+    .tile.no-video .chat { flex: 1; width: auto; border-left: 0; }
+    .hidden-note { flex: 1; display: none; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 12px; }
+    .tile.no-video.no-chat .hidden-note { display: flex; }
+    .empty { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 24px; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <span class="label">Tous les streams :</span>
+    <button id="mute-all" title="Couper le son de tous les streams">Couper le son</button>
+    <button id="low-volume" title="Volume à 1 % sur tous les streams">Volume 1 %</button>
+    <span class="sep"></span>
+    <button id="low-quality" title="Qualité la plus basse sur tous les streams">Qualité minimale</button>
+    <button id="auto-quality" title="Qualité automatique sur tous les streams">Qualité auto</button>
+    <span class="sep"></span>
+    <button id="pause-others" title="Quand un stream est mis en avant (★), mettre les autres en pause">Pause des autres à la mise en avant</button>
+    <span class="hint" id="hint"></span>
+  </div>
+  <div id="grid"></div>
+  <script src="https://player.twitch.tv/js/embed/v1.js"></script>
+  <script src="viewer.js"></script>
+</body>
+</html>

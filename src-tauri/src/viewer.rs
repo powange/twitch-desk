@@ -1,9 +1,10 @@
 //! Fenêtre multi-stream : streams des giveaways (et leur chat) dans une fenêtre à part,
 //! déplaçable, qui reste ouverte jusqu'à ce qu'on la ferme.
 //!
-//! Le lecteur et le chat de Twitch n'acceptent que des pages sur un vrai domaine (paramètre
-//! `parent`) : la fenêtre charge la page multi-stream publiée avec la page GitHub du projet
-//! (`site/viewer.html`). Cette page vient d'internet : elle n'a aucun accès à l'application.
+//! Le lecteur et le chat de Twitch exigent le domaine de la page qui les affiche (paramètre
+//! `parent`) servie en HTTPS : la page multi-stream (`public/viewer.html`) est servie par
+//! l'application en `https://tauri.localhost`, ou en secours par la page GitHub du projet
+//! (réglage). Dans les deux cas, la fenêtre n'a aucun droit sur l'application.
 
 use std::sync::Arc;
 
@@ -58,9 +59,16 @@ pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(),
         let _ = window.set_focus();
         return Ok(());
     }
-    let url = format!("{}?channels={login}&chat={login}", viewer_url());
-    let url = url.parse().map_err(|_| "Adresse de la page des streams invalide".to_owned())?;
-    let window = WebviewWindowBuilder::new(handle, LABEL, WebviewUrl::External(url))
+    let query = format!("channels={login}&chat={login}");
+    let source = if app.db.settings().viewer_source == "github" {
+        let url = format!("{}?{query}", viewer_url());
+        WebviewUrl::External(url.parse().map_err(|_| "Adresse de la page des streams invalide".to_owned())?)
+    } else {
+        WebviewUrl::App(format!("viewer.html?{query}").into())
+    };
+    let window = WebviewWindowBuilder::new(handle, LABEL, source)
+        // Page de l'application servie en https://tauri.localhost (Windows) : Twitch exige HTTPS
+        .use_https_scheme(true)
         .title("Streams")
         .inner_size(1280.0, 760.0)
         .min_inner_size(480.0, 320.0)

@@ -556,6 +556,8 @@ pub struct Settings {
     pub detect_cooldown_secs: u64,
     /// Compter aussi les mots-clés tapés seuls, sans « ! »
     pub detect_keywords: bool,
+    /// Page multi-stream : « local » (intégrée à l'application) ou « github » (page GitHub)
+    pub viewer_source: String,
 }
 
 pub const DEFAULT_SCANNER_KEYWORDS: &[&str] =
@@ -588,6 +590,7 @@ impl Default for Settings {
             detect_max_per_user: 2,
             detect_cooldown_secs: 600,
             detect_keywords: true,
+            viewer_source: "local".into(),
         }
     }
 }
