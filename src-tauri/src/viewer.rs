@@ -4,9 +4,13 @@
 //! Le lecteur et le chat de Twitch exigent le domaine de la page qui les affiche (paramètre
 //! `parent`) servie en HTTPS : la page multi-stream (`public/viewer.html`) est servie par
 //! l'application en `https://tauri.localhost`, ou en secours par la page GitHub du projet
-//! (réglage). Dans les deux cas, la fenêtre n'a aucun droit sur l'application.
+//! (réglage). Dans les deux cas, la fenêtre n'a aucun droit sur l'application : aucune
+//! capacité ne la nomme (capabilities/default.json ne vaut que pour « main ») et les
+//! commandes de l'application sont déclarées à Tauri (build.rs), donc refusées hors de la
+//! fenêtre principale. Elle ne parle à l'application que par des adresses convenues.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -34,6 +38,36 @@ fn is_twitch(url: &url::Url) -> bool {
     url.scheme() == "https" && url.host_str().is_some_and(|h| h == "twitch.tv" || h.ends_with(".twitch.tv"))
 }
 
+/// Domaines de Twitch admis dans la fenêtre des streams : sous Linux (et macOS), le contrôle
+/// des navigations voit aussi celles des cadres (lecteurs, chat, extensions du chat)
+fn is_twitch_frame(url: &url::Url) -> bool {
+    const DOMAINS: [&str; 4] = ["twitch.tv", "ext-twitch.tv", "twitchcdn.net", "jtvnw.net"];
+    url.scheme() == "https" && url.host_str().is_some_and(|h| DOMAINS.iter().any(|d| h == *d || h.ends_with(&format!(".{d}"))))
+}
+
+/// Même origine (schéma, hôte, port)
+fn same_origin(a: &url::Url, b: &url::Url) -> bool {
+    a.origin() == b.origin()
+}
+
+/// Page de l'application : https://tauri.localhost (Windows), tauri://localhost (Linux, macOS)
+fn is_app_page(url: &url::Url) -> bool {
+    match url.scheme() {
+        "tauri" => url.host_str() == Some("localhost"),
+        "https" | "http" => url.host_str() == Some("tauri.localhost"),
+        _ => false,
+    }
+}
+
+/// Navigation admise dans la fenêtre des streams : la page elle-même (`page` : son adresse),
+/// Twitch, et les cadres vides
+fn navigation_allowed(url: &url::Url, page: &url::Url) -> bool {
+    matches!(url.scheme(), "about" | "blob")
+        || same_origin(url, page)
+        || (is_app_page(page) && is_app_page(url))
+        || is_twitch_frame(url)
+}
+
 fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let pin = CheckMenuItem::with_id(app, PIN_ID, "Toujours au premier plan", true, false, None::<&str>)?;
     let reload = MenuItem::with_id(app, RELOAD_ID, "Recharger les streams", true, None::<&str>)?;
@@ -52,17 +86,94 @@ pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(),
     }
     let handle = app.handle();
     if let Some(window) = handle.get_webview_window(LABEL) {
-        // Fenêtre déjà ouverte : ajout sans recharger les autres streams (nom vérifié ci-dessus)
-        window
-            .eval(format!("window.twitchDeskAdd && window.twitchDeskAdd('{login}')"))
-            .map_err(|e| format!("fenêtre des streams : {e}"))?;
+        let result = add_in_page(&window, &login).await;
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
-        return Ok(());
+        return match result.as_deref() {
+            Some("added" | "present") => Ok(()),
+            Some("full") => Err(full_message()),
+            // Page pas encore prête (chargement) ou sans réponse : rechargée avec la chaîne
+            // ajoutée à son adresse, les autres streams restent
+            _ => reload_with(&window, &login),
+        };
     }
     open_window(&app, &format!("channels={login}&chat={login}"))?;
     Ok(())
+}
+
+/// Nombre de streams de la page (MAX de viewer.js)
+const MAX_STREAMS: usize = 9;
+
+fn full_message() -> String {
+    format!("La fenêtre des streams en affiche déjà {MAX_STREAMS} : fermez-en un d'abord")
+}
+
+/// Ajout sans recharger les autres streams (nom vérifié par l'appelant) : « added »,
+/// « present » (déjà affichée), « full » (plus de place), « pending » (page pas prête) ;
+/// `None` sans réponse de la page
+async fn add_in_page(window: &tauri::WebviewWindow, login: &str) -> Option<String> {
+    let script = format!(
+        "(function () {{
+  if (typeof window.twitchDeskAdd !== 'function') return 'pending';
+  var list = (new URLSearchParams(location.search).get('channels') || '').split(',').filter(Boolean);
+  if (list.indexOf('{login}') >= 0) return 'present';
+  if (list.length >= {MAX_STREAMS}) return 'full';
+  window.twitchDeskAdd('{login}');
+  return 'added';
+}})()"
+    );
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let tx = Mutex::new(Some(tx));
+    let sent = window.eval_with_callback(script, move |value| {
+        if let Some(tx) = tx.lock().ok().and_then(|mut t| t.take()) {
+            let _ = tx.send(value);
+        }
+    });
+    if sent.is_err() {
+        return None;
+    }
+    let value = tokio::time::timeout(Duration::from_secs(3), rx).await.ok()?.ok()?;
+    // Résultat sérialisé en JSON : chaîne entre guillemets
+    Some(value.trim().trim_matches('"').to_owned())
+}
+
+/// Adresse de la page avec `login` ajoutée aux streams (et au chat) ; `Err` quand la page en
+/// affiche déjà le maximum
+fn query_with(query: &str, login: &str) -> Result<String, String> {
+    let mut pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes()).into_owned().collect();
+    let mut add_to = |key: &str, limit: bool| -> Result<(), String> {
+        let pos = match pairs.iter().position(|(k, _)| k == key) {
+            Some(p) => p,
+            None => {
+                pairs.push((key.to_owned(), String::new()));
+                pairs.len() - 1
+            }
+        };
+        let mut list: Vec<&str> = pairs[pos].1.split(',').filter(|c| !c.is_empty()).collect();
+        if list.contains(&login) {
+            return Ok(());
+        }
+        if limit && list.len() >= MAX_STREAMS {
+            return Err(full_message());
+        }
+        list.push(login);
+        pairs[pos].1 = list.join(",");
+        Ok(())
+    };
+    add_to("channels", true)?;
+    add_to("chat", false)?;
+    // Virgules et deux-points gardés tels quels, comme les écrit la page
+    Ok(pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&"))
+}
+
+/// Recharge la page des streams avec `login` en plus (nom vérifié par l'appelant)
+fn reload_with(window: &tauri::WebviewWindow, login: &str) -> Result<(), String> {
+    let mut url = window.url().map_err(|e| format!("fenêtre des streams : {e}"))?;
+    let query = query_with(url.query().unwrap_or(""), login)?;
+    let query = clean_query(&query).ok_or("Adresse de la page des streams invalide")?;
+    url.set_query(Some(&query));
+    window.navigate(url).map_err(|e| format!("fenêtre des streams : {e}"))
 }
 
 /// Adresse de la page multi-stream gardée : seuls les caractères qu'elle produit sont admis
@@ -76,9 +187,24 @@ fn clean_query(query: &str) -> Option<String> {
 pub fn remember(app: &App, open: bool) {
     let Some(window) = app.handle().get_webview_window(LABEL) else { return };
     if let Some(query) = window.url().ok().and_then(|u| u.query().and_then(clean_query)) {
-        let _ = app.db.set_state("viewer_query", &query);
+        let mut last = LAST_QUERY.lock().unwrap_or_else(|e| e.into_inner());
+        if last.as_deref() != Some(query.as_str()) && app.db.set_state("viewer_query", &query).is_ok() {
+            *last = Some(query);
+        }
     }
-    let _ = app.db.set_state("viewer_open", if open { "1" } else { "0" });
+    remember_open(app, open);
+}
+
+/// Dernières valeurs écrites : rien n'est réécrit tant qu'elles ne changent pas (relevé toutes
+/// les 20 s). Toute écriture de `viewer_query` et `viewer_open` passe par ici
+static LAST_QUERY: Mutex<Option<String>> = Mutex::new(None);
+static LAST_OPEN: Mutex<Option<bool>> = Mutex::new(None);
+
+fn remember_open(app: &App, open: bool) {
+    let mut last = LAST_OPEN.lock().unwrap_or_else(|e| e.into_inner());
+    if *last != Some(open) && app.db.set_state("viewer_open", if open { "1" } else { "0" }).is_ok() {
+        *last = Some(open);
+    }
 }
 
 /// Au lancement : rouvre la fenêtre des streams si elle était ouverte, telle qu'elle était ;
@@ -104,11 +230,15 @@ pub fn restore(app: &Arc<App>) {
 
 fn open_window(app: &App, query: &str) -> Result<(), String> {
     let handle = app.handle();
-    let source = if app.db.settings().viewer_source == "github" {
-        let url = format!("{}?{query}", viewer_url());
-        WebviewUrl::External(url.parse().map_err(|_| "Adresse de la page des streams invalide".to_owned())?)
+    // `page` : adresse de la page, dont l'origine reste admise dans la fenêtre
+    let (source, page): (WebviewUrl, url::Url) = if app.db.settings().viewer_source == "github" {
+        let url: url::Url = format!("{}?{query}", viewer_url()).parse().map_err(|_| "Adresse de la page des streams invalide".to_owned())?;
+        (WebviewUrl::External(url.clone()), url)
     } else {
-        WebviewUrl::App(format!("viewer.html?{query}").into())
+        // En développement, la page vient du serveur de Vite (devUrl)
+        let dev = if cfg!(dev) { handle.config().build.dev_url.clone() } else { None };
+        let page = dev.unwrap_or_else(|| "https://tauri.localhost/".parse().expect("adresse fixe"));
+        (WebviewUrl::App(format!("viewer.html?{query}").into()), page)
     };
     let mut builder = WebviewWindowBuilder::new(handle, LABEL, source);
     if app.db.settings().viewer_adblock {
@@ -140,7 +270,7 @@ fn open_window(app: &App, query: &str) -> Result<(), String> {
                     let handle = handle.clone();
                     let _ = handle.clone().run_on_main_thread(move || {
                         if let Some(app) = handle.try_state::<Arc<App>>() {
-                            let _ = app.db.set_state("viewer_open", "0");
+                            remember_open(&app, false);
                         }
                         if let Some(w) = handle.get_webview_window(LABEL) {
                             let _ = w.destroy();
@@ -148,7 +278,19 @@ fn open_window(app: &App, query: &str) -> Result<(), String> {
                     });
                     return false;
                 }
-                true
+                if navigation_allowed(url, &page) {
+                    return true;
+                }
+                // Tout autre lien : dans le navigateur. Sous Windows, seule la page elle-même
+                // passe ici ; ailleurs les cadres aussi (publicités, pistage), simplement bloqués
+                // sans ouvrir le navigateur
+                if cfg!(windows) && matches!(url.scheme(), "http" | "https") {
+                    use tauri_plugin_opener::OpenerExt;
+                    let _ = handle.opener().open_url(url.as_str(), None::<&str>);
+                } else {
+                    tracing::debug!("fenêtre des streams : navigation bloquée vers {}", url.host_str().unwrap_or(url.scheme()));
+                }
+                false
             }
         })
         // Fenêtres surgissantes : celles de Twitch (connexion au chat) s'ouvrent dans
@@ -235,5 +377,31 @@ mod tests {
         assert!(!ok("http://www.twitch.tv/login"));
         assert!(!ok("https://twitch.tv.evil.example/login"));
         assert!(!ok("https://example.com"));
+    }
+
+    #[test]
+    fn only_the_page_and_twitch_load_in_the_window() {
+        let local: url::Url = "https://tauri.localhost/".parse().unwrap();
+        let github: url::Url = "https://powange.github.io/twitch-desk/viewer.html?channels=a".parse().unwrap();
+        let ok = |u: &str, page: &url::Url| navigation_allowed(&u.parse().unwrap(), page);
+        assert!(ok("https://tauri.localhost/viewer.html?channels=a", &local));
+        assert!(ok("tauri://localhost/viewer.html?channels=a", &local));
+        assert!(ok("https://player.twitch.tv/?channel=a&parent=tauri.localhost", &local));
+        assert!(ok("https://abc.ext-twitch.tv/x", &local));
+        assert!(ok("about:blank", &local));
+        assert!(ok("https://powange.github.io/twitch-desk/viewer.html?channels=b", &github));
+        assert!(!ok("https://powange.github.io/twitch-desk/viewer.html", &local));
+        assert!(!ok("https://tauri.localhost/viewer.html", &github));
+        assert!(!ok("https://evil.example/", &local));
+        assert!(!ok("https://twitch.tv.evil.example/", &github));
+        assert!(!ok("http://player.twitch.tv/", &local));
+    }
+
+    #[test]
+    fn stream_added_to_the_address() {
+        assert_eq!(query_with("channels=a,b&chat=a&vol=a:0.5", "c").unwrap(), "channels=a,b,c&chat=a,c&vol=a:0.5");
+        assert_eq!(query_with("", "c").unwrap(), "channels=c&chat=c");
+        assert_eq!(query_with("channels=a&chat=a", "a").unwrap(), "channels=a&chat=a");
+        assert!(query_with("channels=a,b,c,d,e,f,g,h,i", "j").is_err());
     }
 }
