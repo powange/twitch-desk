@@ -176,6 +176,10 @@ export interface Settings {
   soundVolume: number
   // Alertes avec un son : giveaway, win, mention, reminder, scanner
   soundEvents: string[]
+  // Son de chaque alerte : son prédéfini ou « custom » (absent : son par défaut)
+  soundChoices: Record<string, string>
+  // Nom du fichier choisi pour chaque alerte
+  soundFiles: Record<string, string>
 }
 
 export type ChannelList = 'points' | 'se'

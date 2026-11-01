@@ -352,6 +352,51 @@ pub fn export_log(app: AppState, name: String, path: String) -> CmdResult<()> {
     Ok(())
 }
 
+// --- Sons des alertes ---
+
+const SOUND_EXTENSIONS: [&str; 3] = ["wav", "mp3", "ogg"];
+const MAX_SOUND: u64 = 5 * 1024 * 1024;
+
+fn sound_kind(kind: &str) -> CmdResult<&'static str> {
+    crate::app::Alert::ALL.iter().map(|a| a.key()).find(|k| *k == kind).ok_or_else(|| "Alerte inconnue".to_owned())
+}
+
+/// Fichier son copié pour une alerte (dossier « sounds » des données)
+fn sound_file(app: &App, kind: &str) -> Option<std::path::PathBuf> {
+    SOUND_EXTENSIONS.iter().map(|ext| app.data_dir.join("sounds").join(format!("{kind}.{ext}"))).find(|p| p.is_file())
+}
+
+/// Copie le fichier choisi comme son d'une alerte ; renvoie son nom (affichage)
+#[tauri::command]
+pub fn import_sound(app: AppState, kind: String, path: String) -> CmdResult<String> {
+    let kind = sound_kind(&kind)?;
+    let source = std::path::PathBuf::from(&path);
+    let ext = source.extension().and_then(|e| e.to_str()).map(str::to_lowercase).unwrap_or_default();
+    if !SOUND_EXTENSIONS.contains(&ext.as_str()) {
+        return Err("Choisis un fichier WAV, MP3 ou OGG".into());
+    }
+    let size = std::fs::metadata(&source).map_err(|e| format!("fichier illisible : {e}"))?.len();
+    if size > MAX_SOUND {
+        return Err("Fichier trop gros (5 Mo au plus)".into());
+    }
+    let dir = app.data_dir.join("sounds");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("dossier des sons : {e}"))?;
+    for other in SOUND_EXTENSIONS {
+        let _ = std::fs::remove_file(dir.join(format!("{kind}.{other}")));
+    }
+    std::fs::copy(&source, dir.join(format!("{kind}.{ext}"))).map_err(|e| format!("copie du son : {e}"))?;
+    Ok(source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+/// Contenu du son choisi pour une alerte (octets bruts)
+#[tauri::command]
+pub fn read_sound(app: AppState, kind: String) -> CmdResult<tauri::ipc::Response> {
+    let kind = sound_kind(&kind)?;
+    let path = sound_file(&app, kind).ok_or("Aucun fichier son pour cette alerte")?;
+    let bytes = std::fs::read(path).map_err(|e| format!("lecture du son : {e}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 // --- Drops ---
 
 #[tauri::command]

@@ -398,7 +398,8 @@ impl App {
         use tauri_plugin_notification::NotificationExt;
         let settings = self.db.settings();
         if settings.sound_alerts && settings.sound_events.iter().any(|e| e == alert.key()) {
-            let payload = serde_json::json!({ "kind": alert.key(), "volume": settings.sound_volume.min(100) });
+            let sound = settings.sound_choices.get(alert.key()).cloned();
+            let payload = serde_json::json!({ "kind": alert.key(), "volume": settings.sound_volume.min(100), "sound": sound });
             if let Err(e) = self.handle.emit("sound-alert", payload) {
                 tracing::warn!("alerte sonore : {e}");
             }

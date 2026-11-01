@@ -473,6 +473,11 @@ pub struct Settings {
     pub sound_volume: u64,
     /// Alertes avec un son : giveaway, win, mention, reminder, scanner
     pub sound_events: Vec<String>,
+    /// Son de chaque alerte : son prédéfini, ou « custom » pour le fichier choisi (absent : son
+    /// par défaut de l'alerte)
+    pub sound_choices: std::collections::BTreeMap<String, String>,
+    /// Nom du fichier choisi pour chaque alerte (affichage)
+    pub sound_files: std::collections::BTreeMap<String, String>,
 }
 
 pub const DEFAULT_SCANNER_KEYWORDS: &[&str] =
@@ -498,6 +503,8 @@ impl Default for Settings {
             sound_alerts: true,
             sound_volume: 70,
             sound_events: crate::app::Alert::ALL.iter().map(|a| a.key().to_owned()).collect(),
+            sound_choices: Default::default(),
+            sound_files: Default::default(),
         }
     }
 }

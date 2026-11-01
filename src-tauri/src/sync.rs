@@ -30,6 +30,8 @@ const CODE_KEY: &str = "sync:code";
 /// Giveaways envoyés : ouverts, ou détectés depuis moins de 60 jours
 const GIVEAWAY_DAYS: i64 = 60;
 const PUSH_BATCH_DOCS: usize = 100;
+/// Version de `sync_state` (2 : empreinte de ce qui est enregistré après réception)
+const STATE_FORMAT: &str = "2";
 const PUSH_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -221,34 +223,47 @@ fn assign_ids(conn: &Connection) -> rusqlite::Result<()> {
 /// collection que le serveur ne synchronise pas (groupe d'un cadeau, cadeaux d'un giveaway)
 /// ne sont pas envoyés : chacun garde les siens
 fn export(conn: &Connection, collection: &str, enabled: &[&str]) -> rusqlite::Result<Vec<(String, Value)>> {
-    let mut docs = export_all(conn, collection)?;
-    let unlinked = match collection {
-        "gifts" if !enabled.contains(&"groups") => Some("group"),
-        "giveaways" if !enabled.contains(&"gifts") => Some("gifts"),
-        _ => None,
-    };
-    if let Some(key) = unlinked {
-        for (_, data) in &mut docs {
-            data.as_object_mut().map(|o| o.remove(key));
-        }
+    let mut docs = export_all(conn, collection, None)?;
+    for (_, data) in &mut docs {
+        strip_links(collection, enabled, data);
     }
     Ok(docs)
 }
 
-fn export_all(conn: &Connection, collection: &str) -> rusqlite::Result<Vec<(String, Value)>> {
+fn strip_links(collection: &str, enabled: &[&str], data: &mut Value) {
+    let unlinked = match collection {
+        "gifts" if !enabled.contains(&"groups") => "group",
+        "giveaways" if !enabled.contains(&"gifts") => "gifts",
+        _ => return,
+    };
+    data.as_object_mut().map(|o| o.remove(unlinked));
+}
+
+/// `only` : un seul document (sans limite de date pour les giveaways)
+/// Un document tel qu'il est enregistré localement (mêmes règles que `export`)
+fn export_one(conn: &Connection, collection: &str, id: &str, enabled: &[&str]) -> rusqlite::Result<Option<Value>> {
+    let mut doc = export_all(conn, collection, Some(id))?.into_iter().next().map(|(_, v)| v);
+    if let Some(d) = doc.as_mut() {
+        strip_links(collection, enabled, d);
+    }
+    Ok(doc)
+}
+
+fn export_all(conn: &Connection, collection: &str, only: Option<&str>) -> rusqlite::Result<Vec<(String, Value)>> {
     match collection {
         "groups" => conn
-            .prepare("SELECT sync_id, name, game_id, game_name FROM gift_groups WHERE sync_id IS NOT NULL")?
-            .query_map([], |r| {
+            .prepare("SELECT sync_id, name, game_id, game_name FROM gift_groups WHERE sync_id IS NOT NULL AND (?1 IS NULL OR sync_id = ?1)")?
+            .query_map([only], |r| {
                 Ok((r.get(0)?, json!({ "name": r.get::<_, String>(1)?, "gameId": r.get::<_, Option<String>>(2)?, "gameName": r.get::<_, Option<String>>(3)? })))
             })?
             .collect(),
         "gifts" => conn
             .prepare(
                 "SELECT g.sync_id, g.title, g.image, gr.sync_id, g.keywords, g.game_id, g.game_name
-                 FROM gifts g LEFT JOIN gift_groups gr ON gr.id = g.group_id WHERE g.sync_id IS NOT NULL",
+                 FROM gifts g LEFT JOIN gift_groups gr ON gr.id = g.group_id
+                 WHERE g.sync_id IS NOT NULL AND (?1 IS NULL OR g.sync_id = ?1)",
             )?
-            .query_map([], |r| {
+            .query_map([only], |r| {
                 let keywords: Vec<String> = serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default();
                 Ok((
                     r.get(0)?,
@@ -274,9 +289,10 @@ fn export_all(conn: &Connection, collection: &str) -> rusqlite::Result<Vec<(Stri
                     "SELECT id, sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance, drawn_at,
                             ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                             require_follow, require_presence, require_discord, notes
-                     FROM giveaways WHERE sync_id IS NOT NULL AND (status = 'open' OR detected_at >= ?1)",
+                     FROM giveaways WHERE sync_id IS NOT NULL
+                         AND (?2 IS NULL OR sync_id = ?2) AND (?2 IS NOT NULL OR status = 'open' OR detected_at >= ?1)",
                 )?
-                .query_map([since], |r| {
+                .query_map(params![since, only], |r| {
                     Ok((
                         r.get(0)?,
                         r.get(1)?,
@@ -313,15 +329,15 @@ fn export_all(conn: &Connection, collection: &str) -> rusqlite::Result<Vec<(Stri
                 .collect()
         }
         "channels" => conn
-            .prepare("SELECT login, channel_id, excluded FROM giveaway_channels")?
-            .query_map([], |r| {
+            .prepare("SELECT login, channel_id, excluded FROM giveaway_channels WHERE ?1 IS NULL OR login = ?1")?
+            .query_map([only], |r| {
                 let excluded: Vec<String> = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default();
                 Ok((r.get(0)?, json!({ "channelId": r.get::<_, String>(1)?, "excluded": excluded })))
             })?
             .collect(),
         "streamers" => conn
-            .prepare("SELECT login, discord_url, notes FROM streamers")?
-            .query_map([], |r| {
+            .prepare("SELECT login, discord_url, notes FROM streamers WHERE ?1 IS NULL OR login = ?1")?
+            .query_map([only], |r| {
                 Ok((r.get(0)?, json!({ "discordUrl": r.get::<_, Option<String>>(1)?, "notes": r.get::<_, Option<String>>(2)? })))
             })?
             .collect(),
@@ -638,6 +654,15 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
             set_meta(&conn, "server", &cfg.url).map_err(db_err)?;
             set_meta(&conn, "cursor", "0").map_err(db_err)?;
         }
+        // État enregistré par une version qui gardait l'empreinte du document reçu (et non de
+        // ce qui était enregistré) : certains documents pouvaient passer pour modifiés ici et
+        // ne plus recevoir de mises à jour. Une fois : état oublié, tout est relu, le serveur fait foi
+        if meta(&conn, "state_format").as_deref() != Some(STATE_FORMAT) {
+            conn.execute("DELETE FROM sync_state", []).map_err(db_err)?;
+            cursor = 0;
+            set_meta(&conn, "cursor", "0").map_err(db_err)?;
+            set_meta(&conn, "state_format", STATE_FORMAT).map_err(db_err)?;
+        }
         // Collections synchronisées changées : les modifications d'une collection ignorée
         // jusque-là ont été sautées, tout est relu (les documents déjà à jour sont ignorés)
         let scope = enabled.join(",");
@@ -676,6 +701,7 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
                 }
                 let mine = local[collection].get(&change.id);
                 if known.is_some() && mine.is_some() && mine != known {
+                    tracing::info!("synchronisation : {collection}/{} modifié ici, version reçue laissée de côté", change.id);
                     continue;
                 }
                 let pending = match data {
@@ -686,7 +712,13 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
                     if pending {
                         deferred.push((collection, change.id.clone(), data.cloned().unwrap_or_default()));
                     } else {
-                        set_state(&conn, collection, &change.id, remote.as_deref()).map_err(db_err)?;
+                        // Empreinte de ce qui est réellement enregistré : l'enregistrement peut
+                        // différer un peu du document reçu (espaces, image refusée, lien absent)
+                        let stored = match data {
+                            Some(_) => export_one(&conn, collection, &change.id, &enabled).map_err(db_err)?.map(|v| hash(&v)),
+                            None => None,
+                        };
+                        set_state(&conn, collection, &change.id, stored.as_deref()).map_err(db_err)?;
                     }
                     received += 1;
                     touched.insert(collection);
@@ -707,7 +739,8 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
         let conn = app.db.conn();
         for (collection, id, data) in &deferred {
             if apply(&conn, collection, id, Some(data)).map_err(db_err)? {
-                set_state(&conn, collection, id, Some(&hash(data))).map_err(db_err)?;
+                let stored = export_one(&conn, collection, id, &enabled).map_err(db_err)?.map(|v| hash(&v));
+                set_state(&conn, collection, id, stored.as_deref()).map_err(db_err)?;
             }
         }
         set_meta(&conn, "cursor", &cursor.to_string()).map_err(db_err)?;
@@ -755,6 +788,9 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
 
     if !touched.is_empty() {
         app.giveaways.send(MonitorCmd::Reload);
+    }
+    if received > 0 || sent > 0 {
+        tracing::info!("synchronisation : {received} modification(s) reçue(s), {sent} envoyée(s)");
     }
     Ok(Outcome {
         server_collections: offered.iter().map(|c| c.to_string()).collect(),
@@ -1036,6 +1072,21 @@ mod tests {
         assert_eq!(skipped(&db.conn()), vec!["channels"]);
         set_meta(&db.conn(), "skipped", "[]").unwrap();
         assert!(skipped(&db.conn()).is_empty());
+    }
+
+    #[test]
+    fn stored_version_may_differ_from_received_one() {
+        let db = Db::memory().unwrap();
+        let received = json!({"title": "  Obsidian Sails ", "image": "http://insecure.example/a.png", "keywords": ["voiles"]});
+        apply(&db.conn(), "gifts", "g1", Some(&received)).unwrap();
+        let stored = export_one(&db.conn(), "gifts", "g1", &COLLECTIONS).unwrap().unwrap();
+        assert_eq!(stored["title"], "Obsidian Sails");
+        assert!(stored["image"].is_null());
+        // C'est l'empreinte de la version enregistrée qui est gardée : sinon le cadeau passerait
+        // pour modifié ici et les mises à jour suivantes seraient ignorées
+        assert_ne!(hash(&stored), hash(&received));
+        let all: HashMap<String, Value> = docs(&db, "gifts");
+        assert_eq!(hash(&all["g1"]), hash(&stored));
     }
 
     #[test]

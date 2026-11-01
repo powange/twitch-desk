@@ -2,7 +2,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
-import { SOUND_ALERTS, playSoundAlert } from '../../composables/useSoundAlerts'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { CUSTOM_SOUND, DEFAULT_SOUND, SOUND_ALERTS, SOUND_PRESETS, forgetCustomSound, playSoundAlert } from '../../composables/useSoundAlerts'
 import type { SoundAlertKind } from '../../composables/useSoundAlerts'
 import type { Settings } from '../../types'
 
@@ -29,6 +30,38 @@ const autoAccountsModel = computed({
     settings.value.autoAccounts = ids.length === accounts.value.length ? [] : ids
   }
 })
+
+// Son de chaque alerte : sons prédéfinis, ou fichier de l'ordinateur
+function soundChoice(kind: SoundAlertKind) {
+  return settings.value?.soundChoices[kind] ?? DEFAULT_SOUND[kind]
+}
+function soundItems(kind: SoundAlertKind) {
+  const file = settings.value?.soundFiles[kind]
+  return [
+    ...Object.entries(SOUND_PRESETS).map(([value, p]) => ({ label: value === DEFAULT_SOUND[kind] ? `${p.label} (par défaut)` : p.label, value })),
+    { label: file ? `Mon fichier : ${file}` : 'Mon fichier…', value: CUSTOM_SOUND }
+  ]
+}
+async function chooseFile(kind: SoundAlertKind): Promise<boolean> {
+  const path = await openDialog({ multiple: false, filters: [{ name: 'Son', extensions: ['wav', 'mp3', 'ogg'] }] })
+  if (!path || Array.isArray(path) || !settings.value) return false
+  try {
+    const name = await invoke<string>('import_sound', { kind, path })
+    forgetCustomSound(kind)
+    settings.value.soundFiles = { ...settings.value.soundFiles, [kind]: name }
+    return true
+  } catch (e) {
+    toast.add({ title: 'Son non utilisable', description: String(e), color: 'error' })
+    return false
+  }
+}
+async function setChoice(kind: SoundAlertKind, value: string) {
+  if (!settings.value) return
+  // « Mon fichier » sans fichier encore choisi : on le demande
+  if (value === CUSTOM_SOUND && !settings.value.soundFiles[kind] && !(await chooseFile(kind))) return
+  settings.value.soundChoices = { ...settings.value.soundChoices, [kind]: value }
+  void playSoundAlert(kind, settings.value.soundVolume, value)
+}
 
 function soundOn(kind: SoundAlertKind) {
   return settings.value?.soundEvents.includes(kind) ?? false
@@ -81,7 +114,25 @@ function setAuto(value: boolean) {
             <div class="text-xs text-muted">{{ a.hint }}</div>
           </div>
           <div class="flex items-center gap-2">
-            <UButton icon="i-lucide-play" size="xs" color="neutral" variant="ghost" :aria-label="`Écouter : ${a.label}`" title="Écouter" @click="playSoundAlert(a.kind, settings.soundVolume)" />
+            <USelect
+              :model-value="soundChoice(a.kind)"
+              :items="soundItems(a.kind)"
+              size="xs"
+              class="w-52"
+              :aria-label="`Son : ${a.label}`"
+              @update:model-value="v => setChoice(a.kind, String(v))"
+            />
+            <UButton
+              v-if="soundChoice(a.kind) === CUSTOM_SOUND"
+              icon="i-lucide-folder-open"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              :aria-label="`Changer le fichier : ${a.label}`"
+              title="Choisir un autre fichier"
+              @click="chooseFile(a.kind)"
+            />
+            <UButton icon="i-lucide-play" size="xs" color="neutral" variant="ghost" :aria-label="`Écouter : ${a.label}`" title="Écouter" @click="playSoundAlert(a.kind, settings.soundVolume, soundChoice(a.kind))" />
             <USwitch :model-value="soundOn(a.kind)" :aria-label="`Son : ${a.label}`" @update:model-value="v => setSound(a.kind, v)" />
           </div>
         </div>

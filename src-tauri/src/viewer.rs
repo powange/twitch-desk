@@ -33,9 +33,11 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     Menu::with_items(app, &[&window])
 }
 
-/// Ajoute un stream à la fenêtre multi-stream (ouverte au besoin) et la met au premier plan
+/// Ajoute un stream à la fenêtre multi-stream (ouverte au besoin) et la met au premier plan.
+/// Commande asynchrone obligatoire : sous Windows, créer une fenêtre depuis une commande
+/// synchrone bloque toute l'application (fenêtre blanche, plus rien ne répond)
 #[tauri::command]
-pub fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(), String> {
+pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(), String> {
     let login = login.trim().to_lowercase();
     if !valid_login(&login) {
         return Err("Ce n'est pas un nom de chaîne Twitch valide".into());

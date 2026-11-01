@@ -152,6 +152,8 @@ pub fn run() {
             commands::set_se_refresh,
             commands::set_max_balance,
             viewer::watch_stream,
+            commands::import_sound,
+            commands::read_sound,
             commands::list_logs,
             commands::read_log,
             commands::export_log,
