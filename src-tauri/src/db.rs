@@ -57,6 +57,9 @@ const MIGRATIONS: &[&str] = &[r#"
         tickets INTEGER NOT NULL,
         PRIMARY KEY (account_id, giveaway_id)
     );
+"#, r#"
+    -- Relevé du solde StreamElements, en minutes (NULL : automatique, d'après le rythme de la chaîne)
+    ALTER TABLE channels ADD COLUMN se_refresh INTEGER;
 "#];
 
 /// Liste d'une chaîne : une page de l'interface
@@ -106,6 +109,8 @@ pub struct Channel {
     pub se_points: Option<i64>,
     pub in_points: bool,
     pub in_se: bool,
+    /// Relevé du solde StreamElements en minutes (None : automatique)
+    pub se_refresh: Option<i64>,
 }
 
 impl Channel {
@@ -210,7 +215,7 @@ impl Db {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, account_id, login, channel_id, position, enabled, auto_claim, balance,
-                    chat_presence, se_channel_id, se_points, in_points, in_se
+                    chat_presence, se_channel_id, se_points, in_points, in_se, se_refresh
              FROM channels WHERE account_id = ?1 ORDER BY position, id",
         )?;
         let rows = stmt.query_map([account_id], |r| {
@@ -228,6 +233,7 @@ impl Db {
                 se_points: r.get(10)?,
                 in_points: r.get(11)?,
                 in_se: r.get(12)?,
+                se_refresh: r.get(13)?,
             })
         })?;
         rows.collect()
@@ -286,6 +292,11 @@ impl Db {
             "UPDATE channels SET enabled = ?2, auto_claim = ?3, chat_presence = ?4 WHERE id = ?1",
             params![id, enabled, auto_claim, chat_presence],
         )?;
+        Ok(())
+    }
+
+    pub fn set_se_refresh(&self, id: i64, minutes: Option<i64>) -> DbResult<()> {
+        self.conn().execute("UPDATE channels SET se_refresh = ?2 WHERE id = ?1", params![id, minutes])?;
         Ok(())
     }
 

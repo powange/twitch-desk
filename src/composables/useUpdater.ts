@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, shallowRef } from 'vue'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 
@@ -6,7 +6,9 @@ import { relaunch } from '@tauri-apps/plugin-process'
 // Le paquet est signé ; l'updater refuse tout fichier qui ne porte pas notre signature.
 const CHECK_EVERY = 6 * 3600 * 1000
 
-const available = ref<Update | null>(null)
+// shallowRef : l'objet Update de Tauri a des champs privés (#rid) qu'un proxy
+// réactif de Vue ne peut pas lire (« Cannot read private member »)
+const available = shallowRef<Update | null>(null)
 const checking = ref(false)
 const installing = ref(false)
 const progress = ref(0)

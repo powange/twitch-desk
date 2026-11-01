@@ -5,7 +5,8 @@ Application de bureau (Windows, Linux) pour Twitch, sur plusieurs comptes à la 
 Ce que fait l'application aujourd'hui :
 
 - **Points de chaîne Twitch** : visionnage simulé des chaînes choisies, sans lecteur ni téléchargement de la vidéo, et récupération automatique du bonus.
-- **Points StreamElements** : le compte reste connecté au chat des chaînes choisies, ce qui le place dans la liste des spectateurs où StreamElements distribue ses points toutes les 10 min. Le solde est relu sur l'API publique de StreamElements.
+- **Points StreamElements** : le compte reste connecté au chat des chaînes choisies, ce qui le place dans la liste des spectateurs où StreamElements distribue ses points, au rythme réglé par chaque streamer. Le solde, la règle de gain et le giveaway en cours sont lus sur l'API publique de StreamElements.
+- **Tickets StreamElements** : avec le compte StreamElements connecté (fenêtre de connexion de l'app), lecture exacte de nos tickets et achat de tickets depuis l'application.
 
 Les drops et le suivi des giveaways arrivent dans les versions suivantes.
 
@@ -28,6 +29,7 @@ npm run typecheck
 - **Visionnage** : toutes les 10 s, liste de lecture HLS en qualité minimale et requête `HEAD` sur chaque nouveau segment ; toutes les 59 s, événement `minute-watched`. Twitch ne compte que 2 chaînes à la fois par compte : l'application prend les 2 premières chaînes en live de la liste.
 - **Événements en direct** : PubSub (`pubsub-edge.twitch.tv`) pour le bonus disponible, les gains, le début et la fin des lives. Le solde est aussi relu régulièrement, ce qui récupère le bonus si PubSub est coupé.
 - **Chat** : connexion IRC authentifiée (`irc-ws.chat.twitch.tv`), JOIN des chaînes où la présence est activée, sans jamais envoyer de message. Une connexion anonyme ne suffirait pas : elle n'apparaît pas dans la liste des spectateurs. La présence n'a pas de limite de chaînes.
+- **Compte StreamElements** : l'app ouvre `id.streamelements.com/auth/twitch` dans une fenêtre privée et lit le jeton de session dans le cookie `id_token_creator` (ou `se-token`) de `.streamelements.com`, comme le site. Le jeton est vérifié (`kappa/v2/channels/me`, même identifiant Twitch que le compte) puis rangé dans le trousseau. Nos tickets : `GET kappa/v3/giveaways/{chaîne}/{giveaway}/entry` ; achat : `POST` sur la même adresse avec `{"tickets": n}` (en-tête `Authorization: Bearer <jeton>`).
 - **StreamElements** : `api.streamelements.com/kappa/v2/channels/{login}` donne l'identifiant de la chaîne, `kappa/v2/points/{id}/{pseudo}` le solde (404 tant que le pseudo n'a rien gagné). Adresses non documentées officiellement. Une baisse du solde (tickets achetés) n'est pas comptée comme un gain.
 - **Requêtes internes (GQL)** : leurs empreintes sont dans [`operations.json`](operations.json). L'application embarque ce fichier et relit la version de la branche `main` au démarrage : quand Twitch change une empreinte, il suffit de corriger ce fichier, sans publier de nouvelle version. Chaque opération accepte plusieurs empreintes, essayées dans l'ordre.
 

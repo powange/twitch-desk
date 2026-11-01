@@ -10,6 +10,8 @@ use tauri::{Emitter, State};
 use crate::app::{App, EventKind, Snapshot};
 use crate::db::{ChannelList, Settings};
 use crate::miner::MinerCommand;
+use crate::secrets::Secrets;
+use crate::streamelements::{self, SeError};
 use crate::twitch::auth::{self, DeviceCode, PollResult};
 use crate::twitch::gql::Gql;
 use crate::twitch::random_device_id;
@@ -105,6 +107,7 @@ pub fn remove_account(app: AppState, id: i64) -> CmdResult<()> {
     app.stop_miner(id);
     if let Some(account) = account {
         app.secrets.delete(&account.user_id);
+        app.secrets.delete(&Secrets::se_key(&account.user_id));
         app.log(&account.login, EventKind::Info, "Compte retiré");
     }
     app.db.delete_account(id).map_err(db_err)?;
@@ -199,6 +202,19 @@ pub fn set_channel_options(
     Ok(())
 }
 
+/// Relevé du solde StreamElements d'une chaîne, en minutes (None : automatique)
+#[tauri::command]
+pub fn set_se_refresh(app: AppState, id: i64, minutes: Option<i64>) -> CmdResult<()> {
+    if minutes.is_some_and(|m| !(1..=60).contains(&m)) {
+        return Err("Fréquence invalide".into());
+    }
+    app.db.set_se_refresh(id, minutes).map_err(db_err)?;
+    if let Some(account) = app.db.channel_account(id).map_err(db_err)? {
+        app.send(account, MinerCommand::Reload);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_paused(app: AppState, paused: bool) {
     app.set_paused(paused);
@@ -228,6 +244,164 @@ pub fn get_paths(app: AppState) -> Paths {
         data: app.data_dir.display().to_string(),
         logs: app.data_dir.join("logs").display().to_string(),
     }
+}
+
+// --- Compte StreamElements (lecture exacte et achat de nos tickets) ---
+
+const SE_LOGIN_URL: &str = "https://id.streamelements.com/auth/twitch?return=https%3A%2F%2Fstreamelements.com%2F";
+const SE_LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+// Cookies où streamelements.com range son jeton de session
+const SE_TOKEN_COOKIES: &[&str] = &["id_token_creator", "se-token"];
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum SeLoginEvent {
+    Done { account_id: i64, username: String },
+    WrongAccount { account_id: i64, username: String },
+    Cancelled { account_id: i64 },
+    Error { account_id: i64, message: String },
+}
+
+fn find_account(app: &App, id: i64) -> CmdResult<crate::db::Account> {
+    app.db.accounts().map_err(db_err)?.into_iter().find(|a| a.id == id).ok_or_else(|| "compte introuvable".into())
+}
+
+/// Vérifie que le jeton appartient bien au compte Twitch, puis l'enregistre
+async fn store_se_token(app: &Arc<App>, account: &crate::db::Account, token: &str) -> SeLoginEvent {
+    let account_id = account.id;
+    let me = match streamelements::me(&app.http, token).await {
+        Ok(me) => me,
+        Err(SeError::Unauthorized) => {
+            return SeLoginEvent::Error { account_id, message: "StreamElements refuse ce jeton".into() }
+        }
+        Err(e) => return SeLoginEvent::Error { account_id, message: e.to_string() },
+    };
+    if !me.provider_id.is_empty() && me.provider_id != account.user_id {
+        return SeLoginEvent::WrongAccount { account_id, username: me.username };
+    }
+    if let Err(e) = app.secrets.save_raw(&Secrets::se_key(&account.user_id), token) {
+        return SeLoginEvent::Error { account_id, message: format!("enregistrement du jeton : {e}") };
+    }
+    app.log(&account.login, EventKind::Info, format!("Compte StreamElements connecté ({})", me.username));
+    app.send(account_id, MinerCommand::Reload);
+    SeLoginEvent::Done { account_id, username: me.username }
+}
+
+/// Ouvre la connexion streamelements.com dans une fenêtre privée de l'app et
+/// récupère le jeton de session à la fin ; le résultat arrive par l'événement « se-login »
+#[tauri::command]
+pub async fn connect_streamelements(app: AppState<'_>, account_id: i64) -> CmdResult<()> {
+    let app: Arc<App> = app.inner().clone();
+    let account = find_account(&app, account_id)?;
+    let label = format!("se-login-{account_id}");
+    if let Some(old) = tauri::Manager::get_webview_window(app.handle(), &label) {
+        let _ = old.close();
+    }
+    let url = SE_LOGIN_URL.parse().map_err(|e: url::ParseError| e.to_string())?;
+    // Fenêtre privée : la session Twitch d'un autre compte ne s'y connecte pas toute seule
+    let window = tauri::WebviewWindowBuilder::new(app.handle(), &label, tauri::WebviewUrl::External(url))
+        .title(format!("Connexion StreamElements — {}", account.login))
+        .inner_size(520.0, 760.0)
+        .incognito(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    tauri::async_runtime::spawn(async move {
+        let started = tokio::time::Instant::now();
+        let site: url::Url = "https://streamelements.com/".parse().expect("adresse valide");
+        let event = loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            // Fenêtre fermée par l'utilisateur
+            if tauri::Manager::get_webview_window(app.handle(), &label).is_none() {
+                break SeLoginEvent::Cancelled { account_id };
+            }
+            if started.elapsed() > SE_LOGIN_TIMEOUT {
+                let _ = window.close();
+                break SeLoginEvent::Cancelled { account_id };
+            }
+            // Lecture des cookies hors du fil principal (blocage connu de WebView2 sinon)
+            let w = window.clone();
+            let u = site.clone();
+            let cookies = tokio::task::spawn_blocking(move || w.cookies_for_url(u)).await;
+            let token = cookies
+                .ok()
+                .and_then(Result::ok)
+                .and_then(|list| {
+                    SE_TOKEN_COOKIES
+                        .iter()
+                        .find_map(|name| list.iter().find(|c| c.name() == *name).map(|c| c.value().to_owned()))
+                })
+                .filter(|t| !t.is_empty());
+            if let Some(token) = token {
+                let _ = window.close();
+                break store_se_token(&app, &account, &token).await;
+            }
+        };
+        let _ = app.handle().emit("se-login", event);
+    });
+    Ok(())
+}
+
+/// Secours : jeton d'accès personnel collé depuis la page Sécurité de StreamElements
+#[tauri::command]
+pub async fn set_streamelements_token(app: AppState<'_>, account_id: i64, token: String) -> CmdResult<SeLoginEvent> {
+    let app: Arc<App> = app.inner().clone();
+    let account = find_account(&app, account_id)?;
+    let token = token.trim().trim_start_matches("Bearer ").trim();
+    if token.is_empty() {
+        return Err("Colle le jeton StreamElements".into());
+    }
+    Ok(store_se_token(&app, &account, token).await)
+}
+
+#[tauri::command]
+pub fn disconnect_streamelements(app: AppState, account_id: i64) -> CmdResult<()> {
+    let account = find_account(&app, account_id)?;
+    app.secrets.delete(&Secrets::se_key(&account.user_id));
+    app.log(&account.login, EventKind::Info, "Compte StreamElements déconnecté");
+    app.send(account_id, MinerCommand::Reload);
+    Ok(())
+}
+
+/// Achète des tickets d'un giveaway StreamElements ; renvoie nos tickets après l'achat
+#[tauri::command]
+pub async fn buy_se_tickets(
+    app: AppState<'_>,
+    account_id: i64,
+    channel_id: i64,
+    giveaway_id: String,
+    tickets: i64,
+) -> CmdResult<i64> {
+    if !(1..=100_000).contains(&tickets) {
+        return Err("Nombre de tickets invalide".into());
+    }
+    let app: Arc<App> = app.inner().clone();
+    let account = find_account(&app, account_id)?;
+    let channel = app
+        .db
+        .channels(account_id)
+        .map_err(db_err)?
+        .into_iter()
+        .find(|c| c.id == channel_id)
+        .ok_or("chaîne introuvable")?;
+    let se_channel = channel.se_channel_id.filter(|id| !id.is_empty()).ok_or("Cette chaîne n'utilise pas StreamElements")?;
+    let token = app
+        .secrets
+        .load_raw(&Secrets::se_key(&account.user_id))
+        .ok_or("Connecte d'abord le compte StreamElements (page Comptes)")?;
+    let se_err = |e: SeError| match e {
+        SeError::Unauthorized => "Jeton StreamElements expiré : reconnecte StreamElements dans Comptes".to_owned(),
+        e => e.to_string(),
+    };
+    streamelements::enter(&app.http, &token, &se_channel, &giveaway_id, tickets).await.map_err(se_err)?;
+    let total = streamelements::my_entry(&app.http, &token, &se_channel, &giveaway_id).await.map_err(se_err)?;
+    app.log(
+        &account.login,
+        EventKind::Info,
+        format!("{tickets} ticket(s) acheté(s) sur {} ({total} au total)", channel.login),
+    );
+    app.send(account_id, MinerCommand::SeTickets { channel_id, giveaway_id, tickets: total });
+    Ok(total)
 }
 
 #[cfg(test)]

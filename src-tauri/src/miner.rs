@@ -17,9 +17,10 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
-use crate::app::{AccountStatus, AccountView, App, ChannelState, ChannelView, EventKind};
+use crate::app::{AccountStatus, AccountView, App, ChannelState, ChannelView, EventKind, SeAccount};
 use crate::db::{Account, Channel, STREAMELEMENTS, TWITCH};
-use crate::streamelements::{self, Giveaway, Loyalty, TicketUpdate};
+use crate::secrets::Secrets;
+use crate::streamelements::{self, Giveaway, Loyalty, SeError, TicketUpdate};
 use crate::twitch::chat::{self, ChatEvent};
 use crate::twitch::auth::{self, Tokens};
 use crate::twitch::gql::{Gql, StreamInfo};
@@ -41,8 +42,10 @@ const FAILED_CHANNEL_COOLDOWN: Duration = Duration::from_secs(600);
 const RETRY_CONNECT_AFTER: Duration = Duration::from_secs(60);
 // Après un « stream-up », Twitch met quelques secondes à exposer le live
 const STREAM_UP_DELAY: Duration = Duration::from_secs(15);
-// StreamElements donne ses points toutes les 10 min pendant le live
-const SE_POLL_EVERY: Duration = Duration::from_secs(10 * 60);
+// Relevé automatique du solde StreamElements : le rythme de distribution de la
+// chaîne (réglé par le streamer), borné entre 2 et 10 min ; 2 min s'il est inconnu
+const SE_POLL_MIN: u64 = 2;
+const SE_POLL_MAX: u64 = 10;
 const SE_RETRY_AFTER: Duration = Duration::from_secs(15 * 60);
 // Giveaway StreamElements en cours : relu souvent en live (nombre de participants)
 const SE_GIVEAWAY_LIVE_EVERY: Duration = Duration::from_secs(2 * 60);
@@ -55,6 +58,8 @@ pub enum MinerCommand {
     Reload,
     /// Réévaluer tout de suite (pause / reprise)
     Wake,
+    /// Tickets connus après un achat depuis l'app
+    SeTickets { channel_id: i64, giveaway_id: String, tickets: i64 },
 }
 
 struct ChannelRt {
@@ -113,6 +118,21 @@ impl ChannelRt {
     }
 }
 
+/// Fréquence de relevé du solde StreamElements d'une chaîne
+fn se_poll_every(c: &ChannelRt) -> Duration {
+    let interval = c.se_loyalty.as_ref().filter(|l| l.enabled && l.interval > 0).map(|l| l.interval as u64);
+    se_poll_minutes(c.ch.se_refresh, interval)
+}
+
+/// Réglage de la chaîne s'il existe, sinon le rythme de distribution borné
+pub fn se_poll_minutes(setting: Option<i64>, loyalty_interval: Option<u64>) -> Duration {
+    let minutes = match setting {
+        Some(m) if m > 0 => m as u64,
+        _ => loyalty_interval.unwrap_or(SE_POLL_MIN).clamp(SE_POLL_MIN, SE_POLL_MAX),
+    };
+    Duration::from_secs(minutes * 60)
+}
+
 /// Indices des chaînes à regarder : les premières de la liste qui sont en live
 pub fn select_watched(candidates: &[(bool, bool, bool)]) -> Vec<usize> {
     // (activée, en live, en pause après erreurs)
@@ -146,6 +166,9 @@ struct Miner {
     chat_wanted: watch::Sender<BTreeSet<String>>,
     chat_connected: bool,
     chat_refused: bool,
+    /// Jeton du compte StreamElements (lecture exacte et achat de nos tickets)
+    se_token: Option<String>,
+    se_token_refused: bool,
     last_validate: Instant,
     day: chrono::NaiveDate,
 }
@@ -167,6 +190,8 @@ pub async fn run(app: Arc<App>, account: Account, mut commands: mpsc::Receiver<M
         chat_wanted: watch::channel(BTreeSet::new()).0,
         chat_connected: false,
         chat_refused: false,
+        se_token: None,
+        se_token_refused: false,
         last_validate: Instant::now(),
         day: chrono::Local::now().date_naive(),
     };
@@ -210,6 +235,7 @@ impl Miner {
             self.status = AccountStatus::Running;
             self.app.log(&self.account.login, EventKind::Info, "Compte connecté");
             self.reload_channels();
+            self.load_se_token();
             self.restart_pubsub();
             self.publish();
 
@@ -235,10 +261,14 @@ impl Miner {
                         None => return,
                         Some(MinerCommand::Reload) => {
                             self.reload_account();
+                            self.load_se_token();
                             self.reload_channels();
                             self.restart_pubsub();
                         }
                         Some(MinerCommand::Wake) => {}
+                        Some(MinerCommand::SeTickets { channel_id, giveaway_id, tickets }) => {
+                            self.on_se_tickets(channel_id, &giveaway_id, tickets);
+                        }
                     },
                     event = next_event(&mut self.chat_rx) => {
                         if let Some(event) = event {
@@ -320,6 +350,30 @@ impl Miner {
         self.stop_chat();
         self.restart_pubsub();
         Ok(())
+    }
+
+    fn load_se_token(&mut self) {
+        let token = self.app.secrets.load_raw(&Secrets::se_key(&self.account.user_id));
+        if token != self.se_token {
+            self.se_token = token;
+            self.se_token_refused = false;
+            // Nouveau jeton : relire tout de suite nos tickets
+            for ch in &mut self.channels {
+                ch.se_giveaway_at = None;
+            }
+        }
+    }
+
+    fn on_se_tickets(&mut self, channel_id: i64, giveaway_id: &str, tickets: i64) {
+        let _ = self.app.db.set_se_tickets(self.account.id, giveaway_id, tickets);
+        if let Some(ch) = self.channels.iter_mut().find(|c| c.ch.id == channel_id) {
+            if ch.se_giveaway.as_ref().is_some_and(|g| g.id == giveaway_id) {
+                ch.se_my_tickets = Some(tickets);
+            }
+            // Le solde a baissé : le relire, sans compter la baisse comme un gain
+            ch.se_polled = None;
+            ch.se_giveaway_at = None;
+        }
     }
 
     fn reload_account(&mut self) {
@@ -545,6 +599,26 @@ impl Miner {
                 );
             }
         }
+        // Nos tickets exacts, si le compte StreamElements est connecté
+        if let (Some(g), Some(token)) = (&giveaway, self.se_token.clone()) {
+            if !self.se_token_refused {
+                match streamelements::my_entry(&self.app.http, &token, &se_id, &g.id).await {
+                    Ok(tickets) => {
+                        self.channels[i].se_my_tickets = Some(tickets);
+                        let _ = self.app.db.set_se_tickets(self.account.id, &g.id, tickets);
+                    }
+                    Err(SeError::Unauthorized) => {
+                        self.se_token_refused = true;
+                        self.app.log(
+                            &self.account.login,
+                            EventKind::Error,
+                            "Jeton StreamElements expiré : reconnecte StreamElements dans Comptes",
+                        );
+                    }
+                    Err(e) => tracing::warn!("StreamElements ({login}) : {e}"),
+                }
+            }
+        }
         self.channels[i].se_giveaway = giveaway;
         true
     }
@@ -559,7 +633,7 @@ impl Miner {
                     None => c.se_polled.is_none_or(|t| now.duration_since(t) >= SE_RETRY_AFTER),
                     Some(_) => match c.se_polled {
                         None => true,
-                        Some(t) => c.live.is_some() && now.duration_since(t) >= SE_POLL_EVERY,
+                        Some(t) => c.live.is_some() && now.duration_since(t) >= se_poll_every(c),
                     },
                 }
         }) else {
@@ -891,6 +965,8 @@ impl Miner {
                 se_loyalty: c.se_loyalty.clone(),
                 se_giveaway: c.se_giveaway.clone(),
                 se_my_tickets: c.se_my_tickets,
+                se_refresh: c.ch.se_refresh,
+                se_poll_minutes: se_poll_every(c).as_secs() / 60,
                 state: match (c.ch.farms_points(), c.live_checked.is_some(), c.live.is_some(), c.watching) {
                     (false, ..) => ChannelState::Disabled,
                     (_, _, _, true) => ChannelState::Watching,
@@ -919,6 +995,11 @@ impl Miner {
             status_text: self.status_text.clone(),
             realtime: self.realtime,
             chat_connected: self.chat_connected,
+            se_account: match (&self.se_token, self.se_token_refused) {
+                (None, _) => SeAccount::None,
+                (Some(_), false) => SeAccount::Connected,
+                (Some(_), true) => SeAccount::Expired,
+            },
             channels,
         });
     }
@@ -938,6 +1019,17 @@ fn reason_label(reason: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn se_poll_rhythm() {
+        let min = |d: Duration| d.as_secs() / 60;
+        assert_eq!(min(se_poll_minutes(None, None)), 2);
+        assert_eq!(min(se_poll_minutes(None, Some(2))), 2);
+        assert_eq!(min(se_poll_minutes(None, Some(10))), 10);
+        assert_eq!(min(se_poll_minutes(None, Some(30))), 10);
+        assert_eq!(min(se_poll_minutes(None, Some(1))), 2);
+        assert_eq!(min(se_poll_minutes(Some(5), Some(2))), 5);
+    }
 
     #[test]
     fn selection_takes_first_two_live() {

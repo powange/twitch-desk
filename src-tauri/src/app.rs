@@ -63,6 +63,9 @@ pub struct ChannelView {
     pub se_loyalty: Option<crate::streamelements::Loyalty>,
     pub se_giveaway: Option<crate::streamelements::Giveaway>,
     pub se_my_tickets: Option<i64>,
+    /// Relevé choisi (None : automatique) et relevé appliqué, en minutes
+    pub se_refresh: Option<i64>,
+    pub se_poll_minutes: u64,
     /// None : pas encore vérifié ; false : la chaîne n'utilise pas StreamElements
     pub se_enabled: Option<bool>,
     pub se_points: Option<i64>,
@@ -80,7 +83,18 @@ pub struct AccountView {
     pub status_text: Option<String>,
     pub realtime: bool,
     pub chat_connected: bool,
+    pub se_account: SeAccount,
     pub channels: Vec<ChannelView>,
+}
+
+/// Compte StreamElements du spectateur
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum SeAccount {
+    None,
+    Connected,
+    /// Jeton refusé : il faut reconnecter StreamElements
+    Expired,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -250,6 +264,7 @@ impl App {
                     status_text: None,
                     realtime: false,
                     chat_connected: false,
+                    se_account: SeAccount::None,
                     channels: vec![],
                 })
             })

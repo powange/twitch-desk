@@ -26,27 +26,40 @@ impl Secrets {
 
     pub fn save(&self, user_id: &str, tokens: &Tokens) -> Result<(), String> {
         let value = serde_json::to_string(tokens).map_err(|e| e.to_string())?;
+        self.save_raw(user_id, &value)
+    }
+
+    pub fn load(&self, user_id: &str) -> Option<Tokens> {
+        self.load_raw(user_id).and_then(|v| serde_json::from_str(&v).ok())
+    }
+
+    /// Jeton StreamElements d'un compte Twitch
+    pub fn se_key(user_id: &str) -> String {
+        format!("se:{user_id}")
+    }
+
+    pub fn save_raw(&self, key: &str, value: &str) -> Result<(), String> {
         if Self::keyring_available() {
-            if let Ok(entry) = keyring::Entry::new(SERVICE, user_id) {
-                if entry.set_password(&value).is_ok() {
+            if let Ok(entry) = keyring::Entry::new(SERVICE, key) {
+                if entry.set_password(value).is_ok() {
                     return Ok(());
                 }
             }
         }
         let _guard = self.lock.lock().unwrap();
         let mut all = self.read_file();
-        all.insert(user_id.to_owned(), value);
+        all.insert(key.to_owned(), value.to_owned());
         self.write_file(&all)
     }
 
-    pub fn load(&self, user_id: &str) -> Option<Tokens> {
+    pub fn load_raw(&self, key: &str) -> Option<String> {
         if Self::keyring_available() {
-            if let Ok(value) = keyring::Entry::new(SERVICE, user_id).and_then(|e| e.get_password()) {
-                return serde_json::from_str(&value).ok();
+            if let Ok(value) = keyring::Entry::new(SERVICE, key).and_then(|e| e.get_password()) {
+                return Some(value);
             }
         }
         let _guard = self.lock.lock().unwrap();
-        self.read_file().get(user_id).and_then(|v| serde_json::from_str(v).ok())
+        self.read_file().get(key).cloned()
     }
 
     pub fn delete(&self, user_id: &str) {

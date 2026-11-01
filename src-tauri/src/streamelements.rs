@@ -1,6 +1,8 @@
 //! StreamElements : points de fidélité et giveaways, lus sur l'API publique
-//! (sans connexion), et réponses du bot dans le chat pour nos tickets.
-//! Adresses non documentées officiellement, relevées le 2026-11-01.
+//! (sans connexion), réponses du bot dans le chat pour nos tickets, et, avec
+//! le jeton de session du site (compte StreamElements du spectateur), lecture
+//! exacte et achat de nos tickets. Adresses relevées dans le code de
+//! streamelements.com le 2026-11-01, non documentées officiellement.
 
 use std::sync::LazyLock;
 
@@ -108,6 +110,99 @@ struct GiveawayRaw {
 
 fn yes() -> bool {
     true
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SeError {
+    #[error("réseau : {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("jeton StreamElements refusé")]
+    Unauthorized,
+    #[error("{0}")]
+    Api(String),
+}
+
+/// Compte StreamElements du jeton
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeMe {
+    pub username: String,
+    /// Identifiant Twitch du compte
+    #[serde(default)]
+    pub provider_id: String,
+}
+
+/// En-tête d'authentification : jeton de session (JWT) ou jeton d'accès personnel
+fn authorization(token: &str) -> String {
+    if token.split('.').count() == 3 {
+        format!("Bearer {token}")
+    } else {
+        format!("apikey {token}")
+    }
+}
+
+async fn api_error(res: reqwest::Response) -> SeError {
+    if res.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return SeError::Unauthorized;
+    }
+    let status = res.status();
+    let body: serde_json::Value = res.json().await.unwrap_or_default();
+    let message = body.get("message").and_then(|m| m.as_str()).map(str::to_owned);
+    SeError::Api(message.unwrap_or_else(|| format!("HTTP {status}")))
+}
+
+pub async fn me(http: &reqwest::Client, token: &str) -> Result<SeMe, SeError> {
+    let res = http
+        .get(format!("{API}/kappa/v2/channels/me"))
+        .header("Authorization", authorization(token))
+        .send()
+        .await?;
+    if !res.status().is_success() {
+        return Err(api_error(res).await);
+    }
+    Ok(res.json().await?)
+}
+
+#[derive(Debug, Deserialize)]
+struct Entry {
+    #[serde(default)]
+    tickets: i64,
+}
+
+/// Nos tickets dans un giveaway (0 : pas encore inscrit)
+pub async fn my_entry(http: &reqwest::Client, token: &str, se_channel: &str, giveaway: &str) -> Result<i64, SeError> {
+    let res = http
+        .get(format!("{API}/kappa/v3/giveaways/{se_channel}/{giveaway}/entry"))
+        .header("Authorization", authorization(token))
+        .send()
+        .await?;
+    if res.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(0);
+    }
+    if !res.status().is_success() {
+        return Err(api_error(res).await);
+    }
+    Ok(res.json::<Entry>().await?.tickets)
+}
+
+/// Achète `tickets` tickets avec nos points (même appel que le bouton du site)
+pub async fn enter(
+    http: &reqwest::Client,
+    token: &str,
+    se_channel: &str,
+    giveaway: &str,
+    tickets: i64,
+) -> Result<(), SeError> {
+    let res = http
+        .post(format!("{API}/kappa/v3/giveaways/{se_channel}/{giveaway}/entry"))
+        .header("Authorization", authorization(token))
+        .json(&serde_json::json!({ "tickets": tickets }))
+        .send()
+        .await?;
+    if !res.status().is_success() {
+        return Err(api_error(res).await);
+    }
+    Ok(())
 }
 
 /// Identifiant StreamElements d'une chaîne Twitch (None : la chaîne n'utilise pas StreamElements)
@@ -256,6 +351,19 @@ mod tests {
         assert_eq!(extract_command("Tapez !Coffre pour participer").as_deref(), Some("!coffre"));
         assert_eq!(extract_command("Bonne chance !join"), Some("!join".into()));
         assert_eq!(extract_command("aucune commande ici"), None);
+    }
+
+    #[test]
+    fn auth_header() {
+        assert_eq!(authorization("aaa.bbb.ccc"), "Bearer aaa.bbb.ccc");
+        assert_eq!(authorization("0123abcd"), "apikey 0123abcd");
+    }
+
+    #[test]
+    fn me_parsing() {
+        let body = r#"{"_id":"692f","username":"powange2","providerId":"181074025","provider":"twitch"}"#;
+        let me: SeMe = serde_json::from_str(body).unwrap();
+        assert_eq!((me.username.as_str(), me.provider_id.as_str()), ("powange2", "181074025"));
     }
 
     #[test]

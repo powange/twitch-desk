@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useOpenExternal } from '../utils/external'
 import { useSnapshot } from '../composables/useSnapshot'
 import { ACCOUNT_STATUS } from '../utils/format'
-import type { AccountView, DeviceCode, LoginEvent } from '../types'
+import type { AccountView, DeviceCode, LoginEvent, SeLoginEvent } from '../types'
 
 const { accounts } = useSnapshot()
 const toast = useToast()
@@ -16,6 +16,7 @@ const starting = ref(false)
 const remaining = ref(0)
 let countdown: ReturnType<typeof setInterval> | null = null
 let unlisten: UnlistenFn | null = null
+let unlistenSe: UnlistenFn | null = null
 
 function stopCountdown() {
   if (countdown) clearInterval(countdown)
@@ -62,7 +63,62 @@ function formatRemaining(s: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
+// --- Compte StreamElements ---
+// Comptes dont la fenêtre de connexion StreamElements est ouverte
+const seConnecting = ref<Set<number>>(new Set())
+
+async function connectSe(account: AccountView) {
+  try {
+    await invoke('connect_streamelements', { accountId: account.id })
+    seConnecting.value = new Set(seConnecting.value).add(account.id)
+  } catch (e) {
+    toast.add({ title: 'Connexion StreamElements impossible', description: String(e), color: 'error' })
+  }
+}
+
+function seDone(accountId: number) {
+  const next = new Set(seConnecting.value)
+  next.delete(accountId)
+  seConnecting.value = next
+}
+
+function seLoginToast(ev: SeLoginEvent) {
+  const login = accounts.value.find(a => a.id === ev.accountId)?.login ?? ''
+  if (ev.status === 'done') toast.add({ title: `StreamElements connecté pour ${login}`, color: 'success', icon: 'i-lucide-check' })
+  if (ev.status === 'wrongAccount') toast.add({ title: 'Mauvais compte', description: `Tu t'es connecté à StreamElements avec ${ev.username}, pas avec ${login}. Recommence avec le bon compte Twitch.`, color: 'warning' })
+  if (ev.status === 'error') toast.add({ title: 'Connexion StreamElements échouée', description: ev.message, color: 'error' })
+}
+
+async function disconnectSe(account: AccountView) {
+  await invoke('disconnect_streamelements', { accountId: account.id })
+}
+
+// Secours : jeton d'accès personnel collé à la main
+const tokenFor = ref<AccountView | null>(null)
+const tokenValue = ref('')
+const savingToken = ref(false)
+async function saveToken() {
+  if (!tokenFor.value) return
+  savingToken.value = true
+  try {
+    const ev = await invoke<SeLoginEvent>('set_streamelements_token', { accountId: tokenFor.value.id, token: tokenValue.value })
+    seLoginToast(ev)
+    if (ev.status === 'done') {
+      tokenFor.value = null
+      tokenValue.value = ''
+    }
+  } catch (e) {
+    toast.add({ title: 'Jeton non enregistré', description: String(e), color: 'error' })
+  } finally {
+    savingToken.value = false
+  }
+}
+
 onMounted(async () => {
+  unlistenSe = await listen<SeLoginEvent>('se-login', (e) => {
+    seDone(e.payload.accountId)
+    seLoginToast(e.payload)
+  })
   unlisten = await listen<LoginEvent>('login', (e) => {
     code.value = null
     stopCountdown()
@@ -76,6 +132,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unlisten?.()
+  unlistenSe?.()
   stopCountdown()
 })
 
@@ -124,6 +181,7 @@ async function confirmRemove() {
             <th class="text-left px-3 py-2">État</th>
             <th class="text-left px-3 py-2">Temps réel</th>
             <th class="text-left px-3 py-2">Chat</th>
+            <th class="text-left px-3 py-2">StreamElements</th>
             <th class="text-center px-3 py-2">Points de chaîne</th>
             <th class="px-3 py-2" />
           </tr>
@@ -152,6 +210,23 @@ async function confirmRemove() {
                 {{ account.chatConnected ? `${account.channels.filter(c => c.inChat).length} chaîne(s)` : 'Déconnecté' }}
               </span>
             </td>
+            <td class="px-3 py-2.5">
+              <div class="flex items-center gap-2">
+                <template v-if="seConnecting.has(account.id)">
+                  <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin text-muted" />
+                  <span class="text-muted">Connexion dans l'autre fenêtre…</span>
+                </template>
+                <template v-else-if="account.seAccount === 'connected'">
+                  <UBadge color="success" variant="subtle" label="Connecté" />
+                  <UButton label="Déconnecter" size="xs" color="neutral" variant="ghost" @click="disconnectSe(account)" />
+                </template>
+                <template v-else>
+                  <UBadge v-if="account.seAccount === 'expired'" color="error" variant="subtle" label="Jeton expiré" />
+                  <UButton :label="account.seAccount === 'expired' ? 'Reconnecter' : 'Connecter'" size="xs" color="neutral" variant="soft" @click="connectSe(account)" />
+                  <UButton label="Coller un jeton" size="xs" color="neutral" variant="link" @click="tokenFor = account" />
+                </template>
+              </div>
+            </td>
             <td class="px-3 py-2.5 text-center">
               <div class="flex justify-center">
                 <USwitch :model-value="account.pointsEnabled" :aria-label="`Points pour ${account.login}`" @update:model-value="v => setPoints(account, v)" />
@@ -166,7 +241,7 @@ async function confirmRemove() {
             </td>
           </tr>
           <tr v-if="accounts.length === 0">
-            <td colspan="6" class="px-3 py-8 text-center text-muted">Aucun compte. Connecte ton premier compte Twitch avec le bouton en haut.</td>
+            <td colspan="7" class="px-3 py-8 text-center text-muted">Aucun compte. Connecte ton premier compte Twitch avec le bouton en haut.</td>
           </tr>
         </tbody>
       </table>
@@ -175,7 +250,26 @@ async function confirmRemove() {
     <p class="text-xs text-muted max-w-[75ch]">
       Les jetons de connexion sont rangés dans le Gestionnaire d'identification de Windows, jamais en clair dans les fichiers de l'application.
       Pour reconnecter un compte, utilise « Connecter un compte » avec le même compte Twitch.
+      Le compte StreamElements sert à lire tes tickets exacts et à en acheter depuis l'application ; sans lui, les tickets sont lus dans les réponses du bot.
     </p>
+
+    <UModal :open="tokenFor !== null" :title="`Jeton StreamElements de ${tokenFor?.login}`" @update:open="v => { if (!v) tokenFor = null }">
+      <template #body>
+        <div class="flex flex-col gap-3 text-sm">
+          <p>
+            Sur streamelements.com, connecté avec ce compte Twitch : paramètres du compte, onglet <b>Sécurité</b>, <b>Jeton d'accès personnel</b>.
+            Il équivaut à ton mot de passe StreamElements : l'application le range dans le Gestionnaire d'identification de Windows.
+          </p>
+          <UTextarea id="se-token" v-model="tokenValue" :rows="4" placeholder="Colle le jeton ici" class="font-mono" autoresize />
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Annuler" color="neutral" variant="ghost" @click="tokenFor = null" />
+          <UButton label="Enregistrer" :loading="savingToken" @click="saveToken" />
+        </div>
+      </template>
+    </UModal>
 
     <UModal :open="toRemove !== null" title="Retirer le compte ?" @update:open="v => { if (!v) toRemove = null }">
       <template #body>

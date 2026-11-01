@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { reactive, ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { useChannelList } from '../composables/useChannelList'
 import { useOpenExternal } from '../utils/external'
 import { formatNumber } from '../utils/format'
@@ -11,13 +13,68 @@ const { accounts, accountId, account, accountItems, channels, newLogin, adding, 
 function status(channel: ChannelView): { label: string, color: 'success' | 'warning' | 'neutral' | 'error' } {
   if (!channel.chatPresence) return { label: 'Chat désactivé', color: 'neutral' }
   if (channel.seEnabled === false) return { label: 'Pas de StreamElements', color: 'error' }
-  if (!channel.inChat) return { label: 'Connexion au chat…', color: 'neutral' }
-  if (!channel.live) return { label: 'Dans le chat · hors ligne', color: 'neutral' }
-  return { label: 'Dans le chat · en live', color: 'success' }
+  if (!channel.inChat) return { label: 'Hors du chat', color: 'warning' }
+  if (!channel.live) return { label: 'Hors ligne', color: 'neutral' }
+  return { label: 'En live', color: 'success' }
 }
 
 function leaderboardUrl(login: string) {
   return `https://streamelements.com/${login}/leaderboard`
+}
+
+const toast = useToast()
+
+// --- Achat de tickets (compte StreamElements connecté) ---
+// Quantité saisie par chaîne
+const quantities = reactive<Record<number, number>>({})
+const toBuy = ref<{ channel: ChannelView, tickets: number } | null>(null)
+const buying = ref(false)
+
+function quantity(channel: ChannelView): number {
+  return quantities[channel.id] ?? 1
+}
+
+function askBuy(channel: ChannelView) {
+  const max = affordable(channel)
+  const tickets = Math.max(1, Math.min(quantity(channel), max ?? quantity(channel)))
+  toBuy.value = { channel, tickets }
+}
+
+async function confirmBuy() {
+  const pending = toBuy.value
+  if (!pending || !account.value || !pending.channel.seGiveaway) return
+  buying.value = true
+  try {
+    const total = await invoke<number>('buy_se_tickets', {
+      accountId: account.value.id,
+      channelId: pending.channel.id,
+      giveawayId: pending.channel.seGiveaway.id,
+      tickets: pending.tickets
+    })
+    toast.add({ title: `${pending.tickets} ticket(s) acheté(s) sur ${pending.channel.login}`, description: `Tu as maintenant ${total} ticket(s).`, color: 'success', icon: 'i-lucide-ticket' })
+    toBuy.value = null
+  } catch (e) {
+    toast.add({ title: 'Achat refusé', description: String(e), color: 'error' })
+  } finally {
+    buying.value = false
+  }
+}
+
+// Relevé du solde : Auto (rythme de la chaîne) ou fréquence imposée
+function refreshItems(channel: ChannelView) {
+  const auto = channel.seRefresh === null ? channel.sePollMinutes : null
+  return [
+    { label: auto ? `Auto (${auto} min)` : 'Auto', value: 'auto' },
+    ...[2, 5, 10, 15].map(m => ({ label: `${m} min`, value: String(m) }))
+  ]
+}
+
+async function setRefresh(channel: ChannelView, value: string) {
+  try {
+    await invoke('set_se_refresh', { id: channel.id, minutes: value === 'auto' ? null : Number(value) })
+  } catch (e) {
+    toast.add({ title: 'Réglage non enregistré', description: String(e), color: 'error' })
+  }
 }
 
 function giveawayUrl(login: string, id: string) {
@@ -80,8 +137,8 @@ function affordable(channel: ChannelView): number | null {
         icon="i-lucide-info"
         color="info"
         variant="subtle"
-        title="StreamElements donne ses points toutes les 10 minutes aux spectateurs présents dans le chat pendant le live."
-        description="Le compte reste connecté au chat de ces chaînes, sans jamais écrire. Pas de limite de chaînes. Le solde est relu toutes les 10 minutes."
+        title="StreamElements donne ses points aux spectateurs présents dans le chat pendant le live, au rythme choisi par chaque streamer."
+        description="Le compte reste connecté au chat de ces chaînes, sans jamais écrire, sans limite de chaînes. Le rythme de chaque chaîne est dans « Comment gagner » ; en Auto, le solde est relu à ce rythme (au plus souvent toutes les 2 min)."
       />
 
       <form class="flex gap-2" @submit.prevent="addChannel">
@@ -93,82 +150,144 @@ function affordable(channel: ChannelView): number | null {
         <table class="w-full text-sm">
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
             <tr>
-              <th class="text-left px-3 py-2">Chaîne</th>
-              <th class="text-left px-3 py-2">État</th>
-              <th class="text-right px-3 py-2">Solde</th>
-              <th class="text-right px-3 py-2">Aujourd'hui</th>
-              <th class="text-left px-3 py-2">Comment gagner</th>
-              <th class="text-center px-3 py-2">Chat</th>
-              <th class="px-3 py-2" />
+              <th class="text-left px-2 py-2">Chaîne</th>
+              <th class="text-right px-2 py-2 whitespace-nowrap">Solde</th>
+              <th class="text-right px-2 py-2 whitespace-nowrap">Aujourd'hui</th>
+              <th class="text-left px-2 py-2 whitespace-nowrap">Comment gagner</th>
+              <th class="text-left px-2 py-2 whitespace-nowrap">Commande</th>
+              <th class="text-right px-2 py-2 whitespace-nowrap">Mes tickets</th>
+              <th class="text-right px-2 py-2">Tickets</th>
+              <th class="text-right px-2 py-2">Participants</th>
+              <th class="text-left px-2 py-2">Acheter</th>
+              <th class="text-center px-2 py-2">Chat</th>
+              <th class="px-2 py-2" />
             </tr>
           </thead>
           <tbody>
-            <template v-for="channel in channels" :key="channel.id">
-            <tr class="border-t border-default">
-              <td class="px-3 py-2 min-w-0">
+            <tr v-for="channel in channels" :key="channel.id" class="border-t border-default" :class="channel.seGiveaway ? 'bg-primary/5' : ''">
+              <td class="px-2 py-2 min-w-0">
                 <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
-                <div v-if="channel.live" class="text-xs text-muted truncate max-w-[320px]">
+                <div v-if="channel.live" class="text-xs text-muted truncate max-w-[165px]">
                   {{ channel.live.gameName ?? 'Sans catégorie' }} · {{ formatNumber(channel.live.viewers) }} spectateurs
                 </div>
+                <div class="flex flex-wrap gap-1 mt-1">
+                  <UBadge :color="status(channel).color" variant="subtle" :label="status(channel).label" size="sm" class="whitespace-nowrap" />
+                  <UTooltip v-if="channel.seGiveaway" :text="channel.seGiveaway.title || 'Giveaway StreamElements'">
+                    <UBadge icon="i-lucide-gift" label="Giveaway en cours" color="primary" variant="subtle" size="sm" class="whitespace-nowrap" />
+                  </UTooltip>
+                </div>
               </td>
-              <td class="px-3 py-2">
-                <UBadge :color="status(channel).color" variant="subtle" :label="status(channel).label" class="whitespace-nowrap" />
-              </td>
-              <td class="px-3 py-2 text-right whitespace-nowrap">
+              <td class="px-2 py-2 text-right whitespace-nowrap">
                 <div>{{ channel.seEnabled === false ? '—' : formatNumber(channel.sePoints) }}</div>
-                <button v-if="channel.seRank" class="text-xs text-muted hover:underline" @click="openExternal(leaderboardUrl(channel.login))">
-                  {{ formatNumber(channel.seRank) }}<sup>e</sup> au classement
+                <button v-if="channel.seRank" class="text-xs text-muted hover:underline" title="Rang au classement de la chaîne" @click="openExternal(leaderboardUrl(channel.login))">
+                  {{ formatNumber(channel.seRank) }}<sup>e</sup>
                 </button>
               </td>
-              <td class="px-3 py-2 text-right" :class="channel.seEarnedToday > 0 ? 'text-success' : 'text-muted'">
-                {{ channel.seEarnedToday > 0 ? '+' : '' }}{{ formatNumber(channel.seEarnedToday) }}
+              <td class="px-2 py-2 text-right whitespace-nowrap" :class="channel.seEnabled !== false && channel.seEarnedToday > 0 ? 'text-success' : 'text-muted'">
+                <template v-if="channel.seEnabled !== false">{{ channel.seEarnedToday > 0 ? '+' : '' }}{{ formatNumber(channel.seEarnedToday) }}</template>
+                <template v-else>—</template>
               </td>
-              <td class="px-3 py-2">
-                <template v-if="earnRule(channel)">
-                  <div class="whitespace-nowrap">{{ earnRule(channel) }}</div>
-                  <div v-if="earnDetails(channel)" class="text-xs text-muted min-w-[190px]">{{ earnDetails(channel) }}</div>
+              <td class="px-2 py-2">
+                <div v-if="earnRule(channel)" class="flex items-center gap-1 whitespace-nowrap">
+                  {{ earnRule(channel) }}
+                  <UTooltip v-if="earnDetails(channel)" :text="earnDetails(channel) ?? ''">
+                    <UIcon name="i-lucide-info" class="size-3.5 text-muted" />
+                  </UTooltip>
+                </div>
+                <span v-else class="text-muted">—</span>
+                <USelect
+                  v-if="channel.seEnabled !== false"
+                  :id="`se-refresh-${channel.id}`"
+                  :model-value="channel.seRefresh === null ? 'auto' : String(channel.seRefresh)"
+                  :items="refreshItems(channel)"
+                  size="xs"
+                  class="w-36 mt-1"
+                  icon="i-lucide-refresh-cw"
+                  :aria-label="`Relevé du solde sur ${channel.login}`"
+                  @update:model-value="v => setRefresh(channel, String(v))"
+                />
+              </td>
+
+              <!-- Giveaway en cours : commande et prix du ticket -->
+              <td class="px-2 py-2 whitespace-nowrap">
+                <template v-if="channel.seGiveaway">
+                  <div class="flex items-center gap-1.5">
+                    <span class="font-mono">{{ channel.seGiveaway.command ?? '—' }}</span>
+                    <UButton icon="i-lucide-external-link" size="xs" variant="ghost" color="neutral" aria-label="Voir le giveaway" @click="openExternal(giveawayUrl(channel.login, channel.seGiveaway.id))" />
+                  </div>
+                  <div class="text-xs text-muted">
+                    {{ formatNumber(channel.seGiveaway.cost) }} pts<template v-if="channel.seGiveaway.freeTicket"> · 1 gratuit</template>
+                  </div>
+                  <UBadge v-if="channel.seGiveaway.subscriberOnly" label="Abonnés uniquement" color="warning" variant="subtle" size="sm" />
                 </template>
                 <span v-else class="text-muted">—</span>
               </td>
-              <td class="px-3 py-2 text-center">
+              <td class="px-2 py-2 text-right whitespace-nowrap">
+                <template v-if="channel.seGiveaway">
+                  <b>{{ channel.seMyTickets ?? '?' }}</b>
+                  <span class="text-muted"> / {{ channel.seGiveaway.maxTickets ? formatNumber(channel.seGiveaway.maxTickets) : '∞' }}</span>
+                </template>
+                <span v-else class="text-muted">—</span>
+              </td>
+              <td class="px-2 py-2 text-right">
+                {{ channel.seGiveaway ? formatNumber(channel.seGiveaway.totalTickets) : '—' }}
+              </td>
+              <td class="px-2 py-2 text-right">
+                {{ channel.seGiveaway ? formatNumber(channel.seGiveaway.totalUsers) : '—' }}
+              </td>
+              <td class="px-2 py-2">
+                <template v-if="channel.seGiveaway">
+                  <div v-if="account.seAccount === 'connected'" class="flex flex-col gap-1 w-24">
+                    <UInputNumber
+                      :id="`buy-${channel.id}`"
+                      :model-value="quantity(channel)"
+                      :min="1"
+                      :max="Math.max(1, affordable(channel) ?? 1)"
+                      size="xs"
+                      class="w-24"
+                      :aria-label="`Tickets à acheter sur ${channel.login}`"
+                      @update:model-value="v => quantities[channel.id] = v ?? 1"
+                    />
+                    <UTooltip :text="affordable(channel) ? `${formatNumber(quantity(channel) * channel.seGiveaway.cost)} points` : (channel.seGiveaway.maxTickets && (channel.seMyTickets ?? 0) >= channel.seGiveaway.maxTickets ? 'Maximum atteint' : 'Pas assez de points')">
+                      <UButton icon="i-lucide-ticket" label="Acheter" size="xs" block :disabled="!affordable(channel)" @click="askBuy(channel)" />
+                    </UTooltip>
+                  </div>
+                  <RouterLink v-else to="/accounts" class="text-xs text-primary hover:underline">Connecter StreamElements</RouterLink>
+                </template>
+                <span v-else class="text-muted">—</span>
+              </td>
+              <td class="px-2 py-2 text-center">
                 <div class="flex justify-center">
                   <USwitch :model-value="channel.chatPresence" :aria-label="`Présence dans le chat de ${channel.login}`" @update:model-value="v => setOptions(channel, { chatPresence: v })" />
                 </div>
               </td>
-              <td class="px-3 py-2 text-right">
+              <td class="px-2 py-2 text-right">
                 <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Retirer de la liste" @click="toRemove = channel" />
               </td>
             </tr>
-            <tr v-if="channel.seGiveaway" class="bg-primary/5">
-              <td colspan="7" class="px-3 pb-3 pt-1">
-                <div class="flex items-center gap-x-5 gap-y-1 flex-wrap text-sm">
-                  <span class="inline-flex items-center gap-1.5 font-medium text-primary">
-                    <UIcon name="i-lucide-gift" class="size-4" />
-                    Giveaway en cours<template v-if="channel.seGiveaway.title"> : {{ channel.seGiveaway.title }}</template>
-                  </span>
-                  <span v-if="channel.seGiveaway.command"><span class="font-mono bg-elevated px-1.5 py-0.5 rounded">{{ channel.seGiveaway.command }}</span></span>
-                  <span>{{ formatNumber(channel.seGiveaway.cost) }} points le ticket<template v-if="channel.seGiveaway.freeTicket"> · 1 gratuit</template></span>
-                  <span>
-                    Mes tickets :
-                    <b>{{ channel.seMyTickets ?? (channel.seGiveaway.botResponses ? '?' : 'inconnu') }}</b>
-                    <template v-if="channel.seGiveaway.maxTickets"> / {{ formatNumber(channel.seGiveaway.maxTickets) }} max</template>
-                    <template v-else> (pas de maximum)</template>
-                  </span>
-                  <span v-if="affordable(channel) !== null" class="text-muted">encore {{ formatNumber(affordable(channel)) }} achetable(s)</span>
-                  <span class="text-muted">{{ formatNumber(channel.seGiveaway.totalTickets) }} tickets · {{ formatNumber(channel.seGiveaway.totalUsers) }} participants</span>
-                  <UBadge v-if="channel.seGiveaway.subscriberOnly" label="Abonnés uniquement" color="warning" variant="subtle" />
-                  <UButton label="Voir" size="xs" variant="link" icon="i-lucide-external-link" @click="openExternal(giveawayUrl(channel.login, channel.seGiveaway.id))" />
-                </div>
-              </td>
-            </tr>
-            </template>
             <tr v-if="channels.length === 0">
-              <td colspan="7" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
+              <td colspan="11" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
             </tr>
           </tbody>
         </table>
       </div>
     </template>
+
+    <UModal :open="toBuy !== null" title="Acheter des tickets ?" @update:open="v => { if (!v) toBuy = null }">
+      <template #body>
+        <p v-if="toBuy && toBuy.channel.seGiveaway">
+          {{ toBuy.tickets }} ticket(s) pour le giveaway de {{ toBuy.channel.login }},
+          soit <b>{{ formatNumber(toBuy.tickets * toBuy.channel.seGiveaway.cost) }} points</b> StreamElements
+          sur les {{ formatNumber(toBuy.channel.sePoints) }} de {{ account?.login }}.
+        </p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Annuler" color="neutral" variant="ghost" @click="toBuy = null" />
+          <UButton label="Acheter" icon="i-lucide-ticket" :loading="buying" @click="confirmBuy" />
+        </div>
+      </template>
+    </UModal>
 
     <UModal :open="toRemove !== null" title="Retirer la chaîne ?" @update:open="v => { if (!v) toRemove = null }">
       <template #body>

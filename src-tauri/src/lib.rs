@@ -130,6 +130,11 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::get_paths,
+            commands::connect_streamelements,
+            commands::set_streamelements_token,
+            commands::disconnect_streamelements,
+            commands::buy_se_tickets,
+            commands::set_se_refresh,
         ])
         .run(tauri::generate_context!())
         .expect("démarrage de Twitch Desk");

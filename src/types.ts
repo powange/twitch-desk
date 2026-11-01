@@ -34,6 +34,9 @@ export interface ChannelView {
   seGiveaway: SeGiveaway | null
   // Nos tickets dans le giveaway en cours, lus dans les réponses du bot (null : inconnu)
   seMyTickets: number | null
+  // Relevé du solde StreamElements : choisi (null : automatique) et appliqué, en minutes
+  seRefresh: number | null
+  sePollMinutes: number
   // null : pas encore vérifié ; false : la chaîne n'utilise pas StreamElements
   seEnabled: boolean | null
   sePoints: number | null
@@ -49,6 +52,8 @@ export interface AccountView {
   statusText: string | null
   realtime: boolean
   chatConnected: boolean
+  // Compte StreamElements du spectateur : lecture exacte et achat des tickets
+  seAccount: 'none' | 'connected' | 'expired'
   channels: ChannelView[]
 }
 
@@ -88,6 +93,12 @@ export interface Settings {
 }
 
 export type ChannelList = 'points' | 'se'
+
+export type SeLoginEvent
+  = | { status: 'done', accountId: number, username: string }
+    | { status: 'wrongAccount', accountId: number, username: string }
+    | { status: 'cancelled', accountId: number }
+    | { status: 'error', accountId: number, message: string }
 
 export interface SeLoyalty {
   enabled: boolean
