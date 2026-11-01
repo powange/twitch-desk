@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use super::{random_device_id, Result, TwitchError, CLIENT_ID, CLIENT_ORIGIN};
 
@@ -54,15 +54,44 @@ pub fn operations_info() -> (u32, String) {
     (ops.version, ops.updated.clone())
 }
 
+/// Dernière empreinte acceptée par Twitch pour chaque opération : essayée en premier
+static PREFERRED: LazyLock<RwLock<HashMap<String, String>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Empreinte inconnue de Twitch : signal pour relire operations.json plus tôt que prévu
+static OPERATIONS_STALE: Notify = Notify::const_new();
+
+/// Attend qu'une requête tombe sur une empreinte inconnue de Twitch
+pub async fn operations_stale() {
+    OPERATIONS_STALE.notified().await;
+}
+
 fn hashes_for(name: &str) -> Vec<String> {
-    OPERATIONS.read().unwrap().operations.get(name).cloned().unwrap_or_default()
+    let hashes = OPERATIONS.read().unwrap().operations.get(name).cloned().unwrap_or_default();
+    let preferred = PREFERRED.read().unwrap().get(name).cloned();
+    prefer_first(hashes, preferred.as_deref())
+}
+
+/// Met l'empreinte qui a marché la dernière fois en tête (si elle est toujours listée)
+fn prefer_first(mut hashes: Vec<String>, preferred: Option<&str>) -> Vec<String> {
+    if let Some(i) = preferred.and_then(|p| hashes.iter().position(|h| h == p)) {
+        let h = hashes.remove(i);
+        hashes.insert(0, h);
+    }
+    hashes
+}
+
+fn remember_hash(name: &str, hash: &str) {
+    let known = PREFERRED.read().unwrap().get(name).is_some_and(|h| h == hash);
+    if !known {
+        PREFERRED.write().unwrap().insert(name.to_owned(), hash.to_owned());
+    }
 }
 
 static CLIENT_VERSION: LazyLock<Mutex<Option<(String, Instant)>>> = LazyLock::new(|| Mutex::new(None));
 
 async fn client_version(http: &reqwest::Client) -> String {
-    let mut cached = CLIENT_VERSION.lock().await;
-    if let Some((v, at)) = cached.as_ref() {
+    // Le verrou n'est pas gardé pendant la lecture de twitch.tv (jusqu'à 20 s)
+    if let Some((v, at)) = CLIENT_VERSION.lock().await.as_ref() {
         if at.elapsed() < CLIENT_VERSION_TTL {
             return v.clone();
         }
@@ -81,7 +110,7 @@ async fn client_version(http: &reqwest::Client) -> String {
     }
     .await;
     let version = fetched.unwrap_or_else(|| CLIENT_VERSION_FALLBACK.to_owned());
-    *cached = Some((version.clone(), Instant::now()));
+    *CLIENT_VERSION.lock().await = Some((version.clone(), Instant::now()));
     version
 }
 
@@ -155,7 +184,7 @@ impl Gql {
         }
         let value: Value = res.json().await?;
         match classify_response(value) {
-            Outcome::Data(data) => Ok(data),
+            Outcome::Data(data, _) => Ok(data),
             Outcome::Unauthorized => Err(TwitchError::Unauthorized),
             Outcome::UnknownHash => Err(TwitchError::Gql("requête refusée".into())),
             Outcome::Error(e) => Err(TwitchError::Gql(e)),
@@ -193,8 +222,14 @@ impl Gql {
 
     /// Exécute l'opération `name` ; renvoie le champ `data` de la réponse
     pub async fn request(&self, name: &str, variables: Value) -> Result<Value> {
+        self.request_full(name, variables).await.map(|(data, _)| data)
+    }
+
+    /// Comme `request`, avec les erreurs partielles renvoyées à côté des données
+    async fn request_full(&self, name: &str, variables: Value) -> Result<(Value, Vec<String>)> {
         let hashes = hashes_for(name);
         if hashes.is_empty() {
+            OPERATIONS_STALE.notify_one();
             return Err(TwitchError::PersistedQueryNotFound(name.to_owned()));
         }
         let version = client_version(&self.http).await;
@@ -223,12 +258,16 @@ impl Gql {
             }
             let value: Value = res.json().await?;
             match classify_response(value) {
-                Outcome::Data(data) => return Ok(data),
+                Outcome::Data(data, errors) => {
+                    remember_hash(name, hash);
+                    return Ok((data, errors));
+                }
                 Outcome::UnknownHash => continue,
                 Outcome::Unauthorized => return Err(TwitchError::Unauthorized),
                 Outcome::Error(e) => return Err(TwitchError::Gql(format!("{name} : {e}"))),
             }
         }
+        OPERATIONS_STALE.notify_one();
         Err(TwitchError::PersistedQueryNotFound(name.to_owned()))
     }
 
@@ -255,27 +294,13 @@ impl Gql {
     }
 
     pub async fn claim_bonus(&self, channel_id: &str, claim_id: &str) -> Result<()> {
-        let data = self
-            .request(
+        let (data, errors) = self
+            .request_full(
                 "ClaimCommunityPoints",
                 json!({ "input": { "channelID": channel_id, "claimID": claim_id } }),
             )
             .await?;
-        match data.pointer("/claimCommunityPoints/error").filter(|e| !e.is_null()) {
-            None => Ok(()),
-            Some(error) => {
-                let code = error
-                    .get("code")
-                    .or_else(|| error.get("message"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("inconnu");
-                if code.eq_ignore_ascii_case("ALREADY_CLAIMED") {
-                    Ok(())
-                } else {
-                    Err(TwitchError::Gql(format!("bonus refusé : {code}")))
-                }
-            }
-        }
+        check_claim(&data, &errors)
     }
 
     pub async fn playback_token(&self, login: &str) -> Result<(String, String)> {
@@ -679,10 +704,30 @@ pub struct PointsContext {
 }
 
 enum Outcome {
-    Data(Value),
+    /// Données, avec les erreurs partielles éventuelles
+    Data(Value, Vec<String>),
     UnknownHash,
     Unauthorized,
     Error(String),
+}
+
+/// Bonus récupéré seulement si Twitch le confirme : `claimCommunityPoints` présent, sans erreur
+fn check_claim(data: &Value, errors: &[String]) -> Result<()> {
+    let Some(claim) = data.get("claimCommunityPoints").filter(|c| !c.is_null()) else {
+        let why = if errors.is_empty() { "réponse vide".to_owned() } else { errors.join(", ") };
+        return Err(TwitchError::Gql(format!("bonus non confirmé : {why}")));
+    };
+    if let Some(error) = claim.get("error").filter(|e| !e.is_null()) {
+        let code = error.get("code").or_else(|| error.get("message")).and_then(Value::as_str).unwrap_or("inconnu");
+        if code.eq_ignore_ascii_case("ALREADY_CLAIMED") {
+            return Ok(());
+        }
+        return Err(TwitchError::Gql(format!("bonus refusé : {code}")));
+    }
+    if !errors.is_empty() {
+        return Err(TwitchError::Gql(format!("bonus refusé : {}", errors.join(", "))));
+    }
+    Ok(())
 }
 
 fn classify_response(value: Value) -> Outcome {
@@ -690,9 +735,9 @@ fn classify_response(value: Value) -> Outcome {
     if value.get("status").and_then(Value::as_u64) == Some(401) {
         return Outcome::Unauthorized;
     }
+    let mut messages: Vec<String> = vec![];
     if let Some(errors) = value.get("errors").and_then(Value::as_array) {
-        let messages: Vec<&str> =
-            errors.iter().filter_map(|e| e.get("message").and_then(Value::as_str)).collect();
+        messages = errors.iter().filter_map(|e| e.get("message").and_then(Value::as_str)).map(str::to_owned).collect();
         if messages.iter().any(|m| m.contains("PersistedQueryNotFound")) {
             return Outcome::UnknownHash;
         }
@@ -701,7 +746,7 @@ fn classify_response(value: Value) -> Outcome {
         }
     }
     match value.get("data") {
-        Some(data) if !data.is_null() => Outcome::Data(data.clone()),
+        Some(data) if !data.is_null() => Outcome::Data(data.clone(), messages),
         _ => Outcome::Error("réponse sans données".into()),
     }
 }
@@ -825,11 +870,38 @@ mod tests {
             classify_response(json!({"error":"Unauthorized","status":401,"message":"..."})),
             Outcome::Unauthorized
         ));
-        assert!(matches!(classify_response(json!({"data":{"user":null}})), Outcome::Data(_)));
+        assert!(matches!(classify_response(json!({"data":{"user":null}})), Outcome::Data(_, ref e) if e.is_empty()));
+        assert!(matches!(
+            classify_response(json!({"data":{"x":null},"errors":[{"message":"partiel"}]})),
+            Outcome::Data(_, ref e) if e == &["partiel".to_owned()]
+        ));
         assert!(matches!(
             classify_response(json!({"errors":[{"message":"service error"}],"data":null})),
             Outcome::Error(_)
         ));
+    }
+
+    #[test]
+    fn claim_needs_confirmation() {
+        let ok = json!({"claimCommunityPoints":{"claim":{"id":"c"},"error":null}});
+        assert!(check_claim(&ok, &[]).is_ok());
+        let already = json!({"claimCommunityPoints":{"error":{"code":"ALREADY_CLAIMED"}}});
+        assert!(check_claim(&already, &[]).is_ok());
+        let refused = json!({"claimCommunityPoints":{"error":{"code":"NOT_FOUND"}}});
+        assert!(check_claim(&refused, &[]).is_err());
+        // Données présentes mais réclamation absente, avec une erreur : pas un succès
+        let null = json!({"claimCommunityPoints":null});
+        assert!(check_claim(&null, &["service timeout".into()]).is_err());
+        assert!(check_claim(&json!({}), &[]).is_err());
+        assert!(check_claim(&ok, &["partiel".into()]).is_err());
+    }
+
+    #[test]
+    fn preferred_hash_first() {
+        let list = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        assert_eq!(prefer_first(list.clone(), Some("c")), vec!["c", "a", "b"]);
+        assert_eq!(prefer_first(list.clone(), Some("z")), vec!["a", "b", "c"]);
+        assert_eq!(prefer_first(list, None), vec!["a", "b", "c"]);
     }
 
     #[test]

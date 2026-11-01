@@ -40,10 +40,16 @@ impl Secrets {
 
     pub fn save_raw(&self, key: &str, value: &str) -> Result<(), String> {
         if Self::keyring_available() {
-            if let Ok(entry) = keyring::Entry::new(SERVICE, key) {
-                if entry.set_password(value).is_ok() {
-                    return Ok(());
-                }
+            match keyring::Entry::new(SERVICE, key) {
+                Ok(entry) => match entry.set_password(value) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        tracing::warn!("trousseau du système refusé pour {key} ({e}) : repli sur le fichier");
+                        // L'ancienne valeur du trousseau serait relue avant celle du fichier
+                        let _ = entry.delete_credential();
+                    }
+                },
+                Err(e) => tracing::warn!("trousseau du système indisponible pour {key} ({e}) : repli sur le fichier"),
             }
         }
         let _guard = self.lock.lock().unwrap();
@@ -82,14 +88,57 @@ impl Secrets {
             .unwrap_or_default()
     }
 
+    /// Écriture atomique (fichier temporaire puis renommage), lisible par l'utilisateur seul
+    /// dès sa création
     fn write_file(&self, all: &HashMap<String, String>) -> Result<(), String> {
+        use std::io::Write;
         let text = serde_json::to_string(all).map_err(|e| e.to_string())?;
-        std::fs::write(&self.fallback, text).map_err(|e| e.to_string())?;
+        let tmp = self.fallback.with_extension("json.tmp");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let written = options.open(&tmp).and_then(|mut f| {
+            // Fichier temporaire laissé par une version précédente : droits remis à 0o600
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            f.write_all(text.as_bytes())?;
+            f.sync_all()
+        });
+        if let Err(e) = written.and_then(|_| std::fs::rename(&tmp, &self.fallback)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_file_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("twitch-desk-secrets-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secrets = Secrets::new(dir.clone());
+        let mut all = HashMap::new();
+        all.insert("k".to_owned(), "v".to_owned());
+        secrets.write_file(&all).unwrap();
+        assert_eq!(secrets.read_file().get("k").map(String::as_str), Some("v"));
+        assert!(!dir.join("secrets.json.tmp").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&self.fallback, std::fs::Permissions::from_mode(0o600));
+            let mode = std::fs::metadata(dir.join("secrets.json")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
         }
-        Ok(())
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

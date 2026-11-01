@@ -83,11 +83,37 @@ fn init_logging(dir: &Path) -> tracing_appender::non_blocking::WorkerGuard {
     guard
 }
 
+/// Relecture périodique des empreintes GQL publiées
+const OPERATIONS_EVERY: std::time::Duration = std::time::Duration::from_secs(4 * 3600);
+/// Relecture anticipée (empreinte inconnue de Twitch) : au plus une toutes les 10 min
+const OPERATIONS_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// Empreintes GQL : copie locale au démarrage, puis version publiée sur GitHub
 async fn refresh_operations(http: reqwest::Client, cache: std::path::PathBuf) {
     if let Some(file) = std::fs::read_to_string(&cache).ok().and_then(|s| serde_json::from_str::<OperationsFile>(&s).ok()) {
         gql::install_operations(file);
     }
+    fetch_operations(&http, &cache).await;
+}
+
+/// Toutes les 4 h, ou plus tôt quand Twitch ne reconnaît plus une empreinte
+async fn operations_loop(http: reqwest::Client, cache: std::path::PathBuf) {
+    let mut last = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(last + OPERATIONS_EVERY) => {}
+            _ = gql::operations_stale() => {
+                // Plusieurs requêtes en échec à la suite : une seule relecture
+                tokio::time::sleep_until(last + OPERATIONS_MIN_GAP).await;
+                tracing::info!("empreinte GQL inconnue de Twitch : relecture d'operations.json");
+            }
+        }
+        last = tokio::time::Instant::now();
+        fetch_operations(&http, &cache).await;
+    }
+}
+
+async fn fetch_operations(http: &reqwest::Client, cache: &Path) {
     let fetched = async {
         let res = http.get(gql::REMOTE_OPERATIONS_URL).send().await.ok()?;
         if !res.status().is_success() {
@@ -99,7 +125,7 @@ async fn refresh_operations(http: reqwest::Client, cache: std::path::PathBuf) {
     if let Some(file) = fetched {
         let text = serde_json::to_string_pretty(&file).unwrap_or_default();
         if gql::install_operations(file) {
-            let _ = std::fs::write(&cache, text);
+            let _ = std::fs::write(cache, text);
             tracing::info!("empreintes GQL à jour : {:?}", gql::operations_info());
         }
     }
@@ -154,7 +180,8 @@ pub fn run() {
             let cache = data_dir.join("operations.json");
             let starter = state.clone();
             tauri::async_runtime::spawn(async move {
-                refresh_operations(http, cache).await;
+                refresh_operations(http.clone(), cache.clone()).await;
+                tauri::async_runtime::spawn(operations_loop(http, cache));
                 starter.giveaways.start(starter.clone());
                 starter.start_all();
             });

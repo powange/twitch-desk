@@ -15,14 +15,14 @@ use std::time::{Duration, Instant};
 use chrono::TimeZone;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio::time::interval;
+use tokio::time::{interval, MissedTickBehavior};
 
 use crate::app::{AccountStatus, AccountView, App, ChannelState, ChannelView, EventKind, SeAccount};
 use crate::db::{Account, Channel, STREAMELEMENTS, TWITCH};
 use crate::drops::DropsEngine;
 use crate::secrets::Secrets;
 use crate::streamelements::{self, Giveaway, Loyalty, SeError, TicketUpdate};
-use crate::twitch::chat::{self, ChatEvent};
+use crate::twitch::chat::{self, ChatEvent, TapEvent};
 use crate::twitch::auth::{self, Tokens};
 use crate::twitch::gql::{Gql, StreamInfo};
 use crate::twitch::pubsub::{self, PubSubEvent};
@@ -41,6 +41,12 @@ const VALIDATE_EVERY: Duration = Duration::from_secs(3600);
 const FAILURES_BEFORE_COOLDOWN: u32 = 5;
 const FAILED_CHANNEL_COOLDOWN: Duration = Duration::from_secs(600);
 const RETRY_CONNECT_AFTER: Duration = Duration::from_secs(60);
+// Nouveaux essais de plus en plus espacés (60 s, 2, 4, 8, 16 min, puis 30 min au plus)
+const RETRY_CONNECT_MAX: Duration = Duration::from_secs(30 * 60);
+// Compte resté connecté ce temps : les échecs suivants repartent du délai minimal
+const STABLE_AFTER: Duration = Duration::from_secs(10 * 60);
+// Renouvellement du jeton : au plus un toutes les 5 min
+const REAUTH_MIN_GAP: Duration = Duration::from_secs(5 * 60);
 // Après un « stream-up », Twitch met quelques secondes à exposer le live
 const STREAM_UP_DELAY: Duration = Duration::from_secs(15);
 // Relevé automatique du solde StreamElements : le rythme de distribution de la
@@ -176,6 +182,27 @@ struct Miner {
     drops: DropsEngine,
     last_validate: Instant,
     day: chrono::NaiveDate,
+    /// Dernier renouvellement du jeton (limité à un toutes les 5 min)
+    last_reauth: Option<Instant>,
+    /// Jeton refusé par PubSub alors qu'un renouvellement venait d'avoir lieu : à refaire plus tard
+    pending_reauth: bool,
+    /// Échecs de connexion à la suite (délai d'attente croissant)
+    retries: u32,
+    running_since: Option<Instant>,
+}
+
+/// Délai avant le n-ième nouvel essai (n ≥ 1)
+fn retry_delay(retries: u32) -> Duration {
+    let factor = 1u32 << retries.saturating_sub(1).min(5);
+    (RETRY_CONNECT_AFTER * factor).min(RETRY_CONNECT_MAX)
+}
+
+/// Arrêt du superviseur (tâche annulée par stop_miner) : les tâches filles s'arrêtent avec lui
+impl Drop for Miner {
+    fn drop(&mut self) {
+        self.stop_pubsub();
+        self.stop_chat();
+    }
 }
 
 pub async fn run(app: Arc<App>, account: Account, mut commands: mpsc::Receiver<MinerCommand>) {
@@ -200,9 +227,13 @@ pub async fn run(app: Arc<App>, account: Account, mut commands: mpsc::Receiver<M
         drops: DropsEngine::default(),
         last_validate: Instant::now(),
         day: chrono::Local::now().date_naive(),
+        last_reauth: None,
+        pending_reauth: false,
+        retries: 0,
+        running_since: None,
     };
     miner.main(&mut commands).await;
-    miner.stop_pubsub();
+    // PubSub et chat : arrêtés par Drop
 }
 
 async fn next_event<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Option<T> {
@@ -218,52 +249,30 @@ impl Miner {
             self.status = AccountStatus::Starting;
             self.status_text = None;
             self.publish();
-            match self.connect().await {
-                Ok(()) => {}
-                Err(stop) => {
-                    let retry = self.on_stop(stop);
-                    // Erreur réseau : on retente ; jeton refusé : on attend une reconnexion
-                    let wait = async {
-                        match retry {
-                            true => tokio::time::sleep(RETRY_CONNECT_AFTER).await,
-                            false => std::future::pending::<()>().await,
-                        }
-                    };
-                    tokio::select! {
-                        _ = wait => continue,
-                        cmd = commands.recv() => match cmd {
-                            None => return,
-                            Some(_) => continue,
-                        },
-                    }
+            if let Err(stop) = self.connect().await {
+                let retry = self.on_stop(stop);
+                // Erreur passagère : on retente ; jeton refusé : on attend une reconnexion
+                if !Self::wait_retry(retry, commands).await {
+                    return;
                 }
+                continue;
             }
             self.status = AccountStatus::Running;
+            self.running_since = Some(Instant::now());
             self.app.log(&self.account.login, EventKind::Info, "Compte connecté");
             self.reload_channels();
             self.reload_drop_games();
             self.load_se_token();
             self.restart_pubsub();
+            self.ensure_chat();
             self.publish();
 
             let mut tick = interval(STEP);
+            // Passage long (inventaire des drops…) : pas de rafale de passages en retard
+            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
             loop {
-                tokio::select! {
-                    _ = tick.tick() => {
-                        if let Err(stop) = self.step().await {
-                            self.stop_pubsub();
-                            let retry = self.on_stop(stop);
-                            if retry {
-                                tokio::time::sleep(RETRY_CONNECT_AFTER).await;
-                            } else {
-                                // Jeton refusé : attendre une commande (reconnexion du compte)
-                                if commands.recv().await.is_none() {
-                                    return;
-                                }
-                            }
-                            break;
-                        }
-                    }
+                let result = tokio::select! {
+                    _ = tick.tick() => self.step().await,
                     cmd = commands.recv() => match cmd {
                         None => return,
                         Some(MinerCommand::Reload) => {
@@ -272,44 +281,81 @@ impl Miner {
                             self.load_se_token();
                             self.reload_channels();
                             self.reload_drop_games();
-                            // Simple changement d'ordre ou de réglage : pas de reconnexion
+                            // Simple changement d'ordre ou de réglage : pas de reconnexion.
+                            // Le chat suit ses propres cibles (chat_wanted) : il n'est pas relancé
                             if self.channel_ids() != before {
                                 self.restart_pubsub();
                             }
+                            Ok(())
                         }
-                        Some(MinerCommand::Wake) => {}
-                        Some(MinerCommand::RefreshDrops) => self.drops.refresh_inventory(),
+                        Some(MinerCommand::Wake) => Ok(()),
+                        Some(MinerCommand::RefreshDrops) => {
+                            self.drops.refresh_inventory();
+                            Ok(())
+                        }
                         Some(MinerCommand::SeTickets { channel_id, giveaway_id, tickets }) => {
                             self.on_se_tickets(channel_id, &giveaway_id, tickets);
+                            Ok(())
                         }
                     },
-                    event = next_event(&mut self.chat_rx) => {
-                        if let Some(event) = event {
-                            self.on_chat_event(event);
+                    event = next_event(&mut self.chat_rx) => match event {
+                        Some(event) => self.on_chat_event(event).await,
+                        // Tâche du chat terminée : elle pourra être relancée
+                        None => {
+                            self.stop_chat();
+                            Ok(())
                         }
-                    }
-                    event = next_event(&mut self.pubsub_rx) => {
-                        if let Some(event) = event {
-                            if let Err(stop) = self.on_event(event).await {
-                                self.stop_pubsub();
-                                if !self.on_stop(stop) && commands.recv().await.is_none() {
-                                    return;
-                                }
-                                break;
-                            }
+                    },
+                    event = next_event(&mut self.pubsub_rx) => match event {
+                        Some(event) => self.on_event(event).await,
+                        // Toutes les connexions PubSub sont arrêtées (jeton refusé)
+                        None => {
+                            self.stop_pubsub();
+                            Ok(())
                         }
+                    },
+                };
+                if let Err(stop) = result {
+                    self.stop_pubsub();
+                    self.stop_chat();
+                    let retry = self.on_stop(stop);
+                    if !Self::wait_retry(retry, commands).await {
+                        return;
                     }
+                    break;
                 }
                 self.publish();
             }
         }
     }
 
-    /// Met à jour l'état après un arrêt ; true si l'on peut retenter seul
-    fn on_stop(&mut self, stop: Stop) -> bool {
+    /// Attend le délai d'un nouvel essai (ou, sans délai, une commande : reconnexion du compte).
+    /// Une commande reçue pendant l'attente relance tout de suite ; false si le canal est fermé
+    async fn wait_retry(retry: Option<Duration>, commands: &mut mpsc::Receiver<MinerCommand>) -> bool {
+        let wait = async {
+            match retry {
+                Some(d) => tokio::time::sleep(d).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            _ = wait => true,
+            cmd = commands.recv() => cmd.is_some(),
+        }
+    }
+
+    /// Met à jour l'état après un arrêt ; délai avant un nouvel essai, None s'il faut
+    /// attendre une reconnexion du compte
+    fn on_stop(&mut self, stop: Stop) -> Option<Duration> {
+        if self.running_since.take().is_some_and(|t| t.elapsed() >= STABLE_AFTER) {
+            self.retries = 0;
+        }
         let (status, text, retry) = match stop {
-            Stop::Expired(t) => (AccountStatus::Expired, t, false),
-            Stop::Error(t) => (AccountStatus::Error, t, true),
+            Stop::Expired(t) => (AccountStatus::Expired, t, None),
+            Stop::Error(t) => {
+                self.retries = self.retries.saturating_add(1);
+                (AccountStatus::Error, t, Some(retry_delay(self.retries)))
+            }
         };
         self.status = status;
         self.app.log(&self.account.login, EventKind::Error, text.clone());
@@ -336,32 +382,64 @@ impl Miner {
         };
         self.gql = Some(Gql::new(http, tokens.access_token.clone(), Some(self.account.device_id.clone())));
         self.tokens = Some(tokens);
+        // Nouveau jeton (ou jeton revalidé) : le chat a droit à un nouvel essai
+        self.chat_refused = false;
         self.last_validate = Instant::now();
         Ok(())
     }
 
-    async fn refresh_tokens(&self, tokens: &Tokens) -> Result<Tokens, Stop> {
+    async fn refresh_tokens(&mut self, tokens: &Tokens) -> Result<Tokens, Stop> {
         let expired = || Stop::Expired("Jeton expiré : reconnecte ce compte".into());
         let refresh_token = tokens.refresh_token.as_deref().ok_or_else(expired)?;
-        let mut fresh = auth::refresh(&self.app.http, refresh_token).await.map_err(|_| expired())?;
+        self.last_reauth = Some(Instant::now());
+        // Seul un refus explicite (400 / 401) veut dire « reconnecter le compte » ; réseau,
+        // 5xx ou 429 : nouvel essai plus tard
+        let mut fresh = match auth::refresh(&self.app.http, refresh_token).await {
+            Ok(t) => t,
+            Err(TwitchError::Unauthorized) => return Err(expired()),
+            Err(e) => return Err(Stop::Error(format!("Renouvellement du jeton impossible pour l'instant : {e}"))),
+        };
         if fresh.refresh_token.is_none() {
             fresh.refresh_token = tokens.refresh_token.clone();
         }
-        auth::validate(&self.app.http, &fresh.access_token).await.map_err(|_| expired())?;
-        let _ = self.app.secrets.save(&self.account.user_id, &fresh);
+        // Enregistré avant la validation : Twitch peut avoir invalidé l'ancien jeton de renouvellement
+        if let Err(e) = self.app.secrets.save(&self.account.user_id, &fresh) {
+            tracing::error!("[{}] jeton renouvelé non enregistré : {e}", self.account.login);
+            let text = format!("Jeton renouvelé mais non enregistré ({e}) : reconnecte ce compte s'il est refusé au prochain démarrage");
+            self.app.log(&self.account.login, EventKind::Error, text.clone());
+            self.status_text = Some(text);
+        }
+        match auth::validate(&self.app.http, &fresh.access_token).await {
+            Ok(_) => {}
+            Err(TwitchError::Unauthorized) => return Err(expired()),
+            // Jeton tout juste délivré : une validation impossible n'empêche pas de s'en servir
+            Err(e) => tracing::warn!("[{}] validation du jeton renouvelé : {e}", self.account.login),
+        }
         Ok(fresh)
     }
 
-    /// Jeton refusé en cours de route : un essai de renouvellement
+    fn reauth_allowed(&self) -> bool {
+        self.last_reauth.is_none_or(|t| t.elapsed() >= REAUTH_MIN_GAP)
+    }
+
+    /// Jeton refusé en cours de route : un essai de renouvellement, au plus un toutes les 5 min.
+    /// Refusé de nouveau juste après : erreur passagère, le superviseur retente de plus en plus tard
     async fn reauth(&mut self) -> Result<(), Stop> {
+        if !self.reauth_allowed() {
+            return Err(Stop::Error("Jeton refusé de nouveau juste après son renouvellement : nouvel essai plus tard".into()));
+        }
         let tokens = self.tokens.clone().ok_or_else(|| Stop::Expired("Jeton absent".into()))?;
         let fresh = self.refresh_tokens(&tokens).await?;
         if let Some(gql) = &self.gql {
             gql.set_token(fresh.access_token.clone());
         }
         self.tokens = Some(fresh);
+        self.pending_reauth = false;
+        // Le chat et PubSub repartent avec le nouveau jeton
         self.stop_chat();
+        self.chat_refused = false;
         self.restart_pubsub();
+        self.ensure_chat();
         Ok(())
     }
 
@@ -440,6 +518,7 @@ impl Miner {
         self.app.db.gains_since(self.account.id, currency, &since).unwrap_or_default()
     }
 
+    /// Relance PubSub seul : la présence dans le chat n'est pas touchée
     fn restart_pubsub(&mut self) {
         self.stop_pubsub();
         let Some(tokens) = &self.tokens else { return };
@@ -449,17 +528,14 @@ impl Miner {
         let token = tokens.access_token.clone();
         self.pubsub_task = Some(tokio::spawn(pubsub::run(token, topics, tx)));
         self.pubsub_rx = Some(rx);
-        self.ensure_chat();
     }
 
-    /// Arrête aussi la présence dans le chat
     fn stop_pubsub(&mut self) {
         if let Some(task) = self.pubsub_task.take() {
             task.abort();
         }
         self.pubsub_rx = None;
         self.realtime = false;
-        self.stop_chat();
     }
 
     // --- Présence dans le chat (points StreamElements) ---
@@ -480,11 +556,27 @@ impl Miner {
     fn stop_chat(&mut self) {
         if let Some(task) = self.chat_task.take() {
             task.abort();
+            // Tâche annulée : elle ne préviendra pas le moniteur de giveaways, qui garderait
+            // ce compte comme lecteur de ses chaînes
+            self.tap_disconnected();
         }
         self.chat_rx = None;
         self.chat_connected = false;
         for ch in &mut self.channels {
             ch.in_chat = false;
+        }
+    }
+
+    fn tap_disconnected(&self) {
+        let tap = self.app.giveaways.tap();
+        let event = TapEvent::Disconnected { source: self.account.id };
+        if let Err(tokio::sync::mpsc::error::TrySendError::Full(event)) = tap.try_send(event) {
+            // Moniteur débordé : cet événement-là ne doit pas se perdre
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                rt.spawn(async move {
+                    let _ = tap.send(event).await;
+                });
+            }
         }
     }
 
@@ -502,7 +594,7 @@ impl Miner {
         });
     }
 
-    fn on_chat_event(&mut self, event: ChatEvent) {
+    async fn on_chat_event(&mut self, event: ChatEvent) -> Result<(), Stop> {
         match event {
             ChatEvent::Connected(connected) => {
                 tracing::info!("[{}] chat {}", self.account.login, if connected { "connecté" } else { "déconnecté" });
@@ -522,15 +614,23 @@ impl Miner {
             }
             ChatEvent::BotMessage { channel, bot, text } => self.on_bot_message(&channel, &bot, &text),
             ChatEvent::AuthFailed => {
-                self.chat_refused = true;
                 self.stop_chat();
-                self.app.log(
-                    &self.account.login,
-                    EventKind::Error,
-                    "Chat refusé par Twitch : reconnecte ce compte pour les points StreamElements",
-                );
+                if self.reauth_allowed() {
+                    // Jeton sans doute expiré : un renouvellement relance le chat
+                    tracing::info!("[{}] chat refusé : renouvellement du jeton", self.account.login);
+                    self.reauth().await?;
+                } else {
+                    // Refusé malgré un jeton récent : plus d'essai avant le prochain renouvellement
+                    self.chat_refused = true;
+                    self.app.log(
+                        &self.account.login,
+                        EventKind::Error,
+                        "Chat refusé par Twitch : reconnecte ce compte pour les points StreamElements",
+                    );
+                }
             }
         }
+        Ok(())
     }
 
     /// Réponse d'un bot dans un chat suivi : nos tickets StreamElements
@@ -721,6 +821,11 @@ impl Miner {
                 ch.earned_today = 0;
                 ch.se_earned_today = 0;
             }
+        }
+
+        // PubSub a refusé le jeton juste après un renouvellement : nouvel essai une fois permis
+        if self.pending_reauth && self.reauth_allowed() {
+            self.reauth().await?;
         }
 
         if self.last_validate.elapsed() >= VALIDATE_EVERY {
@@ -945,6 +1050,15 @@ impl Miner {
     async fn on_event(&mut self, event: PubSubEvent) -> Result<(), Stop> {
         match event {
             PubSubEvent::Connection { connected } => self.realtime = connected,
+            PubSubEvent::AuthFailed => {
+                self.realtime = false;
+                if self.reauth_allowed() {
+                    tracing::info!("[{}] PubSub refuse le jeton : renouvellement", self.account.login);
+                    self.reauth().await?;
+                } else {
+                    self.pending_reauth = true;
+                }
+            }
             PubSubEvent::PointsEarned { channel_id, gain, reason, balance } => {
                 let Some(i) = self.index_of(&channel_id) else { return Ok(()) };
                 if let Some(b) = balance {
@@ -1094,6 +1208,14 @@ mod tests {
         assert_eq!(min(se_poll_minutes(None, Some(30))), 10);
         assert_eq!(min(se_poll_minutes(None, Some(1))), 2);
         assert_eq!(min(se_poll_minutes(Some(5), Some(2))), 5);
+    }
+
+    #[test]
+    fn retry_backoff_grows() {
+        let s = |n| retry_delay(n).as_secs();
+        assert_eq!((s(1), s(2), s(3), s(5)), (60, 120, 240, 960));
+        assert_eq!(s(6), 1800);
+        assert_eq!(s(50), 1800);
     }
 
     #[test]

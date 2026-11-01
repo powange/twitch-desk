@@ -36,6 +36,10 @@ const VERIFY_EVERY: Duration = Duration::from_secs(10 * 60);
 // Secours si Twitch refuse cette vérification : plusieurs streams avec le tag
 // (même règle que le site Giveaway Twitch)
 const MIN_STREAMS_WITHOUT_CAMPAIGN: usize = 3;
+// Détail d'une campagne (drops, chaînes imposées) : il change peu, gardé 1 h
+const DETAILS_TTL: Duration = Duration::from_secs(3600);
+// Progression d'un drop inconnu : relecture forcée de l'inventaire au plus toutes les 10 min
+const FORCED_INVENTORY_GAP: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -310,9 +314,24 @@ impl Gql {
     }
 }
 
-/// Campagnes du compte : commencées (inventaire) + en cours ou à venir (tableau),
-/// détaillées une par une
-pub async fn fetch_campaigns(gql: &Gql, user_id: &str) -> Result<DropsSnapshot> {
+/// Détails de campagnes déjà lus, par identifiant
+pub type DetailsCache = HashMap<String, (Value, Instant)>;
+
+/// Campagnes à détailler : commencées (inventaire) ou d'un jeu suivi pour ses drops. Les autres
+/// campagnes du tableau (des centaines) restent sans détail : une requête chacune bloquerait
+/// le superviseur plusieurs minutes
+fn needs_details(id: &str, game_id: Option<&str>, in_inventory: &HashSet<String>, wanted_games: &HashSet<String>) -> bool {
+    in_inventory.contains(id) || game_id.is_some_and(|g| wanted_games.contains(g))
+}
+
+/// Campagnes du compte : commencées (inventaire) + en cours ou à venir (tableau) ; celles qui
+/// comptent (voir `needs_details`) sont détaillées, une requête par campagne absente du cache
+pub async fn fetch_campaigns(
+    gql: &Gql,
+    user_id: &str,
+    wanted_games: &HashSet<String>,
+    cache: &mut DetailsCache,
+) -> Result<DropsSnapshot> {
     let inventory = gql.drops_inventory().await?;
     let inv = inventory.pointer("/currentUser/inventory").cloned().unwrap_or(Value::Null);
     let claimed: HashSet<String> = inv
@@ -325,6 +344,7 @@ pub async fn fetch_campaigns(gql: &Gql, user_id: &str) -> Result<DropsSnapshot> 
         .and_then(Value::as_array)
         .map(|c| c.iter().filter_map(|x| Some((str_of(x, "id")?, x.clone()))).collect())
         .unwrap_or_default();
+    let in_inventory: HashSet<String> = raw.keys().cloned().collect();
 
     let dashboard = gql.drops_dashboard().await;
     let listed: Vec<Value> = match &dashboard {
@@ -345,16 +365,29 @@ pub async fn fetch_campaigns(gql: &Gql, user_id: &str) -> Result<DropsSnapshot> 
         }
     }
 
+    let now = Instant::now();
+    cache.retain(|id, (_, at)| raw.contains_key(id) && now.duration_since(*at) < DETAILS_TTL);
     let mut campaigns = vec![];
     for (id, value) in raw {
-        let detailed = match gql.drop_campaign_details(user_id, &id).await {
-            Ok(d) => match d.pointer("/user/dropCampaign").filter(|c| !c.is_null()) {
-                Some(details) => merge(&value, details),
-                None => value,
-            },
-            Err(e) => {
-                tracing::warn!("drops : détail de la campagne {id} indisponible ({e})");
-                value
+        let game_id = value.get("game").and_then(|g| str_of(g, "id"));
+        let detailed = if !needs_details(&id, game_id.as_deref(), &in_inventory, wanted_games) {
+            value
+        } else if let Some((details, _)) = cache.get(&id) {
+            merge(&value, details)
+        } else {
+            match gql.drop_campaign_details(user_id, &id).await {
+                Ok(d) => match d.pointer("/user/dropCampaign").filter(|c| !c.is_null()) {
+                    Some(details) => {
+                        cache.insert(id.clone(), (details.clone(), now));
+                        merge(&value, details)
+                    }
+                    None => value,
+                },
+                Err(TwitchError::Unauthorized) => return Err(TwitchError::Unauthorized),
+                Err(e) => {
+                    tracing::warn!("drops : détail de la campagne {id} indisponible ({e})");
+                    value
+                }
             }
         };
         if let Some(c) = parse_campaign(&detailed, &claimed) {
@@ -504,6 +537,9 @@ pub struct DropsEngine {
     inventory_at: Option<Instant>,
     inventory_wall: Option<String>,
     force_inventory_at: Option<Instant>,
+    /// Dernière relecture forcée par la progression d'un drop inconnu
+    unknown_progress_at: Option<Instant>,
+    details: DetailsCache,
     target: Option<Target>,
     failed: HashMap<String, Instant>,
     claim_attempts: HashMap<String, Instant>,
@@ -512,7 +548,12 @@ pub struct DropsEngine {
 
 impl DropsEngine {
     pub fn set_games(&mut self, games: Vec<DropGame>) {
+        // Jeu ajouté : ses campagnes n'ont pas encore été détaillées, relire l'inventaire
+        let before: HashSet<String> = self.wanted_games();
         self.games = games;
+        if !self.wanted_games().is_subset(&before) {
+            self.inventory_at = None;
+        }
         let ids: HashSet<&str> = self.games.iter().map(|g| g.game_id.as_str()).collect();
         self.rt.retain(|id, _| ids.contains(id.as_str()));
         if let Some(t) = &self.target {
@@ -520,6 +561,10 @@ impl DropsEngine {
                 self.target = None;
             }
         }
+    }
+
+    fn wanted_games(&self) -> HashSet<String> {
+        self.games.iter().filter(|g| g.enabled).map(|g| g.game_id.clone()).collect()
     }
 
     /// Chaîne regardée pour les drops (elle occupe une des 2 places du compte)
@@ -544,7 +589,8 @@ impl DropsEngine {
                 }
             }
         }
-        if !known {
+        if !known && self.unknown_progress_at.is_none_or(|t| t.elapsed() >= FORCED_INVENTORY_GAP) {
+            self.unknown_progress_at = Some(Instant::now());
             self.inventory_at = None;
         }
     }
@@ -567,7 +613,8 @@ impl DropsEngine {
         if due {
             self.inventory_at = Some(now);
             self.force_inventory_at = None;
-            match fetch_campaigns(gql, &account.user_id).await {
+            let wanted = self.wanted_games();
+            match fetch_campaigns(gql, &account.user_id, &wanted, &mut self.details).await {
                 Ok(snapshot) => {
                     self.campaigns = snapshot.campaigns;
                     self.inventory_wall = Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
@@ -946,6 +993,26 @@ mod tests {
         assert_eq!(s.len(), 1);
         assert_eq!((s[0].login.as_str(), s[0].viewers), ("kato_junichi0817", 20714));
         assert!(parse_drop_streams(&json!({ "game": null })).is_empty());
+    }
+
+    #[test]
+    fn details_only_for_started_or_wanted() {
+        let inv: HashSet<String> = ["c1".to_owned()].into();
+        let wanted: HashSet<String> = ["263490".to_owned()].into();
+        assert!(needs_details("c1", Some("999"), &inv, &wanted));
+        assert!(needs_details("c2", Some("263490"), &inv, &wanted));
+        assert!(!needs_details("c3", Some("999"), &inv, &wanted));
+        assert!(!needs_details("c4", None, &inv, &wanted));
+    }
+
+    #[test]
+    fn unknown_progress_refresh_is_rate_limited() {
+        let mut e = DropsEngine { inventory_at: Some(Instant::now()), ..Default::default() };
+        e.on_progress("inconnu", 5);
+        assert!(e.inventory_at.is_none());
+        e.inventory_at = Some(Instant::now());
+        e.on_progress("inconnu", 6);
+        assert!(e.inventory_at.is_some(), "deuxième relecture forcée trop tôt");
     }
 
     #[test]

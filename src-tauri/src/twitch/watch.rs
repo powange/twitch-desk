@@ -71,9 +71,10 @@ impl ChannelWatch {
                 &[("sig", sig.as_str()), ("token", token.as_str()), ("allow_source", "true")],
             )
             .map_err(|e| TwitchError::Unexpected(e.to_string()))?;
-            let variants = fetch_playlist(http, master.as_str()).await?;
-            // Twitch liste les qualités de la meilleure à la plus basse
-            self.playlist_url = variants.last().cloned();
+            let text = fetch_text(http, master.as_str()).await?;
+            let base = url::Url::parse(master.as_str()).map_err(|e| TwitchError::Unexpected(e.to_string()))?;
+            // Twitch liste les qualités de la meilleure à la plus basse, l'audio seul en dernier
+            self.playlist_url = lowest_video_variant(&base, &text)?;
         }
         let Some(playlist) = self.playlist_url.clone() else {
             return Err(TwitchError::Unexpected("liste de lecture vide".into()));
@@ -113,14 +114,40 @@ impl ChannelWatch {
     }
 }
 
-async fn fetch_playlist(http: &reqwest::Client, address: &str) -> Result<Vec<String>> {
+async fn fetch_text(http: &reqwest::Client, address: &str) -> Result<String> {
     let res = http.get(address).header("Connection", "close").send().await?;
     if !res.status().is_success() {
         return Err(TwitchError::Unexpected(format!("liste de lecture : HTTP {}", res.status())));
     }
-    let text = res.text().await?;
+    Ok(res.text().await?)
+}
+
+async fn fetch_playlist(http: &reqwest::Client, address: &str) -> Result<Vec<String>> {
+    let text = fetch_text(http, address).await?;
     let base = url::Url::parse(address).map_err(|e| TwitchError::Unexpected(e.to_string()))?;
     parse_playlist(&base, &text)
+}
+
+/// Variante vidéo la plus basse de la liste principale. L'audio seul ne compte pas comme un
+/// visionnage : écarté, sauf s'il n'y a rien d'autre
+fn lowest_video_variant(base: &url::Url, text: &str) -> Result<Option<String>> {
+    let all = parse_playlist(base, text)?;
+    let mut video = vec![];
+    let mut info = "";
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if line.starts_with("#EXT-X-STREAM-INF") {
+            info = line;
+        } else if !line.starts_with('#') {
+            let audio_only = info.to_ascii_lowercase().contains("audio_only") || line.contains("audio_only");
+            if !audio_only {
+                if let Some(u) = base.join(line).ok().filter(|u| matches!(u.scheme(), "http" | "https")) {
+                    video.push(String::from(u));
+                }
+            }
+            info = "";
+        }
+    }
+    Ok(video.last().or(all.last()).cloned())
 }
 
 /// Entrées d'une liste M3U8 (variantes ou segments), en adresses absolues
@@ -239,6 +266,20 @@ mod tests {
         let text = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=6000000\nhttps://cdn.example/1080.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=230000\nhttps://cdn.example/160.m3u8\n";
         let v = parse_playlist(&base, text).unwrap();
         assert_eq!(v.last().unwrap(), "https://cdn.example/160.m3u8");
+    }
+
+    #[test]
+    fn audio_only_variant_skipped() {
+        let base = url::Url::parse("https://usher.ttvnw.net/api/channel/hls/x.m3u8?sig=a").unwrap();
+        let text = "#EXTM3U\n#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"chunked\",NAME=\"1080p60\"\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,VIDEO=\"chunked\"\nhttps://cdn.example/1080.m3u8\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=230000,RESOLUTION=284x160,VIDEO=\"160p30\"\nhttps://cdn.example/160.m3u8\n\
+            #EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"audio_only\",NAME=\"audio_only\"\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=160000,CODECS=\"mp4a.40.2\",VIDEO=\"audio_only\"\nhttps://cdn.example/audio.m3u8\n";
+        assert_eq!(lowest_video_variant(&base, text).unwrap().as_deref(), Some("https://cdn.example/160.m3u8"));
+        // Rien d'autre que l'audio : on le garde
+        let only = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=160000,VIDEO=\"audio_only\"\nhttps://cdn.example/audio.m3u8\n";
+        assert_eq!(lowest_video_variant(&base, only).unwrap().as_deref(), Some("https://cdn.example/audio.m3u8"));
     }
 
     #[test]
