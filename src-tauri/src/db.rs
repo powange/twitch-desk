@@ -650,6 +650,10 @@ pub struct Settings {
     pub detect_keywords: bool,
     /// Page multi-stream : « local » (intégrée à l'application) ou « github » (page GitHub)
     pub viewer_source: String,
+    /// Phrases pour dire bonjour dans le chat, par langue (code ISO 639-1)
+    pub greetings: std::collections::BTreeMap<String, Vec<String>>,
+    /// Langue des phrases de bonjour quand celle de la chaîne est inconnue ou sans phrases
+    pub greeting_default_lang: String,
     /// Fenêtre « Streams » : bloqueur de publicités Twitch (vaft) dans les lecteurs
     pub viewer_adblock: bool,
 }
@@ -685,6 +689,16 @@ impl Default for Settings {
             detect_cooldown_secs: 600,
             detect_keywords: true,
             viewer_source: "local".into(),
+            greetings: [
+                ("fr", &["Bonjour tout le monde !", "Salut le chat !", "Coucou à tous !", "Hello tout le monde !"][..]),
+                ("en", &["Hello everyone!", "Hi chat!", "Hey everyone!", "Hello chat!"][..]),
+                ("de", &["Hallo zusammen!", "Hi Chat!", "Servus zusammen!"][..]),
+                ("es", &["¡Hola a todos!", "¡Hola chat!", "¡Buenas a todos!"][..]),
+            ]
+            .iter()
+            .map(|(lang, phrases)| (lang.to_string(), phrases.iter().map(|p| p.to_string()).collect()))
+            .collect(),
+            greeting_default_lang: "en".into(),
             viewer_adblock: false,
         }
     }
@@ -1519,6 +1533,14 @@ impl Db {
                 seen_at: r.get(6)?,
             })
         })?;
+        rows.collect()
+    }
+
+    /// Messages d'un auteur sur une chaîne depuis une date (bonjour déjà dit ?)
+    pub fn messages_by(&self, channel: &str, author: &str, since: &str) -> DbResult<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT message FROM chat_log WHERE channel = ?1 AND author = ?2 AND at >= ?3")?;
+        let rows = stmt.query_map(params![channel, author, since], |r| r.get(0))?;
         rows.collect()
     }
 

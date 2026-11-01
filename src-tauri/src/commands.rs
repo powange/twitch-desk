@@ -412,6 +412,108 @@ pub fn get_chat_log_meta(app: AppState, channel: String) -> CmdResult<ChatLogMet
     })
 }
 
+// --- Dire bonjour ---
+
+/// Phrase réduite à ses lettres et chiffres (comparaison tolérante)
+fn greeting_key(text: &str) -> String {
+    text.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+fn greeted_key(channel: &str, account_id: i64) -> String {
+    format!("greeted:{channel}:{account_id}")
+}
+
+/// Le compte a-t-il dit bonjour sur la chaîne dans les dernières 24 h ? (envoyé par l'application,
+/// ou une des phrases de bonjour vue dans le chat)
+fn has_greeted(app: &App, settings: &Settings, channel: &str, account: &crate::db::Account) -> bool {
+    let since = chrono::Utc::now() - chrono::Duration::hours(24);
+    let sent = app
+        .db
+        .get_state(&greeted_key(channel, account.id))
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
+        .is_some_and(|t| t >= since);
+    if sent {
+        return true;
+    }
+    let phrases: std::collections::HashSet<String> =
+        settings.greetings.values().flatten().map(|p| greeting_key(p)).filter(|k| !k.is_empty()).collect();
+    let since = since.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    app.db
+        .messages_by(channel, &account.login.to_lowercase(), &since)
+        .unwrap_or_default()
+        .iter()
+        .any(|m| phrases.contains(&greeting_key(m)))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GreetingState {
+    account_id: i64,
+    login: String,
+    greeted: bool,
+}
+
+/// Comptes ayant déjà dit bonjour sur une chaîne
+#[tauri::command]
+pub fn greeting_status(app: AppState, channel: String) -> CmdResult<Vec<GreetingState>> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    let settings = app.db.settings();
+    Ok(app
+        .db
+        .accounts()
+        .map_err(db_err)?
+        .iter()
+        .map(|a| GreetingState { account_id: a.id, login: a.login.clone(), greeted: has_greeted(&app, &settings, &channel, a) })
+        .collect())
+}
+
+/// Dit bonjour dans le chat avec chaque compte qui ne l'a pas encore fait : une phrase tirée
+/// au hasard dans la langue de la chaîne, sinon dans la langue par défaut
+#[tauri::command]
+pub async fn say_hello(app: AppState<'_>, channel: String) -> CmdResult<Vec<GreetingState>> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    let settings = app.db.settings();
+    let lang = app.channel_language(&channel).unwrap_or_default();
+    let phrases: Vec<String> = [lang.as_str(), settings.greeting_default_lang.as_str()]
+        .iter()
+        .find_map(|l| settings.greetings.get(*l).filter(|p| p.iter().any(|x| !x.trim().is_empty())))
+        .or_else(|| settings.greetings.values().find(|p| !p.is_empty()))
+        .map(|p| p.iter().map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect())
+        .unwrap_or_default();
+    if phrases.is_empty() {
+        return Err("Aucune phrase de bonjour : ajoute-en dans Giveaways → Réglages".into());
+    }
+    let mut errors = vec![];
+    let mut first = true;
+    for account in app.db.accounts().map_err(db_err)? {
+        if has_greeted(&app, &settings, &channel, &account) {
+            continue;
+        }
+        // Pas plusieurs comptes à la même seconde
+        if !first {
+            tokio::time::sleep(std::time::Duration::from_millis(rand::random_range(1500..4000))).await;
+        }
+        first = false;
+        let phrase = &phrases[rand::random_range(0..phrases.len())];
+        let result = match app.secrets.load(&account.user_id) {
+            None => Err("jeton introuvable : reconnecte ce compte".to_owned()),
+            Some(tokens) => crate::twitch::chat::send_message(&account.login, &tokens.access_token, &channel, phrase).await,
+        };
+        match result {
+            Ok(()) => {
+                let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                let _ = app.db.set_state(&greeted_key(&channel, account.id), &now);
+                app.log(&account.login, crate::app::EventKind::Info, format!("Bonjour sur {channel} : {phrase}"));
+            }
+            Err(e) => errors.push(format!("{} : {e}", account.login)),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors.join(" · "));
+    }
+    greeting_status(app, channel)
+}
+
 // --- Follow ---
 
 #[derive(Serialize)]

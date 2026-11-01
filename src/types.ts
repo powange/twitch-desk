@@ -194,6 +194,10 @@ export interface Settings {
   viewerSource: 'local' | 'github'
   // Fenêtre « Streams » : bloqueur de publicités Twitch dans les lecteurs
   viewerAdblock: boolean
+  // Phrases pour dire bonjour dans le chat, par langue (code ISO 639-1)
+  greetings: Record<string, string[]>
+  // Langue des phrases quand celle de la chaîne est inconnue ou sans phrases
+  greetingDefaultLang: string
 }
 
 export type ChannelList = 'points' | 'se'

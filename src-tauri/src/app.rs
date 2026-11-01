@@ -223,6 +223,11 @@ impl App {
         })
     }
 
+    /// Langue de diffusion d'une chaîne (code ISO 639-1), si connue
+    pub fn channel_language(&self, login: &str) -> Option<String> {
+        self.languages.read().unwrap().get(login).cloned()
+    }
+
     pub fn handle(&self) -> &AppHandle {
         &self.handle
     }

@@ -208,6 +208,8 @@ pub fn run() {
             commands::save_gift,
             commands::set_gift_favorite,
             commands::follow_status,
+            commands::greeting_status,
+            commands::say_hello,
             commands::get_chat_log,
             commands::set_giveaway_command,
             commands::get_chat_log_meta,

@@ -120,6 +120,43 @@ async function openDiscord(channel: string) {
   }
 }
 
+// --- Avoir dit bonjour : comptes qui l'ont déjà dit sur la chaîne (24 h), bonjour en un clic ---
+interface GreetingState { accountId: number, login: string, greeted: boolean }
+const greetings = reactive<Record<string, GreetingState[]>>({})
+const greeting = ref<string | null>(null)
+async function loadGreetings(channel: string) {
+  try {
+    greetings[channel] = await invoke<GreetingState[]>('greeting_status', { channel })
+  } catch {
+    delete greetings[channel]
+  }
+}
+watch(() => giveaways.value.filter(g => g.requireGreeting === true).map(g => g.channel), (channels) => {
+  for (const c of new Set(channels)) if (!(c in greetings)) void loadGreetings(c)
+}, { immediate: true })
+const greetedByAll = (channel: string) => !!greetings[channel]?.length && greetings[channel]!.every(s => s.greeted)
+function greetingTooltip(channel: string) {
+  const list = greetings[channel]
+  if (!list) return 'Avoir dit bonjour dans le chat'
+  const missing = list.filter(s => !s.greeted).map(s => s.login)
+  return missing.length
+    ? `Avoir dit bonjour : pas encore dit par ${missing.join(', ')}. Clique pour dire bonjour (phrase au hasard dans la langue de la chaîne)`
+    : 'Bonjour déjà dit par tous tes comptes'
+}
+async function sayHello(channel: string) {
+  if (greeting.value) return
+  greeting.value = channel
+  try {
+    greetings[channel] = await invoke<GreetingState[]>('say_hello', { channel })
+    toast.add({ title: `Bonjour dit sur ${channel}`, color: 'success', icon: 'i-lucide-hand' })
+  } catch (e) {
+    toast.add({ title: 'Bonjour non envoyé', description: String(e), color: 'error' })
+    void loadGreetings(channel)
+  } finally {
+    greeting.value = null
+  }
+}
+
 async function followChannel(channel: string) {
   const ids = notFollowing(channel).map(f => f.accountId)
   if (!ids.length || following.value) return
@@ -476,8 +513,21 @@ function share(g: GiveawayView) {
               <td class="px-2 py-2">
                 <div class="flex justify-center items-center">
                   <span v-if="g.requireGreeting === null" class="text-muted" title="On ne sait pas">?</span>
-                  <UTooltip v-else-if="g.requireGreeting" text="Avoir dit bonjour dans le chat">
-                    <UIcon name="i-lucide-hand" class="size-4 text-amber-600 dark:text-amber-400 block" />
+                  <UTooltip v-else-if="g.requireGreeting" :text="greetingTooltip(g.channel)">
+                    <span v-if="greetedByAll(g.channel)" class="relative inline-flex text-success" aria-label="Bonjour déjà dit">
+                      <UIcon name="i-lucide-hand" class="size-4 block" />
+                      <UIcon name="i-lucide-check" class="absolute -bottom-1 -right-1.5 size-3 bg-default rounded-full" />
+                    </span>
+                    <button
+                      v-else
+                      type="button"
+                      class="inline-flex text-amber-600 dark:text-amber-400 hover:text-amber-500 disabled:opacity-50"
+                      :disabled="greeting === g.channel"
+                      :aria-label="`Dire bonjour sur ${g.channel}`"
+                      @click="sayHello(g.channel)"
+                    >
+                      <UIcon :name="greeting === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-hand'" class="size-4" :class="greeting === g.channel ? 'animate-spin' : ''" />
+                    </button>
                   </UTooltip>
                 </div>
               </td>

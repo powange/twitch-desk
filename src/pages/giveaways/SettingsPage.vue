@@ -5,6 +5,7 @@ import { useSnapshot } from '../../composables/useSnapshot'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { CUSTOM_SOUND, DEFAULT_SOUND, SOUND_ALERTS, SOUND_PRESETS, forgetCustomSound, playSoundAlert } from '../../composables/useSoundAlerts'
 import type { SoundAlertKind } from '../../composables/useSoundAlerts'
+import { LANGUAGES } from '../../utils/languages'
 import type { Settings } from '../../types'
 
 const { accounts } = useSnapshot()
@@ -86,6 +87,34 @@ function durationLabel(secs: number) {
 function resetDetection() {
   if (!settings.value) return
   Object.assign(settings.value, { detectWindow: 20, detectPercent: 35, detectMaxPerUser: 2, detectCooldownSecs: 600, detectKeywords: true })
+}
+
+// Phrases de bonjour : une par ligne, par langue (texte gardé tel quel pendant la saisie)
+const greetingText = ref<Record<string, string>>({})
+watch(settings, (s, old) => {
+  if (s && !old) greetingText.value = Object.fromEntries(Object.entries(s.greetings).map(([l, p]) => [l, p.join('\n')]))
+})
+const greetingLangs = computed(() => Object.keys(greetingText.value).sort((a, b) => langName(a).localeCompare(langName(b))))
+const langName = (code: string) => LANGUAGES[code]?.name ?? code.toUpperCase()
+const addableLangs = computed(() => Object.entries(LANGUAGES)
+  .filter(([code]) => !(code in greetingText.value))
+  .map(([code, l]) => ({ label: l.name, value: code }))
+  .sort((a, b) => a.label.localeCompare(b.label)))
+function saveGreetings(lang: string) {
+  if (!settings.value) return
+  const phrases = (greetingText.value[lang] ?? '').split('\n').map(p => p.trim()).filter(Boolean)
+  settings.value.greetings = { ...settings.value.greetings, [lang]: phrases }
+}
+const defaultLangItems = computed(() => greetingLangs.value.map(code => ({ label: langName(code), value: code })))
+function addGreetingLang(lang: string) {
+  greetingText.value = { ...greetingText.value, [lang]: '' }
+}
+function removeGreetingLang(lang: string) {
+  if (!settings.value) return
+  const { [lang]: _, ...rest } = greetingText.value
+  greetingText.value = rest
+  const { [lang]: __, ...kept } = settings.value.greetings
+  settings.value.greetings = kept
 }
 
 const confirmAuto = ref(false)
@@ -176,6 +205,38 @@ function setAuto(value: boolean) {
           <USelect v-model="autoAccountsModel" :items="autoAccountItems" multiple class="w-64" placeholder="Aucun compte" />
         </div>
       </template>
+    </div>
+
+    <div v-if="settings" class="flex flex-col gap-2">
+      <div class="flex items-end gap-3">
+        <div class="flex-1">
+          <h2 class="font-semibold">Phrases pour dire bonjour</h2>
+          <p class="text-sm text-muted">Une phrase par ligne. Dans la page Alertes, la condition « avoir dit bonjour » en envoie une au hasard, dans la langue de la chaîne, sinon dans la langue par défaut.</p>
+        </div>
+        <UFormField label="Langue par défaut">
+          <USelect v-model="settings.greetingDefaultLang" :items="defaultLangItems" class="w-44" aria-label="Langue par défaut des phrases de bonjour" />
+        </UFormField>
+        <USelect :items="addableLangs" placeholder="Ajouter une langue" class="w-48" aria-label="Ajouter une langue" @update:model-value="v => addGreetingLang(String(v))" />
+      </div>
+      <div class="border border-default rounded-lg divide-y divide-default">
+        <div v-for="lang in greetingLangs" :key="lang" class="flex items-start gap-4 px-4 py-3">
+          <div class="w-36 shrink-0 pt-1.5 flex items-center gap-2">
+            <UIcon v-if="LANGUAGES[lang]" :name="`i-flag-${LANGUAGES[lang]?.flag}-4x3`" class="w-4 h-3 rounded-[2px] shrink-0" />
+            <span class="font-medium">{{ langName(lang) }}</span>
+          </div>
+          <UTextarea
+            :id="`greetings-${lang}`"
+            v-model="greetingText[lang]"
+            :rows="3"
+            autoresize
+            :placeholder="lang === 'fr' ? 'Bonjour tout le monde !' : 'Hello everyone!'"
+            class="flex-1"
+            @blur="saveGreetings(lang)"
+          />
+          <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" :aria-label="`Retirer ${langName(lang)}`" @click="removeGreetingLang(lang)" />
+        </div>
+        <p v-if="greetingLangs.length === 0" class="px-4 py-3 text-sm text-muted">Aucune phrase : ajoute une langue.</p>
+      </div>
     </div>
 
     <div v-if="settings" class="flex flex-col gap-2">
