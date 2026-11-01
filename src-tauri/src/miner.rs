@@ -260,10 +260,14 @@ impl Miner {
                     cmd = commands.recv() => match cmd {
                         None => return,
                         Some(MinerCommand::Reload) => {
+                            let before = self.channel_ids();
                             self.reload_account();
                             self.load_se_token();
                             self.reload_channels();
-                            self.restart_pubsub();
+                            // Simple changement d'ordre ou de réglage : pas de reconnexion
+                            if self.channel_ids() != before {
+                                self.restart_pubsub();
+                            }
                         }
                         Some(MinerCommand::Wake) => {}
                         Some(MinerCommand::SeTickets { channel_id, giveaway_id, tickets }) => {
@@ -350,6 +354,13 @@ impl Miner {
         self.stop_chat();
         self.restart_pubsub();
         Ok(())
+    }
+
+    /// Chaînes suivies, triées : sert à savoir s'il faut se réabonner aux événements
+    fn channel_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.channels.iter().map(|c| c.ch.channel_id.clone()).collect();
+        ids.sort();
+        ids
     }
 
     fn load_se_token(&mut self) {

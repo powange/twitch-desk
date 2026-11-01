@@ -23,11 +23,11 @@ const bonusesToday = computed(() => {
     <div class="grid grid-cols-4 gap-3">
       <UCard>
         <div class="text-2xl font-semibold">+{{ formatNumber(earnedToday) }}</div>
-        <div class="text-sm text-muted">points gagnés aujourd'hui</div>
+        <div class="text-sm text-muted">points de chaîne gagnés aujourd'hui · {{ bonusesToday }} bonus</div>
       </UCard>
       <UCard>
         <div class="text-2xl font-semibold">+{{ formatNumber(seEarnedToday) }}</div>
-        <div class="text-sm text-muted">points StreamElements aujourd'hui · {{ bonusesToday }} bonus Twitch</div>
+        <div class="text-sm text-muted">points StreamElements gagnés aujourd'hui</div>
       </UCard>
       <UCard>
         <div class="text-2xl font-semibold">{{ watching.length }} / {{ live }}</div>

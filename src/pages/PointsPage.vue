@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useChannelList } from '../composables/useChannelList'
 import { useOpenExternal } from '../utils/external'
@@ -8,15 +9,79 @@ import type { ChannelView } from '../types'
 const openExternal = useOpenExternal()
 const { accounts, accountId, account, accountItems, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove } = useChannelList('points')
 
-// L'ordre ne concerne que cette liste : c'est lui qui décide des 2 chaînes regardées
-async function move(channel: ChannelView, delta: number) {
-  const ids = channels.value.map(c => c.id)
-  const from = ids.indexOf(channel.id)
-  const to = from + delta
-  if (from < 0 || to < 0 || to >= ids.length || !account.value) return
+// L'ordre ne concerne que cette liste : c'est lui qui décide des 2 chaînes regardées.
+// Glisser-déposer par la poignée : la ligne n'est déplaçable que pendant qu'on la tient,
+// pour ne pas gêner les interrupteurs et la sélection de texte.
+const grabbed = ref<number | null>(null)
+const dragging = ref<number | null>(null)
+// Ordre affiché pendant le glisser (aperçu), null hors glisser
+const preview = ref<number[] | null>(null)
+// Ordre déposé, affiché tel quel jusqu'à ce que le cœur renvoie le même : sans ça,
+// la ligne revenait à sa place le temps que l'état soit rafraîchi
+const pending = ref<number[] | null>(null)
+let pendingTimer: ReturnType<typeof setTimeout> | null = null
+
+const ordered = computed(() => {
+  const order = preview.value ?? pending.value
+  if (!order) return channels.value
+  const byId = new Map(channels.value.map(c => [c.id, c]))
+  const list = order.map(id => byId.get(id)).filter((c): c is ChannelView => !!c)
+  // Chaîne ajoutée entre-temps : à la fin
+  return [...list, ...channels.value.filter(c => !order.includes(c.id))]
+})
+
+watch(channels, (list) => {
+  if (pending.value && list.map(c => c.id).join() === pending.value.join()) clearPending()
+})
+
+function clearPending() {
+  pending.value = null
+  if (pendingTimer) clearTimeout(pendingTimer)
+  pendingTimer = null
+}
+
+function onDragStart(event: DragEvent, channel: ChannelView) {
+  dragging.value = channel.id
+  preview.value = channels.value.map(c => c.id)
+  event.dataTransfer?.setData('text/plain', channel.login)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+function onDragOver(event: DragEvent, target: ChannelView) {
+  if (dragging.value === null || !preview.value) return
+  event.preventDefault()
+  if (target.id === dragging.value) return
+  const ids = [...preview.value]
+  const from = ids.indexOf(dragging.value)
+  const to = ids.indexOf(target.id)
   ids.splice(from, 1)
-  ids.splice(to, 0, channel.id)
-  await invoke('reorder_channels', { accountId: account.value.id, ids })
+  ids.splice(to, 0, dragging.value)
+  preview.value = ids
+}
+
+async function onDrop(event: DragEvent) {
+  event.preventDefault()
+  const ids = preview.value
+  const changed = ids && ids.some((id, i) => id !== channels.value[i]?.id)
+  if (changed) {
+    pending.value = ids
+    // Filet de sécurité : si le cœur ne confirme pas, on revient à son état
+    pendingTimer = setTimeout(clearPending, 5000)
+  }
+  endDrag()
+  if (changed && account.value) {
+    try {
+      await invoke('reorder_channels', { accountId: account.value.id, ids })
+    } catch {
+      clearPending()
+    }
+  }
+}
+
+function endDrag() {
+  dragging.value = null
+  grabbed.value = null
+  preview.value = null
 }
 </script>
 
@@ -41,7 +106,7 @@ async function move(channel: ChannelView, delta: number) {
         color="info"
         variant="subtle"
         title="Twitch ne compte le temps de visionnage que sur 2 chaînes à la fois par compte."
-        description="L'application regarde les 2 premières chaînes en live de la liste. Change l'ordre avec les flèches."
+        description="L'application regarde les 2 premières chaînes en live de la liste. Change l'ordre en faisant glisser une ligne par sa poignée."
       />
 
       <UAlert
@@ -62,7 +127,7 @@ async function move(channel: ChannelView, delta: number) {
         <table class="w-full text-sm">
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
             <tr>
-              <th class="text-left px-3 py-2 w-24">Ordre</th>
+              <th class="text-left px-3 py-2 w-16">Ordre</th>
               <th class="text-left px-3 py-2">Chaîne</th>
               <th class="text-left px-3 py-2">État</th>
               <th class="text-right px-3 py-2">Solde</th>
@@ -73,12 +138,26 @@ async function move(channel: ChannelView, delta: number) {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(channel, i) in channels" :key="channel.id" class="border-t border-default">
+            <tr
+              v-for="(channel, i) in ordered"
+              :key="channel.id"
+              class="border-t border-default transition-colors"
+              :class="dragging === channel.id ? 'bg-primary/10 opacity-70' : ''"
+              :draggable="grabbed === channel.id"
+              @dragstart="onDragStart($event, channel)"
+              @dragover="onDragOver($event, channel)"
+              @drop="onDrop"
+              @dragend="endDrag"
+            >
               <td class="px-3 py-2">
-                <div class="flex items-center gap-0.5">
+                <div
+                  class="flex items-center gap-1.5 cursor-grab active:cursor-grabbing select-none"
+                  title="Glisser pour changer l'ordre"
+                  @mousedown="grabbed = channel.id"
+                  @mouseup="grabbed = null"
+                >
+                  <UIcon name="i-lucide-grip-vertical" class="size-4 text-muted" />
                   <span class="w-5 text-muted">{{ i + 1 }}</span>
-                  <UButton icon="i-lucide-chevron-up" size="xs" variant="ghost" color="neutral" :disabled="i === 0" aria-label="Monter" @click="move(channel, -1)" />
-                  <UButton icon="i-lucide-chevron-down" size="xs" variant="ghost" color="neutral" :disabled="i === channels.length - 1" aria-label="Descendre" @click="move(channel, 1)" />
                 </div>
               </td>
               <td class="px-3 py-2 min-w-0">
