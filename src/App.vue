@@ -25,7 +25,18 @@ const alertCount = computed(() => {
 
 const items = computed<NavigationMenuItem[]>(() => [
   { label: 'Tableau de bord', icon: 'i-lucide-layout-dashboard', to: '/' },
-  { label: 'Giveaways', icon: 'i-lucide-gift', to: '/giveaways', badge: alertCount.value ? { label: String(alertCount.value), color: 'primary' } : undefined },
+  {
+    label: 'Giveaways',
+    icon: 'i-lucide-gift',
+    defaultOpen: true,
+    badge: alertCount.value ? { label: String(alertCount.value), color: 'primary' } : undefined,
+    children: [
+      { label: 'Alertes', icon: 'i-lucide-bell', to: '/giveaways', exact: true },
+      { label: 'Chaînes', icon: 'i-lucide-tv', to: '/giveaways/channels' },
+      { label: 'Catégories', icon: 'i-lucide-gamepad-2', to: '/giveaways/categories' },
+      { label: 'Réglages', icon: 'i-lucide-sliders-horizontal', to: '/giveaways/settings' }
+    ]
+  },
   { label: 'Points de chaîne', icon: 'i-lucide-coins', to: '/points', badge: watchingCount.value || undefined },
   { label: 'Drops', icon: 'i-lucide-package-open', to: '/drops', badge: dropsCount.value || undefined },
   { label: 'StreamElements', icon: 'i-lucide-ticket', to: '/streamelements', badge: inChatCount.value || undefined },

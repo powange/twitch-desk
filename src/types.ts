@@ -72,6 +72,8 @@ export interface Snapshot {
   operationsVersion: number
   operationsUpdated: string
   giveaways: GiveawaysView
+  // Langue de diffusion des chaînes (login → code ISO 639-1)
+  languages: Record<string, string>
 }
 
 export interface DeviceCode {
@@ -194,10 +196,33 @@ export interface GiveawayEvidence {
   users: string[]
 }
 
-export interface GiveawayView {
+export type GiveawayKind = 'command' | 'ticket' | 'streamelements' | 'channelpoints'
+
+// Fiche d'un giveaway au-delà de sa détection ; conditions : null = on ne sait pas
+export interface GiveawayDetails {
+  ticketUnique: boolean | null
+  ticketMax: number | null
+  rewardName: string | null
+  rewardCost: number | null
+  drawAt: string | null
+  requireFollow: boolean | null
+  requirePresence: boolean | null
+  requireDiscord: boolean | null
+  notes: string | null
+}
+
+export interface GiveawayInput extends GiveawayDetails {
+  channel: string
+  kind: GiveawayKind
+  command: string | null
+  url: string | null
+}
+
+export interface GiveawayView extends GiveawayDetails {
   id: number
   channel: string
-  kind: 'command' | 'streamelements'
+  kind: GiveawayKind
+  manual: boolean
   command: string | null
   url: string | null
   detectedAt: string
@@ -207,7 +232,8 @@ export interface GiveawayView {
   winnerChance: string | null
   drawnAt: string | null
   evidence: GiveawayEvidence | null
-  entriesView: { accountId: number, login: string, at: string, auto: boolean }[]
+  // Comptes inscrits ; tickets : giveaway StreamElements (relevés sur StreamElements)
+  entriesView: { accountId: number, login: string, at: string, auto: boolean, tickets: number | null }[]
   winnerOurs: string | null
 }
 
@@ -226,10 +252,23 @@ export interface GiveawayChannelView {
   excluded: string[]
   // Qui lit ce chat : « anonyme », le pseudo d'un compte, ou null (pas encore rejoint)
   reader: string | null
+  liveChecked: boolean
+  // En live (null : hors ligne ou pas encore vérifié)
+  live: StreamInfo | null
+  inCategory: boolean
+}
+
+export interface GiveawayGame {
+  id: number
+  gameId: string
+  name: string
+  slug: string
+  boxArt: string | null
 }
 
 export interface GiveawaysView {
   channels: GiveawayChannelView[]
+  games: GiveawayGame[]
   giveaways: GiveawayView[]
   mentions: MentionView[]
   anonymousConnected: boolean

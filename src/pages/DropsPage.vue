@@ -2,20 +2,18 @@
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../composables/useSnapshot'
+import { useSelectedAccount } from '../composables/useSelectedAccount'
+import AccountPicker from '../components/AccountPicker.vue'
 import { useOpenExternal } from '../utils/external'
 import { formatNumber } from '../utils/format'
 import type { DropCampaign, DropGameStatus, DropGameView, TimedDrop } from '../types'
+import ChannelFlag from '../components/ChannelFlag.vue'
 
 const { accounts } = useSnapshot()
 const toast = useToast()
 const openExternal = useOpenExternal()
 
-const accountId = ref<number | undefined>()
-watch(accounts, (all) => {
-  if (!all.some(a => a.id === accountId.value)) accountId.value = all[0]?.id
-}, { immediate: true })
-const account = computed(() => accounts.value.find(a => a.id === accountId.value))
-const accountItems = computed(() => accounts.value.map(a => ({ label: a.login, value: a.id })))
+const { account } = useSelectedAccount()
 const drops = computed(() => account.value?.drops)
 
 // --- Jeux souhaités ---
@@ -177,7 +175,7 @@ async function setDropsEnabled(enabled: boolean) {
   <div class="p-6 flex flex-col gap-5">
     <div class="flex items-center gap-3">
       <h1 class="text-xl font-semibold flex-1">Drops</h1>
-      <USelect v-if="accounts.length > 1" v-model="accountId" :items="accountItems" class="w-48" icon="i-lucide-user" />
+      <AccountPicker />
     </div>
 
     <UAlert
@@ -207,6 +205,7 @@ async function setDropsEnabled(enabled: boolean) {
         <UIcon name="i-lucide-package-open" class="size-5 text-success" />
         <span class="flex-1 min-w-0 truncate">
           <b>{{ drops.target.gameName }}</b> : visionnage de
+          <ChannelFlag :login="drops.target.login" class="inline-block align-middle mx-0.5" />
           <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${drops.target.login}`)">{{ drops.target.login }}</button>
           <span class="inline-flex items-center gap-0.5 text-error ml-1.5 align-middle" :title="`${formatNumber(drops.target.viewers)} spectateurs`"><UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(drops.target.viewers) }}</span>
           <span class="text-muted"> · {{ drops.target.title }}</span>

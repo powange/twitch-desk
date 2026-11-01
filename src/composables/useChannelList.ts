@@ -1,22 +1,14 @@
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { useSnapshot } from './useSnapshot'
+import { useSelectedAccount } from './useSelectedAccount'
 import type { ChannelList, ChannelView } from '../types'
 
 // Une liste de chaînes (page Points de chaîne ou StreamElements) : compte
 // affiché, chaînes de cette liste, ajout et retrait. Les deux listes sont
 // indépendantes : retirer une chaîne d'une page ne la retire pas de l'autre.
 export function useChannelList(list: ChannelList) {
-  const { accounts } = useSnapshot()
+  const { accounts, accountId, account, accountItems } = useSelectedAccount()
   const toast = useToast()
-
-  const accountId = ref<number | undefined>()
-  watch(accounts, (all) => {
-    if (!all.some(a => a.id === accountId.value)) accountId.value = all[0]?.id
-  }, { immediate: true })
-
-  const account = computed(() => accounts.value.find(a => a.id === accountId.value))
-  const accountItems = computed(() => accounts.value.map(a => ({ label: a.login, value: a.id })))
   const channels = computed(() =>
     (account.value?.channels ?? []).filter(c => list === 'points' ? c.inPoints : c.inSe)
   )

@@ -1,7 +1,7 @@
 {
   "name": "twitch-desk",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,9 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@iconify-json/flag": "^1.2.15",
     "@iconify-json/lucide": "^1.2.150",
+    "@iconify-json/simple-icons": "^1.2.101",
     "@nuxt/ui": "4.12",
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-autostart": "^2.7.0",

@@ -386,6 +386,7 @@ impl Miner {
 
     fn on_se_tickets(&mut self, channel_id: i64, giveaway_id: &str, tickets: i64) {
         let _ = self.app.db.set_se_tickets(self.account.id, giveaway_id, tickets);
+        crate::giveaways::refresh_view(&self.app);
         if let Some(ch) = self.channels.iter_mut().find(|c| c.ch.id == channel_id) {
             if ch.se_giveaway.as_ref().is_some_and(|g| g.id == giveaway_id) {
                 ch.se_my_tickets = Some(tickets);
@@ -547,6 +548,7 @@ impl Miner {
         match &ch.se_giveaway {
             Some(g) => {
                 let _ = self.app.db.set_se_tickets(self.account.id, &g.id, tickets);
+                crate::giveaways::refresh_view(&self.app);
             }
             // Giveaway pas encore connu : on le relit tout de suite pour y rattacher les tickets
             None => ch.se_giveaway_at = None,
@@ -627,6 +629,7 @@ impl Miner {
                     Ok(tickets) => {
                         self.channels[i].se_my_tickets = Some(tickets);
                         let _ = self.app.db.set_se_tickets(self.account.id, &g.id, tickets);
+                        crate::giveaways::refresh_view(&self.app);
                     }
                     Err(SeError::Unauthorized) => {
                         self.se_token_refused = true;

@@ -108,7 +108,33 @@ const MIGRATIONS: &[&str] = &[r#"
         auto INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (giveaway_id, account_id)
     );
+"#, r#"
+    -- Catégories où surveiller les giveaways (vide : toutes)
+    CREATE TABLE giveaway_games (
+        id INTEGER PRIMARY KEY,
+        game_id TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        box_art TEXT,
+        position INTEGER NOT NULL
+    );
+"#, r#"
+    -- Fiche giveaway complète (comme le site Giveaway Twitch) ; conditions : NULL = on ne sait pas
+    ALTER TABLE giveaways ADD COLUMN ticket_unique INTEGER;
+    ALTER TABLE giveaways ADD COLUMN ticket_max INTEGER;
+    ALTER TABLE giveaways ADD COLUMN reward_name TEXT;
+    ALTER TABLE giveaways ADD COLUMN reward_cost INTEGER;
+    ALTER TABLE giveaways ADD COLUMN draw_at TEXT;
+    ALTER TABLE giveaways ADD COLUMN require_follow INTEGER;
+    ALTER TABLE giveaways ADD COLUMN require_presence INTEGER;
+    ALTER TABLE giveaways ADD COLUMN require_discord INTEGER;
+    ALTER TABLE giveaways ADD COLUMN notes TEXT;
+    ALTER TABLE giveaways ADD COLUMN manual INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE giveaways ADD COLUMN reminded INTEGER NOT NULL DEFAULT 0;
 "#];
+
+/// Types de giveaway
+pub const GIVEAWAY_KINDS: &[&str] = &["command", "ticket", "streamelements", "channelpoints"];
 
 /// Liste d'une chaîne : une page de l'interface
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
@@ -140,6 +166,16 @@ pub struct Account {
     pub device_id: String,
     pub points_enabled: bool,
     pub drops_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GiveawayGame {
+    pub id: i64,
+    pub game_id: String,
+    pub name: String,
+    pub slug: String,
+    pub box_art: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -189,6 +225,45 @@ pub struct GiveawayRow {
     pub winner_chance: Option<String>,
     pub drawn_at: Option<String>,
     pub entries: Vec<GiveawayEntry>,
+    #[serde(flatten)]
+    pub details: GiveawayDetails,
+    /// Créé à la main (pas détecté dans le chat)
+    pub manual: bool,
+    /// Rappel « présence au tirage » déjà envoyé
+    #[serde(skip)]
+    pub reminded: bool,
+}
+
+/// Informations d'un giveaway au-delà de sa détection (renseignées à la main ou par les bots)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GiveawayDetails {
+    /// Type ticket : commande à usage unique (1 ticket par personne) ou multi-tickets
+    pub ticket_unique: Option<bool>,
+    /// Type ticket multi : tickets maximum par personne
+    pub ticket_max: Option<i64>,
+    /// Type points de chaîne : récompense à acheter et son coût
+    pub reward_name: Option<String>,
+    pub reward_cost: Option<i64>,
+    /// Heure du tirage (RFC 3339)
+    pub draw_at: Option<String>,
+    pub require_follow: Option<bool>,
+    /// Présent dans le chat au moment du tirage
+    pub require_presence: Option<bool>,
+    pub require_discord: Option<bool>,
+    pub notes: Option<String>,
+}
+
+/// Fiche saisie à la main (création ou modification)
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GiveawayInput {
+    pub channel: String,
+    pub kind: String,
+    pub command: Option<String>,
+    pub url: Option<String>,
+    #[serde(flatten)]
+    pub details: GiveawayDetails,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -609,6 +684,35 @@ impl Db {
         Ok(())
     }
 
+    pub fn giveaway_games(&self) -> DbResult<Vec<GiveawayGame>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT id, game_id, name, slug, box_art FROM giveaway_games ORDER BY position, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(GiveawayGame { id: r.get(0)?, game_id: r.get(1)?, name: r.get(2)?, slug: r.get(3)?, box_art: r.get(4)? })
+        })?;
+        rows.collect()
+    }
+
+    pub fn add_giveaway_game(&self, game_id: &str, name: &str, slug: &str, box_art: Option<&str>) -> DbResult<()> {
+        let conn = self.conn();
+        let next: i64 = conn.query_row("SELECT COALESCE(MAX(position), -1) + 1 FROM giveaway_games", [], |r| r.get(0))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO giveaway_games (game_id, name, slug, box_art, position) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![game_id, name, slug, box_art, next],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_giveaway_game(&self, id: i64) -> DbResult<()> {
+        self.conn().execute("DELETE FROM giveaway_games WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Clôt les giveaways ouverts d'une chaîne ; renvoie le nombre clos
+    pub fn close_channel_giveaways(&self, channel: &str) -> DbResult<usize> {
+        self.conn().execute("UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND channel = ?1", [channel])
+    }
+
     pub fn insert_giveaway(&self, g: &NewGiveaway) -> DbResult<i64> {
         let conn = self.conn();
         conn.execute(
@@ -622,7 +726,9 @@ impl Db {
     pub fn giveaways(&self, limit: usize) -> DbResult<Vec<GiveawayRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, channel, kind, command, url, evidence, detected_at, status, handled, winner, winner_chance, drawn_at
+            "SELECT id, channel, kind, command, url, evidence, detected_at, status, handled, winner, winner_chance, drawn_at,
+                    ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
+                    require_follow, require_presence, require_discord, notes, manual, reminded
              FROM giveaways ORDER BY status = 'open' DESC, detected_at DESC LIMIT ?1",
         )?;
         let mut rows: Vec<GiveawayRow> = stmt
@@ -641,6 +747,19 @@ impl Db {
                     winner_chance: r.get(10)?,
                     drawn_at: r.get(11)?,
                     entries: vec![],
+                    details: GiveawayDetails {
+                        ticket_unique: r.get(12)?,
+                        ticket_max: r.get(13)?,
+                        reward_name: r.get(14)?,
+                        reward_cost: r.get(15)?,
+                        draw_at: r.get(16)?,
+                        require_follow: r.get(17)?,
+                        require_presence: r.get(18)?,
+                        require_discord: r.get(19)?,
+                        notes: r.get(20)?,
+                    },
+                    manual: r.get(21)?,
+                    reminded: r.get(22)?,
                 })
             })?
             .collect::<DbResult<_>>()?;
@@ -651,6 +770,62 @@ impl Db {
                 .collect::<DbResult<_>>()?;
         }
         Ok(rows)
+    }
+
+    /// Giveaway créé à la main ; renvoie son identifiant
+    pub fn insert_manual_giveaway(&self, g: &GiveawayInput, at: &str) -> DbResult<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO giveaways (channel, kind, command, url, detected_at, manual, handled) VALUES (?1, ?2, ?3, ?4, ?5, 1, 1)",
+            params![g.channel, g.kind, g.command, g.url, at],
+        )?;
+        let id = conn.last_insert_rowid();
+        drop(conn);
+        self.update_giveaway(id, g)?;
+        Ok(id)
+    }
+
+    pub fn update_giveaway(&self, id: i64, g: &GiveawayInput) -> DbResult<()> {
+        let d = &g.details;
+        self.conn().execute(
+            "UPDATE giveaways SET channel = ?2, kind = ?3, command = ?4, url = ?5, ticket_unique = ?6, ticket_max = ?7,
+                 reward_name = ?8, reward_cost = ?9, draw_at = ?10, require_follow = ?11, require_presence = ?12,
+                 require_discord = ?13, notes = ?14,
+                 reminded = CASE WHEN draw_at IS ?10 THEN reminded ELSE 0 END
+             WHERE id = ?1",
+            params![
+                id,
+                g.channel,
+                g.kind,
+                g.command,
+                g.url,
+                d.ticket_unique,
+                d.ticket_max,
+                d.reward_name,
+                d.reward_cost,
+                d.draw_at,
+                d.require_follow,
+                d.require_presence,
+                d.require_discord,
+                d.notes
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Maximum de tickets annoncé par le bot, s'il n'est pas déjà renseigné
+    pub fn set_ticket_max_if_unknown(&self, id: i64, max: i64) -> DbResult<bool> {
+        let n = self.conn().execute(
+            "UPDATE giveaways SET ticket_max = ?2, ticket_unique = CASE WHEN ?2 = 1 THEN 1 ELSE 0 END
+             WHERE id = ?1 AND ticket_max IS NULL",
+            params![id, max],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn set_giveaway_reminded(&self, id: i64) -> DbResult<()> {
+        self.conn().execute("UPDATE giveaways SET reminded = 1 WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     pub fn giveaway(&self, id: i64) -> DbResult<Option<GiveawayRow>> {
@@ -785,6 +960,29 @@ mod tests {
 
         assert_eq!(db.close_giveaways_before("2026-11-01T00:00:00Z").unwrap(), 1);
         assert!(!db.giveaway(old).unwrap().unwrap().open);
+        let input = GiveawayInput {
+            channel: "lunarsea".into(),
+            kind: "ticket".into(),
+            command: Some("!ticket".into()),
+            url: None,
+            details: GiveawayDetails {
+                ticket_unique: Some(false),
+                draw_at: Some("2026-11-01T21:00:00Z".into()),
+                require_presence: Some(true),
+                ..Default::default()
+            },
+        };
+        db.update_giveaway(g, &input).unwrap();
+        assert!(db.set_ticket_max_if_unknown(g, 5).unwrap());
+        assert!(!db.set_ticket_max_if_unknown(g, 9).unwrap());
+        let row = db.giveaway(g).unwrap().unwrap();
+        assert_eq!((row.kind.as_str(), row.details.ticket_max, row.details.require_presence), ("ticket", Some(5), Some(true)));
+        db.set_giveaway_reminded(g).unwrap();
+        assert!(db.giveaway(g).unwrap().unwrap().reminded);
+        let manual = db.insert_manual_giveaway(&input, "2026-11-01T12:00:00Z").unwrap();
+        let row = db.giveaway(manual).unwrap().unwrap();
+        assert!(row.manual && row.handled && !row.reminded);
+        assert_eq!(row.details.draw_at.as_deref(), Some("2026-11-01T21:00:00Z"));
         db.set_giveaway_winner(g, "powange", Some("3%"), "2026-11-01T11:00:00Z").unwrap();
         let row = db.giveaway(g).unwrap().unwrap();
         assert_eq!((row.winner.as_deref(), row.open), (Some("powange"), false));

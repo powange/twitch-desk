@@ -130,6 +130,8 @@ pub struct Snapshot {
     pub operations_version: u32,
     pub operations_updated: String,
     pub giveaways: crate::giveaways::GiveawaysView,
+    /// Langue de diffusion des chaînes (login → code ISO 639-1), pour les drapeaux
+    pub languages: HashMap<String, String>,
 }
 
 struct MinerHandle {
@@ -150,6 +152,7 @@ pub struct App {
     dirty: Notify,
     pub login_task: Mutex<Option<JoinHandle<()>>>,
     pub giveaways: crate::giveaways::GiveawayHandle,
+    languages: RwLock<HashMap<String, String>>,
 }
 
 impl App {
@@ -167,6 +170,7 @@ impl App {
             dirty: Notify::new(),
             login_task: Mutex::new(None),
             giveaways: crate::giveaways::GiveawayHandle::default(),
+            languages: RwLock::new(HashMap::new()),
         })
     }
 
@@ -284,7 +288,53 @@ impl App {
             operations_version,
             operations_updated,
             giveaways: self.giveaways.view(),
+            languages: self.languages.read().unwrap().clone(),
         }
+    }
+
+    /// Toutes les chaînes affichées : listes des comptes, chaînes surveillées, chaîne des drops
+    fn known_logins(&self) -> Vec<String> {
+        let mut logins: Vec<String> = vec![];
+        for account in self.db.accounts().unwrap_or_default() {
+            logins.extend(self.db.channels(account.id).unwrap_or_default().into_iter().map(|c| c.login));
+        }
+        logins.extend(self.db.giveaway_channels().unwrap_or_default().into_iter().map(|c| c.login));
+        for view in self.views.read().unwrap().values() {
+            if let Some(t) = &view.drops.target {
+                logins.push(t.login.clone());
+            }
+        }
+        logins.sort();
+        logins.dedup();
+        logins
+    }
+
+    /// Relève la langue des chaînes : les nouvelles chaque minute, toutes toutes les 6 h
+    pub fn spawn_languages(self: &Arc<Self>) {
+        let app = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut full_at: Option<std::time::Instant> = None;
+            loop {
+                let full = full_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(6 * 3600));
+                let known = app.languages.read().unwrap().clone();
+                let wanted: Vec<String> =
+                    app.known_logins().into_iter().filter(|l| full || !known.contains_key(l)).collect();
+                if !wanted.is_empty() {
+                    match crate::twitch::gql::channel_languages(&app.http, &wanted).await {
+                        Ok(found) if !found.is_empty() => {
+                            app.languages.write().unwrap().extend(found);
+                            app.touch();
+                            if full {
+                                full_at = Some(std::time::Instant::now());
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("langues des chaînes : {e}"),
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
     }
 
     /// Notification Windows, si l'utilisateur ne les a pas coupées

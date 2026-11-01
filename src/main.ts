@@ -9,7 +9,10 @@ const router = createRouter({
   routes: [
     { path: '/', name: 'dashboard', component: () => import('./pages/DashboardPage.vue') },
     { path: '/points', name: 'points', component: () => import('./pages/PointsPage.vue') },
-    { path: '/giveaways', name: 'giveaways', component: () => import('./pages/GiveawaysPage.vue') },
+    { path: '/giveaways', name: 'giveaways', component: () => import('./pages/giveaways/AlertsPage.vue') },
+    { path: '/giveaways/channels', name: 'giveaway-channels', component: () => import('./pages/giveaways/ChannelsPage.vue') },
+    { path: '/giveaways/categories', name: 'giveaway-categories', component: () => import('./pages/giveaways/CategoriesPage.vue') },
+    { path: '/giveaways/settings', name: 'giveaway-settings', component: () => import('./pages/giveaways/SettingsPage.vue') },
     { path: '/drops', name: 'drops', component: () => import('./pages/DropsPage.vue') },
     { path: '/streamelements', name: 'streamelements', component: () => import('./pages/StreamElementsPage.vue') },
     { path: '/accounts', name: 'accounts', component: () => import('./pages/AccountsPage.vue') },

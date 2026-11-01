@@ -48,3 +48,14 @@ export function timeAgo(iso: string, now = Date.now()): string {
   if (s < 86400) return `il y a ${Math.floor(s / 3600)} h`
   return new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
+
+// Jaquette d'une catégorie Twitch, en double résolution. Adresse inconnue : construite
+// à partir de l'identifiant du jeu (ttv-boxart/<id>-<l>x<h>.jpg)
+export function boxArt(url: string | null, gameId: string): string {
+  if (!url) return `https://static-cdn.jtvnw.net/ttv-boxart/${gameId}-80x112.jpg`
+  return url.replace(/-\d+x\d+\./, '-80x112.').replace('{width}', '80').replace('{height}', '112')
+}
+
+export function channelUrl(login: string): string {
+  return `https://www.twitch.tv/${login}`
+}

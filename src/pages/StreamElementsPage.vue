@@ -5,9 +5,11 @@ import { useChannelList } from '../composables/useChannelList'
 import { useOpenExternal } from '../utils/external'
 import { formatNumber } from '../utils/format'
 import type { ChannelView } from '../types'
+import ChannelFlag from '../components/ChannelFlag.vue'
+import AccountPicker from '../components/AccountPicker.vue'
 
 const openExternal = useOpenExternal()
-const { accounts, accountId, account, accountItems, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove } = useChannelList('se')
+const { accounts, account, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove } = useChannelList('se')
 
 // Pourquoi une chaîne ne rapporte pas (ou rien : elle rapporte)
 function status(channel: ChannelView): { label: string, color: 'success' | 'warning' | 'neutral' | 'error' } {
@@ -121,7 +123,7 @@ function affordable(channel: ChannelView): number | null {
   <div class="p-6 flex flex-col gap-5">
     <div class="flex items-center gap-3">
       <h1 class="text-xl font-semibold flex-1">StreamElements</h1>
-      <USelect v-if="accounts.length > 1" v-model="accountId" :items="accountItems" class="w-48" icon="i-lucide-user" />
+      <AccountPicker />
     </div>
 
     <UAlert
@@ -150,47 +152,53 @@ function affordable(channel: ChannelView): number | null {
         <table class="w-full text-sm">
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
             <tr>
-              <th class="text-left px-2 py-2">Chaîne</th>
-              <th class="text-right px-2 py-2 whitespace-nowrap">Solde</th>
-              <th class="text-right px-2 py-2 whitespace-nowrap">Aujourd'hui</th>
-              <th class="text-left px-2 py-2 whitespace-nowrap">Comment gagner</th>
-              <th class="text-left px-2 py-2 whitespace-nowrap">Commande</th>
-              <th class="text-right px-2 py-2 whitespace-nowrap">Mes tickets</th>
-              <th class="text-right px-2 py-2">Tickets</th>
-              <th class="text-right px-2 py-2">Participants</th>
-              <th class="text-left px-2 py-2">Acheter</th>
-              <th class="text-center px-2 py-2">Chat</th>
-              <th class="px-2 py-2" />
+              <th class="text-left px-1.5 py-2">Chaîne</th>
+              <th class="text-left px-1.5 py-2">État</th>
+              <th class="text-right px-1.5 py-2 whitespace-nowrap">Solde</th>
+              <th class="text-right px-1.5 py-2 whitespace-nowrap">Aujourd'hui</th>
+              <th class="text-left px-1.5 py-2 whitespace-nowrap">Comment gagner</th>
+              <th class="text-left px-1.5 py-2 whitespace-nowrap">Commande</th>
+              <th class="text-right px-1.5 py-2 whitespace-nowrap">Mes tickets</th>
+              <th class="text-right px-1.5 py-2">Tickets</th>
+              <th class="text-right px-1.5 py-2">Participants</th>
+              <th class="text-left px-1.5 py-2">Acheter</th>
+              <th class="text-center px-1.5 py-2">Chat</th>
+              <th class="px-1.5 py-2" />
             </tr>
           </thead>
           <tbody>
             <tr v-for="channel in channels" :key="channel.id" class="border-t border-default" :class="channel.seGiveaway ? 'bg-primary/5' : ''">
-              <td class="px-2 py-2 min-w-0">
-                <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
+              <td class="px-1.5 py-2 min-w-0">
+                <div class="flex items-center gap-1.5">
+                  <ChannelFlag :login="channel.login" />
+                  <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
+                </div>
                 <div v-if="channel.live" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
                   <span class="truncate max-w-[165px]" :title="channel.live.gameName ?? 'Sans catégorie'">{{ channel.live.gameName ?? 'Sans catégorie' }}</span>
                   <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(channel.live.viewers)} spectateurs`">
                     <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(channel.live.viewers) }}
                   </span>
                 </div>
-                <div class="flex flex-wrap gap-1 mt-1">
+              </td>
+              <td class="px-1.5 py-2">
+                <div class="flex flex-col items-start gap-1">
                   <UBadge :color="status(channel).color" variant="subtle" :label="status(channel).label" size="sm" class="whitespace-nowrap" />
                   <UTooltip v-if="channel.seGiveaway" :text="channel.seGiveaway.title || 'Giveaway StreamElements'">
                     <UBadge icon="i-lucide-gift" label="Giveaway en cours" color="primary" variant="subtle" size="sm" class="whitespace-nowrap" />
                   </UTooltip>
                 </div>
               </td>
-              <td class="px-2 py-2 text-right whitespace-nowrap">
+              <td class="px-1.5 py-2 text-right whitespace-nowrap">
                 <div>{{ channel.seEnabled === false ? '—' : formatNumber(channel.sePoints) }}</div>
                 <button v-if="channel.seRank" class="text-xs text-muted hover:underline" title="Rang au classement de la chaîne" @click="openExternal(leaderboardUrl(channel.login))">
                   {{ formatNumber(channel.seRank) }}<sup>e</sup>
                 </button>
               </td>
-              <td class="px-2 py-2 text-right whitespace-nowrap" :class="channel.seEnabled !== false && channel.seEarnedToday > 0 ? 'text-success' : 'text-muted'">
+              <td class="px-1.5 py-2 text-right whitespace-nowrap" :class="channel.seEnabled !== false && channel.seEarnedToday > 0 ? 'text-success' : 'text-muted'">
                 <template v-if="channel.seEnabled !== false">{{ channel.seEarnedToday > 0 ? '+' : '' }}{{ formatNumber(channel.seEarnedToday) }}</template>
                 <template v-else>—</template>
               </td>
-              <td class="px-2 py-2">
+              <td class="px-1.5 py-2">
                 <div v-if="earnRule(channel)" class="flex items-center gap-1 whitespace-nowrap">
                   {{ earnRule(channel) }}
                   <UTooltip v-if="earnDetails(channel)" :text="earnDetails(channel) ?? ''">
@@ -212,7 +220,7 @@ function affordable(channel: ChannelView): number | null {
               </td>
 
               <!-- Giveaway en cours : commande et prix du ticket -->
-              <td class="px-2 py-2 whitespace-nowrap">
+              <td class="px-1.5 py-2 whitespace-nowrap">
                 <template v-if="channel.seGiveaway">
                   <div class="flex items-center gap-1.5">
                     <span class="font-mono">{{ channel.seGiveaway.command ?? '—' }}</span>
@@ -225,29 +233,29 @@ function affordable(channel: ChannelView): number | null {
                 </template>
                 <span v-else class="text-muted">—</span>
               </td>
-              <td class="px-2 py-2 text-right whitespace-nowrap">
+              <td class="px-1.5 py-2 text-right whitespace-nowrap">
                 <template v-if="channel.seGiveaway">
                   <b>{{ channel.seMyTickets ?? '?' }}</b>
                   <span class="text-muted"> / {{ channel.seGiveaway.maxTickets ? formatNumber(channel.seGiveaway.maxTickets) : '∞' }}</span>
                 </template>
                 <span v-else class="text-muted">—</span>
               </td>
-              <td class="px-2 py-2 text-right">
+              <td class="px-1.5 py-2 text-right">
                 {{ channel.seGiveaway ? formatNumber(channel.seGiveaway.totalTickets) : '—' }}
               </td>
-              <td class="px-2 py-2 text-right">
+              <td class="px-1.5 py-2 text-right">
                 {{ channel.seGiveaway ? formatNumber(channel.seGiveaway.totalUsers) : '—' }}
               </td>
-              <td class="px-2 py-2">
+              <td class="px-1.5 py-2">
                 <template v-if="channel.seGiveaway">
-                  <div v-if="account.seAccount === 'connected'" class="flex flex-col gap-1 w-24">
+                  <div v-if="account.seAccount === 'connected'" class="flex flex-col gap-1 w-[5.5rem]">
                     <UInputNumber
                       :id="`buy-${channel.id}`"
                       :model-value="quantity(channel)"
                       :min="1"
                       :max="Math.max(1, affordable(channel) ?? 1)"
                       size="xs"
-                      class="w-24"
+                      class="w-[5.5rem]"
                       :aria-label="`Tickets à acheter sur ${channel.login}`"
                       @update:model-value="v => quantities[channel.id] = v ?? 1"
                     />
@@ -259,17 +267,17 @@ function affordable(channel: ChannelView): number | null {
                 </template>
                 <span v-else class="text-muted">—</span>
               </td>
-              <td class="px-2 py-2 text-center">
+              <td class="px-1.5 py-2">
                 <div class="flex justify-center">
                   <USwitch :model-value="channel.chatPresence" :aria-label="`Présence dans le chat de ${channel.login}`" @update:model-value="v => setOptions(channel, { chatPresence: v })" />
                 </div>
               </td>
-              <td class="px-2 py-2 text-right">
+              <td class="px-1.5 py-2 text-right">
                 <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Retirer de la liste" @click="toRemove = channel" />
               </td>
             </tr>
             <tr v-if="channels.length === 0">
-              <td colspan="11" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
+              <td colspan="12" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
             </tr>
           </tbody>
         </table>

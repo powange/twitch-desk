@@ -104,6 +104,7 @@ pub fn run() {
                 starter.start_all();
             });
             state.spawn_emitter();
+            state.spawn_languages();
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -154,6 +155,11 @@ pub fn run() {
             commands::close_giveaway,
             commands::delete_giveaway,
             commands::dismiss_mention,
+            commands::create_giveaway,
+            commands::inspect_giveaway_channel,
+            commands::update_giveaway,
+            commands::add_giveaway_game,
+            commands::remove_giveaway_game,
         ])
         .run(tauri::generate_context!())
         .expect("démarrage de Twitch Desk");

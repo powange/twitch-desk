@@ -5,9 +5,11 @@ import { useChannelList } from '../composables/useChannelList'
 import { useOpenExternal } from '../utils/external'
 import { CHANNEL_STATE, formatNumber } from '../utils/format'
 import type { ChannelView } from '../types'
+import ChannelFlag from '../components/ChannelFlag.vue'
+import AccountPicker from '../components/AccountPicker.vue'
 
 const openExternal = useOpenExternal()
-const { accounts, accountId, account, accountItems, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove } = useChannelList('points')
+const { accounts, account, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove } = useChannelList('points')
 
 // L'ordre ne concerne que cette liste : c'est lui qui décide des 2 chaînes regardées.
 // Glisser-déposer par la poignée : la ligne n'est déplaçable que pendant qu'on la tient,
@@ -89,7 +91,7 @@ function endDrag() {
   <div class="p-6 flex flex-col gap-5">
     <div class="flex items-center gap-3">
       <h1 class="text-xl font-semibold flex-1">Points de chaîne</h1>
-      <USelect v-if="accounts.length > 1" v-model="accountId" :items="accountItems" class="w-48" icon="i-lucide-user" />
+      <AccountPicker />
     </div>
 
     <UAlert
@@ -161,7 +163,10 @@ function endDrag() {
                 </div>
               </td>
               <td class="px-3 py-2 min-w-0">
-                <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
+                <div class="flex items-center gap-1.5">
+                  <ChannelFlag :login="channel.login" />
+                  <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
+                </div>
                 <div v-if="channel.live" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
                   <span class="truncate max-w-[320px]" :title="channel.live.gameName ?? 'Sans catégorie'">{{ channel.live.gameName ?? 'Sans catégorie' }}</span>
                   <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(channel.live.viewers)} spectateurs`">

@@ -355,6 +355,42 @@ pub fn import_giveaway_channels(app: AppState) -> CmdResult<usize> {
     Ok(added)
 }
 
+/// Ajoute une catégorie où surveiller les giveaways (nom exact ou adresse de catégorie) ; renvoie son nom
+#[tauri::command]
+pub async fn add_giveaway_game(app: AppState<'_>, input: String) -> CmdResult<String> {
+    let input = input.trim().to_owned();
+    if input.is_empty() {
+        return Err("Indique le nom de la catégorie ou son adresse".into());
+    }
+    let account = app.db.accounts().map_err(db_err)?.into_iter().next().ok_or("Connecte d'abord un compte Twitch")?;
+    let tokens = app.secrets.load(&account.user_id).ok_or("Reconnecte ton compte Twitch")?;
+    let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id));
+    let slug = match crate::drops::category_slug(&input) {
+        Some(slug) => slug,
+        None => gql
+            .game_by_name(&input)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|(_, slug)| slug)
+            .ok_or_else(|| format!("Catégorie « {input} » introuvable : écris son nom exact comme sur Twitch, ou colle son adresse"))?,
+    };
+    let game = gql
+        .game_by_slug(&slug)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Catégorie « {slug} » introuvable sur Twitch"))?;
+    app.db.add_giveaway_game(&game.id, &game.name, &slug, game.box_art.as_deref()).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(game.name)
+}
+
+#[tauri::command]
+pub fn remove_giveaway_game(app: AppState, id: i64) -> CmdResult<()> {
+    app.db.remove_giveaway_game(id).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn remove_giveaway_channel(app: AppState, id: i64) -> CmdResult<()> {
     app.db.remove_giveaway_channel(id).map_err(db_err)?;
@@ -378,6 +414,75 @@ pub async fn participate_giveaway(
 ) -> CmdResult<Vec<crate::giveaways::ParticipationResult>> {
     let app: Arc<App> = app.inner().clone();
     crate::giveaways::participate(&app, giveaway_id, &account_ids, false).await
+}
+
+/// Ce qu'on sait d'une chaîne au moment d'y créer un giveaway (pré-remplissage du formulaire)
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelSuggestion {
+    /// Giveaway StreamElements actif sur la chaîne
+    pub streamelements: Option<SeSuggestion>,
+    /// Commande du dernier giveaway encore ouvert détecté dans son chat
+    pub detected_command: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeSuggestion {
+    pub url: String,
+    pub title: String,
+    pub command: Option<String>,
+    pub cost: i64,
+    pub max_tickets: Option<i64>,
+}
+
+#[tauri::command]
+pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdResult<ChannelSuggestion> {
+    let Some(login) = normalize_login(&login) else { return Ok(ChannelSuggestion::default()) };
+    let detected_command = app
+        .db
+        .giveaways(60)
+        .map_err(db_err)?
+        .into_iter()
+        .find(|g| g.open && g.channel == login && g.kind == "command")
+        .and_then(|g| g.command);
+    // Meilleur effort : StreamElements injoignable = pas de suggestion
+    let streamelements = match streamelements::channel_id(&app.http, &login).await {
+        Ok(Some(se_id)) => streamelements::active_giveaway(&app.http, &se_id).await.ok().flatten().map(|g| SeSuggestion {
+            url: format!("https://streamelements.com/{login}/giveaway/{}", g.id),
+            title: g.title,
+            command: g.command,
+            cost: g.cost,
+            max_tickets: g.max_tickets,
+        }),
+        _ => None,
+    };
+    Ok(ChannelSuggestion { streamelements, detected_command })
+}
+
+#[tauri::command]
+pub async fn create_giveaway(app: AppState<'_>, input: crate::db::GiveawayInput) -> CmdResult<i64> {
+    let app: Arc<App> = app.inner().clone();
+    let input = crate::giveaways::validate_input(input)?;
+    let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let id = app.db.insert_manual_giveaway(&input, &at).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    if input.kind == "streamelements" {
+        crate::giveaways::ensure_streamelements_channel(&app, &input.channel, None).await;
+    }
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn update_giveaway(app: AppState<'_>, id: i64, input: crate::db::GiveawayInput) -> CmdResult<()> {
+    let app: Arc<App> = app.inner().clone();
+    let input = crate::giveaways::validate_input(input)?;
+    app.db.update_giveaway(id, &input).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    if input.kind == "streamelements" {
+        crate::giveaways::ensure_streamelements_channel(&app, &input.channel, None).await;
+    }
+    Ok(())
 }
 
 #[tauri::command]

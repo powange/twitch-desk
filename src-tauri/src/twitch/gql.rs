@@ -242,6 +242,53 @@ impl Gql {
     }
 }
 
+/// Identifiant client du site web de Twitch : requêtes écrites à la main, sans
+/// connexion (même méthode que le site Giveaway Twitch)
+const WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+
+/// Langue de diffusion de chaque chaîne (code ISO 639-1 en minuscules), par lots
+pub async fn channel_languages(http: &reqwest::Client, logins: &[String]) -> Result<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    for chunk in logins.chunks(50) {
+        let list: Vec<String> = chunk.iter().filter(|l| is_login(l)).map(|l| format!("\"{l}\"")).collect();
+        if list.is_empty() {
+            continue;
+        }
+        let query = format!("query {{ users(logins: [{}]) {{ login broadcastSettings {{ language }} }} }}", list.join(","));
+        let res = http
+            .post(GQL_URL)
+            .header("Client-Id", WEB_CLIENT_ID)
+            .header("User-Agent", super::BROWSER_USER_AGENT)
+            .json(&json!({ "query": query }))
+            .send()
+            .await?;
+        let value: Value = res.json().await?;
+        out.extend(parse_languages(&value));
+    }
+    Ok(out)
+}
+
+fn is_login(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 25 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn parse_languages(value: &Value) -> HashMap<String, String> {
+    value
+        .pointer("/data/users")
+        .and_then(Value::as_array)
+        .map(|users| {
+            users
+                .iter()
+                .filter_map(|u| {
+                    let login = u.get("login")?.as_str()?.to_lowercase();
+                    let lang = u.pointer("/broadcastSettings/language")?.as_str()?.to_lowercase();
+                    Some((login, lang))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamInfo {
@@ -336,6 +383,15 @@ mod tests {
         ] {
             assert!(!hashes_for(name).is_empty(), "{name}");
         }
+    }
+
+    #[test]
+    fn languages() {
+        let v = json!({"data":{"users":[{"login":"LunarSea","broadcastSettings":{"language":"FR"}},null,{"login":"x","broadcastSettings":null}]}});
+        let m = parse_languages(&v);
+        assert_eq!(m.get("lunarsea").map(String::as_str), Some("fr"));
+        assert_eq!(m.len(), 1);
+        assert!(is_login("kraken_tv") && !is_login("a\"b"));
     }
 
     #[test]
