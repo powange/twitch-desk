@@ -195,7 +195,9 @@ async function save() {
       groupId: group.value || null,
       keywords: keywords.value,
       gameId: gameId.value,
-      gameName: gameName.value
+      gameName: gameName.value,
+      // Ignoré à l'enregistrement : le favori se change depuis la page Cadeaux
+      favorite: props.gift?.favorite ?? false
     }
     const id = await invoke<number>('save_gift', { gift })
     await refresh()

@@ -384,6 +384,8 @@ export interface Gift {
   // Catégorie Twitch (jeu) du cadeau
   gameId: string | null
   gameName: string | null
+  // Cadeau recherché (propre à ce poste, jamais synchronisé)
+  favorite: boolean
 }
 
 export interface GiftGroup {

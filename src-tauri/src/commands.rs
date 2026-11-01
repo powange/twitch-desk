@@ -352,6 +352,79 @@ pub fn export_log(app: AppState, name: String, path: String) -> CmdResult<()> {
     Ok(())
 }
 
+/// Invitation Discord d'un streamer : celle de sa fiche, sinon celle trouvée sur sa chaîne
+/// Twitch (réseaux sociaux, description) ; None si aucune
+#[tauri::command]
+pub async fn streamer_discord(app: AppState<'_>, login: String) -> CmdResult<Option<String>> {
+    let login = normalize_login(&login).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    if let Some(url) = app.db.streamer(&login).map_err(db_err)?.and_then(|s| s.discord_url) {
+        return Ok(Some(url));
+    }
+    let profile = crate::twitch::gql::channel_profile(&app.http, &login).await.map_err(|e| format!("chaîne Twitch : {e}"))?;
+    Ok(profile.and_then(|p| p.discord).filter(|u| u.starts_with("https://")))
+}
+
+// --- Follow ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowState {
+    account_id: i64,
+    login: String,
+    /// None : impossible à savoir (compte à reconnecter, erreur Twitch)
+    follows: Option<bool>,
+}
+
+/// Comptes qui suivent (ou non) une chaîne
+#[tauri::command]
+pub async fn follow_status(app: AppState<'_>, channel: String) -> CmdResult<Vec<FollowState>> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    let mut out = vec![];
+    for account in app.db.accounts().map_err(db_err)? {
+        let follows = match app.secrets.load(&account.user_id) {
+            Some(tokens) => {
+                let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id.clone()));
+                match gql.follow_state(&channel).await {
+                    Ok(state) => state.map(|(_, f)| f),
+                    Err(e) => {
+                        tracing::warn!("follow de {} sur {channel} : {e}", account.login);
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        out.push(FollowState { account_id: account.id, login: account.login, follows });
+    }
+    Ok(out)
+}
+
+/// Fait suivre la chaîne aux comptes choisis ; renvoie l'état à jour
+#[tauri::command]
+pub async fn follow_channel(app: AppState<'_>, channel: String, account_ids: Vec<i64>) -> CmdResult<Vec<FollowState>> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    let mut errors = vec![];
+    for id in account_ids {
+        let account = find_account(&app, id)?;
+        let tokens = app.secrets.load(&account.user_id).ok_or_else(|| format!("Reconnecte {}", account.login))?;
+        let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id.clone()));
+        let result = match gql.follow_state(&channel).await {
+            Ok(Some((_, true))) => Ok(()),
+            Ok(Some((channel_id, false))) => gql.follow(&channel_id).await,
+            Ok(None) => Err(crate::twitch::TwitchError::Gql("chaîne introuvable".into())),
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(()) => app.log(&account.login, crate::app::EventKind::Info, format!("Follow de {channel}")),
+            Err(e) => errors.push(format!("{} : {e}", account.login)),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors.join(" · "));
+    }
+    follow_status(app, channel).await
+}
+
 // --- Sons des alertes ---
 
 const SOUND_EXTENSIONS: [&str; 3] = ["wav", "mp3", "ogg"];
@@ -746,6 +819,12 @@ pub fn save_gift(app: AppState, mut gift: crate::db::Gift) -> CmdResult<i64> {
     Ok(id)
 }
 
+/// Cadeau recherché ou non (propre à ce poste)
+#[tauri::command]
+pub fn set_gift_favorite(app: AppState, id: i64, favorite: bool) -> CmdResult<()> {
+    app.db.set_gift_favorite(id, favorite).map_err(db_err)
+}
+
 #[tauri::command]
 pub fn delete_gift(app: AppState, id: i64) -> CmdResult<()> {
     app.db.delete_gift(id).map_err(db_err)?;
@@ -926,6 +1005,7 @@ pub fn import_gifts(app: AppState, path: String) -> CmdResult<GiftImportResult> 
             group_id,
             keywords: item.keywords.into_iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect(),
             game_name: if game_id.is_some() { item.game_name } else { None },
+            favorite: false,
             game_id,
         };
         app.db.save_gift(&gift).map_err(db_err)?;

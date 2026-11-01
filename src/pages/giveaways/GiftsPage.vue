@@ -28,9 +28,24 @@ function selectCategory(id: string | null) {
   categoryFilter.value = id
 }
 
+// Favoris : cadeaux recherchés, propres à ce poste
+const favoritesOnly = ref(false)
+const favoriteCount = computed(() => gifts.value.filter(g => g.favorite).length)
+async function toggleFavorite(g: Gift) {
+  const value = !g.favorite
+  g.favorite = value
+  try {
+    await invoke('set_gift_favorite', { id: g.id, favorite: value })
+  } catch (e) {
+    g.favorite = !value
+    toast.add({ title: 'Favori non enregistré', description: String(e), color: 'error' })
+  }
+}
+
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   return gifts.value.filter((g) => {
+    if (favoritesOnly.value && !g.favorite) return false
     if (categoryFilter.value !== null && (g.gameId ?? '') !== categoryFilter.value) return false
     return !q || g.title.toLowerCase().includes(q) || g.keywords.some(k => k.includes(q))
   })
@@ -129,6 +144,15 @@ async function confirmRemove() {
     <div class="flex flex-col gap-2">
       <div class="flex items-center gap-2 flex-wrap">
         <UInput id="gift-search" v-model="search" icon="i-lucide-search" placeholder="Rechercher un cadeau ou un mot-clé" class="w-72" />
+        <UButton
+          icon="i-lucide-star"
+          :label="`Favoris (${favoriteCount})`"
+          size="sm"
+          :color="favoritesOnly ? 'warning' : 'neutral'"
+          :variant="favoritesOnly ? 'soft' : 'ghost'"
+          title="Seulement les cadeaux recherchés"
+          @click="favoritesOnly = !favoritesOnly"
+        />
         <UButton label="Toutes les catégories" size="sm" :color="categoryFilter === null ? 'primary' : 'neutral'" :variant="categoryFilter === null ? 'soft' : 'ghost'" @click="selectCategory(null)" />
         <UButton
           v-for="c in categories"
@@ -162,9 +186,20 @@ async function confirmRemove() {
           </h3>
           <div class="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3">
             <div v-for="g in gs.gifts" :key="g.id" class="border border-default rounded-lg overflow-hidden flex flex-col group">
-              <div class="aspect-square bg-elevated flex items-center justify-center">
+              <div class="relative aspect-square bg-elevated flex items-center justify-center">
                 <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="w-full h-full object-contain">
                 <UIcon v-else name="i-lucide-gift" class="size-10 text-muted" />
+                <button
+                  type="button"
+                  class="absolute top-1.5 right-1.5 rounded-full bg-default/80 p-1.5 transition-colors"
+                  :class="g.favorite ? 'text-warning' : 'text-muted hover:text-warning'"
+                  :aria-pressed="g.favorite"
+                  :aria-label="g.favorite ? `Retirer ${g.title} des favoris` : `Mettre ${g.title} en favori`"
+                  :title="g.favorite ? 'Cadeau recherché (favori)' : 'Mettre en favori : cadeau recherché'"
+                  @click="toggleFavorite(g)"
+                >
+                  <UIcon name="i-lucide-star" class="size-4 block" :class="g.favorite ? 'fill-current' : ''" />
+                </button>
               </div>
               <div class="p-3 flex flex-col gap-1.5 flex-1">
                 <div class="font-medium leading-tight">{{ g.title }}</div>

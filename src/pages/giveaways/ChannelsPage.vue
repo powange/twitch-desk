@@ -48,9 +48,10 @@ function giftsOf(c: GiveawayChannelView): { gift: Gift, attached: boolean }[] {
 const giftsByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, giftsOf(c)])))
 const channelGifts = (c: GiveawayChannelView) => giftsByLogin.value.get(c.login) ?? []
 
-const interesting = (c: GiveawayChannelView) => !!c.live && c.inCategory && (currentKind(c) !== null || channelGifts(c).length > 0)
+// Chaîne à suivre de près : en live dans une catégorie choisie avec un cadeau favori repéré
+const interesting = (c: GiveawayChannelView) => !!c.live && c.inCategory && channelGifts(c).some(x => x.gift.favorite)
 
-// En live dans une catégorie choisie (giveaway ou cadeaux repérés d'abord), puis en live
+// En live dans une catégorie choisie (cadeau favori repéré d'abord), puis en live
 // ailleurs, puis hors ligne ; plus regardées d'abord
 function rank(c: GiveawayChannelView): number {
   if (interesting(c)) return 0
@@ -289,11 +290,12 @@ async function confirmRemove() {
             </td>
             <td class="px-3 py-2">
               <div class="flex flex-wrap items-center gap-1 min-w-36 max-w-80">
-                <UTooltip v-for="x in channelGifts(c)" :key="x.gift.id" :text="x.attached ? `${x.gift.title} (rattaché au giveaway)` : `${x.gift.title} (repéré)`">
+                <UTooltip v-for="x in channelGifts(c)" :key="x.gift.id" :text="`${x.gift.title} (${x.attached ? 'rattaché au giveaway' : 'repéré'}${x.gift.favorite ? ', favori' : ''})`">
                   <span class="relative">
                     <img v-if="x.gift.image" :src="x.gift.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
                     <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
                     <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
+                    <UIcon v-if="x.gift.favorite" name="i-lucide-star" class="absolute -bottom-1 -right-1 size-3 text-warning fill-current" />
                   </span>
                 </UTooltip>
                 <span v-if="channelGifts(c).length === 0" class="text-muted">—</span>

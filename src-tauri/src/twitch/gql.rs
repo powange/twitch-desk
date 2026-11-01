@@ -133,6 +133,63 @@ impl Gql {
         *last = Instant::now();
     }
 
+    /// Requête écrite en clair (sans empreinte), avec le jeton du compte ; renvoie `data`
+    async fn query(&self, query: &str, variables: Value) -> Result<Value> {
+        self.throttle().await;
+        let version = client_version(&self.http).await;
+        let res = self
+            .http
+            .post(GQL_URL)
+            .header("Client-Id", CLIENT_ID)
+            .header("Authorization", format!("OAuth {}", self.token()))
+            .header("Client-Session-Id", &self.session_id)
+            .header("Client-Version", &version)
+            .header("X-Device-Id", &self.device_id)
+            .header("Origin", CLIENT_ORIGIN)
+            .header("Referer", format!("{CLIENT_ORIGIN}/"))
+            .json(&json!({ "query": query, "variables": variables }))
+            .send()
+            .await?;
+        if res.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(TwitchError::Unauthorized);
+        }
+        let value: Value = res.json().await?;
+        match classify_response(value) {
+            Outcome::Data(data) => Ok(data),
+            Outcome::Unauthorized => Err(TwitchError::Unauthorized),
+            Outcome::UnknownHash => Err(TwitchError::Gql("requête refusée".into())),
+            Outcome::Error(e) => Err(TwitchError::Gql(e)),
+        }
+    }
+
+    /// Le compte suit-il la chaîne ? Renvoie aussi l'identifiant de la chaîne (None : introuvable)
+    pub async fn follow_state(&self, login: &str) -> Result<Option<(String, bool)>> {
+        let data = self
+            .query("query FollowState($login: String!) { user(login: $login) { id self { follower { followedAt } } } }", json!({ "login": login }))
+            .await?;
+        let Some(user) = data.get("user").filter(|u| !u.is_null()) else { return Ok(None) };
+        let id = user.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let follows = user.pointer("/self/follower/followedAt").is_some_and(|v| !v.is_null());
+        Ok(Some((id, follows)))
+    }
+
+    /// Suit une chaîne (notifications de live laissées à Twitch)
+    pub async fn follow(&self, channel_id: &str) -> Result<()> {
+        let data = self
+            .query(
+                "mutation Follow($id: ID!) { followUser(input: { targetID: $id, disableNotifications: false }) { follow { followedAt } error { code } } }",
+                json!({ "id": channel_id }),
+            )
+            .await?;
+        if let Some(code) = data.pointer("/followUser/error/code").and_then(Value::as_str) {
+            return Err(TwitchError::Gql(format!("follow refusé ({code})")));
+        }
+        if data.pointer("/followUser/follow/followedAt").is_none_or(Value::is_null) {
+            return Err(TwitchError::Gql("follow non confirmé par Twitch".into()));
+        }
+        Ok(())
+    }
+
     /// Exécute l'opération `name` ; renvoie le champ `data` de la réponse
     pub async fn request(&self, name: &str, variables: Value) -> Result<Value> {
         let hashes = hashes_for(name);

@@ -984,6 +984,7 @@ mod tests {
                 keywords: vec!["obsidian".into()],
                 game_id: Some("490377".into()),
                 game_name: Some("Sea of Thieves".into()),
+                favorite: false,
             })
             .unwrap();
         let input = crate::db::GiveawayInput {
@@ -1055,6 +1056,7 @@ mod tests {
             keywords: vec![],
             game_id: None,
             game_name: None,
+            favorite: false,
         })
         .unwrap();
         assign_ids(&a.conn()).unwrap();

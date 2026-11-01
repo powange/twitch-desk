@@ -215,6 +215,9 @@ const MIGRATIONS: &[&str] = &[r#"
     INSERT INTO streamers (login, ignored_commands)
         SELECT login, excluded FROM giveaway_channels WHERE excluded != '[]'
         ON CONFLICT(login) DO UPDATE SET ignored_commands = excluded.ignored_commands;
+"#, r#"
+    -- Cadeaux recherchés (favoris), propres à ce poste
+    ALTER TABLE gifts ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
 "#];
 
 /// Types de giveaway
@@ -290,6 +293,9 @@ pub struct Gift {
     pub game_id: Option<String>,
     #[serde(default)]
     pub game_name: Option<String>,
+    /// Cadeau recherché : propre à ce poste (jamais synchronisé ni modifié par le formulaire)
+    #[serde(default)]
+    pub favorite: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1128,7 +1134,7 @@ impl Db {
     pub fn gifts(&self) -> DbResult<Vec<Gift>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, title, image, group_id, keywords, game_id, game_name FROM gifts ORDER BY title COLLATE NOCASE",
+            "SELECT id, title, image, group_id, keywords, game_id, game_name, favorite FROM gifts ORDER BY title COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |r| {
             let keywords: String = r.get(4)?;
@@ -1140,9 +1146,15 @@ impl Db {
                 keywords: serde_json::from_str(&keywords).unwrap_or_default(),
                 game_id: r.get(5)?,
                 game_name: r.get(6)?,
+                favorite: r.get(7)?,
             })
         })?;
         rows.collect()
+    }
+
+    pub fn set_gift_favorite(&self, id: i64, favorite: bool) -> DbResult<()> {
+        self.conn().execute("UPDATE gifts SET favorite = ?2 WHERE id = ?1", params![id, favorite])?;
+        Ok(())
     }
 
     /// Ajoute (id 0) ou modifie un cadeau ; renvoie son identifiant
@@ -1407,6 +1419,7 @@ mod tests {
                 keywords: vec!["obsidienne".into()],
                 game_id: Some("490377".into()),
                 game_name: Some("Sea of Thieves".into()),
+                favorite: false,
             })
             .unwrap();
         assert_eq!(db.gifts().unwrap()[0].game_name.as_deref(), Some("Sea of Thieves"));

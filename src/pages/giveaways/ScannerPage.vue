@@ -337,9 +337,12 @@ function liveFor(iso: string | null) {
               </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-36 max-w-80">
-                  <UTooltip v-for="g in giftsOf(m)" :key="g.id" :text="g.title">
-                    <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
-                    <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                  <UTooltip v-for="g in giftsOf(m)" :key="g.id" :text="g.favorite ? `${g.title} (favori)` : g.title">
+                    <span class="relative">
+                      <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
+                      <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                      <UIcon v-if="g.favorite" name="i-lucide-star" class="absolute -bottom-1 -right-1 size-3 text-warning fill-current" />
+                    </span>
                   </UTooltip>
                   <span v-if="giftsOf(m).length === 0" class="text-muted">—</span>
                 </div>

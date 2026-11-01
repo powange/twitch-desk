@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
@@ -19,6 +19,69 @@ const watchStream = useWatchStream()
 
 const view = computed(() => snapshot.value?.giveaways)
 const giveaways = computed(() => view.value?.giveaways ?? [])
+
+// --- Follow requis : nos comptes suivent-ils la chaîne ? (relu à l'ouverture de la page) ---
+interface FollowState { accountId: number, login: string, follows: boolean | null }
+const follows = reactive<Record<string, FollowState[] | 'loading'>>({})
+const following = ref<string | null>(null)
+async function loadFollows(channel: string) {
+  follows[channel] = 'loading'
+  try {
+    follows[channel] = await invoke<FollowState[]>('follow_status', { channel })
+  } catch {
+    delete follows[channel]
+  }
+}
+// Giveaways ouverts avec follow requis : état lu une fois par chaîne
+watch(() => giveaways.value.filter(g => g.open && g.requireFollow === true).map(g => g.channel), (channels) => {
+  for (const c of new Set(channels)) if (!(c in follows)) void loadFollows(c)
+}, { immediate: true })
+function followList(channel: string): FollowState[] | null {
+  const f = follows[channel]
+  return Array.isArray(f) ? f : null
+}
+const notFollowing = (channel: string) => (followList(channel) ?? []).filter(f => f.follows === false)
+function followTooltip(channel: string) {
+  const list = followList(channel)
+  if (!list) return 'Follow requis : vérification…'
+  const missing = list.filter(f => f.follows === false).map(f => f.login)
+  const unknown = list.filter(f => f.follows === null).map(f => f.login)
+  const parts = ['Follow requis']
+  if (missing.length) parts.push(`pas suivie par ${missing.join(', ')} : clique pour suivre`)
+  else if (!unknown.length) parts.push('suivie par tous tes comptes')
+  if (unknown.length) parts.push(`état inconnu pour ${unknown.join(', ')}`)
+  return parts.join(' · ')
+}
+// Discord requis : invitation de la fiche du streamer, sinon trouvée sur sa chaîne Twitch
+const openingDiscord = ref<string | null>(null)
+async function openDiscord(channel: string) {
+  if (openingDiscord.value) return
+  openingDiscord.value = channel
+  try {
+    const url = await invoke<string | null>('streamer_discord', { login: channel })
+    if (url) openExternal(url)
+    else toast.add({ title: 'Aucune invitation Discord connue', description: `Ajoute-la sur la fiche de ${channel} (Modifier → Chaîne).`, color: 'warning' })
+  } catch (e) {
+    toast.add({ title: 'Invitation Discord introuvable', description: String(e), color: 'error' })
+  } finally {
+    openingDiscord.value = null
+  }
+}
+
+async function followChannel(channel: string) {
+  const ids = notFollowing(channel).map(f => f.accountId)
+  if (!ids.length || following.value) return
+  following.value = channel
+  try {
+    follows[channel] = await invoke<FollowState[]>('follow_channel', { channel, accountIds: ids })
+    toast.add({ title: `${channel} suivie`, color: 'success', icon: 'i-lucide-check' })
+  } catch (e) {
+    toast.add({ title: 'Follow impossible', description: String(e), color: 'error' })
+    void loadFollows(channel)
+  } finally {
+    following.value = null
+  }
+}
 const mentions = computed(() => view.value?.mentions ?? [])
 // File d'alertes : giveaways ouverts pas encore traités, et mentions
 const alerts = computed(() => giveaways.value.filter(g => g.open && !g.handled))
@@ -177,7 +240,21 @@ function share(g: GiveawayView) {
               <th class="text-left px-3 py-2">Type</th>
               <th class="text-left px-3 py-2">Commande</th>
               <th class="text-left px-3 py-2">Cadeaux</th>
-              <th class="text-left px-3 py-2">Conditions</th>
+              <th class="text-center px-2 py-2">
+                <UTooltip text="Présence requise dans le chat au moment du tirage">
+                  <UIcon name="i-lucide-user-check" class="size-4 align-middle" aria-label="Présence au tirage" />
+                </UTooltip>
+              </th>
+              <th class="text-center px-2 py-2">
+                <UTooltip text="Être sur le Discord du streamer">
+                  <UIcon name="i-simple-icons-discord" class="size-4 align-middle" aria-label="Discord requis" />
+                </UTooltip>
+              </th>
+              <th class="text-center px-2 py-2">
+                <UTooltip text="Follow de la chaîne requis (vert : suivie par tous tes comptes ; clique pour suivre sinon)">
+                  <UIcon name="i-lucide-heart" class="size-4 align-middle" aria-label="Follow requis" />
+                </UTooltip>
+              </th>
               <th class="text-left px-3 py-2">Tirage</th>
               <th class="text-left px-3 py-2">Participations</th>
               <th class="text-left px-3 py-2">Gagnant</th>
@@ -195,7 +272,11 @@ function share(g: GiveawayView) {
                 </div>
               </td>
               <td class="px-3 py-2">
-                <UBadge :label="GIVEAWAY_KIND[g.kind].label" :color="GIVEAWAY_KIND[g.kind].color" variant="subtle" class="whitespace-nowrap" />
+                <div class="flex items-center gap-1.5">
+                  <UBadge :label="GIVEAWAY_KIND[g.kind].label" :color="GIVEAWAY_KIND[g.kind].color" variant="subtle" class="whitespace-nowrap" />
+                  <!-- Ticket : usage unique ou multi-tickets -->
+                  <GiveawayConditions v-if="g.kind === 'ticket' && g.ticketUnique !== null" :details="{ ...g, requireFollow: null, requirePresence: null, requireDiscord: null }" :kind="g.kind" />
+                </div>
               </td>
               <td class="px-3 py-2 whitespace-nowrap">
                 <span v-if="g.command" class="font-mono">{{ g.command }}</span>
@@ -204,16 +285,56 @@ function share(g: GiveawayView) {
                 <span v-else class="text-muted">—</span>
               </td>
               <td class="px-3 py-2">
-                <div class="flex items-center gap-1">
-                  <UTooltip v-for="id in g.giftIds.slice(0, 4)" :key="id" :text="giftById.get(id)?.title ?? ''">
+                <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
+                  <UTooltip v-for="id in g.giftIds" :key="id" :text="giftById.get(id)?.title ?? ''">
                     <img v-if="giftById.get(id)?.image" :src="giftById.get(id)?.image ?? ''" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
                     <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
                   </UTooltip>
-                  <span v-if="g.giftIds.length > 4" class="text-xs text-muted">+{{ g.giftIds.length - 4 }}</span>
                   <span v-if="g.giftIds.length === 0" class="text-muted">—</span>
                 </div>
               </td>
-              <td class="px-3 py-2"><GiveawayConditions :details="g" :kind="g.kind" /></td>
+              <!-- Une colonne par condition : ? inconnu, picto si requis, rien sinon -->
+              <td class="px-2 py-2 text-center">
+                <span v-if="g.requirePresence === null" class="text-muted" title="On ne sait pas">?</span>
+                <UTooltip v-else-if="g.requirePresence" text="Présence requise au moment du tirage">
+                  <UIcon name="i-lucide-user-check" class="size-4 text-emerald-600 dark:text-emerald-400 align-middle" />
+                </UTooltip>
+              </td>
+              <td class="px-2 py-2 text-center">
+                <span v-if="g.requireDiscord === null" class="text-muted" title="On ne sait pas">?</span>
+                <UTooltip v-else-if="g.requireDiscord" text="Être sur le Discord du streamer : clique pour ouvrir son invitation">
+                  <button
+                    type="button"
+                    class="inline-flex text-indigo-600 dark:text-indigo-400 hover:text-indigo-400 disabled:opacity-50"
+                    :disabled="openingDiscord === g.channel"
+                    :aria-label="`Ouvrir le Discord de ${g.channel}`"
+                    @click="openDiscord(g.channel)"
+                  >
+                    <UIcon :name="openingDiscord === g.channel ? 'i-lucide-loader-circle' : 'i-simple-icons-discord'" class="size-4" :class="openingDiscord === g.channel ? 'animate-spin' : ''" />
+                  </button>
+                </UTooltip>
+              </td>
+              <td class="px-2 py-2 text-center">
+                <span v-if="g.requireFollow === null" class="text-muted" title="On ne sait pas">?</span>
+                <UTooltip v-else-if="g.requireFollow" :text="g.open ? followTooltip(g.channel) : 'Follow requis'">
+                  <button
+                    v-if="g.open && notFollowing(g.channel).length"
+                    type="button"
+                    class="inline-flex text-warning hover:text-pink-500 disabled:opacity-50"
+                    :disabled="following === g.channel"
+                    :aria-label="`Suivre ${g.channel}`"
+                    @click="followChannel(g.channel)"
+                  >
+                    <UIcon :name="following === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="following === g.channel ? 'animate-spin' : ''" />
+                  </button>
+                  <UIcon
+                    v-else
+                    name="i-lucide-heart"
+                    class="size-4 align-middle"
+                    :class="g.open && followList(g.channel) && followList(g.channel)!.every(f => f.follows) ? 'text-success fill-current' : 'text-pink-600 dark:text-pink-400'"
+                  />
+                </UTooltip>
+              </td>
               <td class="px-3 py-2 whitespace-nowrap" :class="g.drawAt ? '' : 'text-muted'">{{ formatDrawAt(g.drawAt) }}</td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap gap-1">
@@ -259,7 +380,7 @@ function share(g: GiveawayView) {
               </td>
             </tr>
             <tr v-if="giveaways.length === 0">
-              <td colspan="11" class="px-3 py-8 text-center text-muted">Aucun giveaway pour l'instant. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».</td>
+              <td colspan="13" class="px-3 py-8 text-center text-muted">Aucun giveaway pour l'instant. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».</td>
             </tr>
           </tbody>
         </table>
