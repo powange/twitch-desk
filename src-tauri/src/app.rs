@@ -123,6 +123,35 @@ pub struct LogEvent {
     pub message: String,
 }
 
+/// Type d'alerte : chacun a son son, activable dans les réglages
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Alert {
+    /// Giveaway détecté dans un chat
+    Giveaway,
+    /// Un de nos comptes a gagné
+    Win,
+    /// Un de nos pseudos est mentionné
+    Mention,
+    /// Tirage imminent avec présence requise
+    Reminder,
+    /// Nouveau stream repéré par le scanner
+    Scanner,
+}
+
+impl Alert {
+    pub const ALL: [Alert; 5] = [Alert::Giveaway, Alert::Win, Alert::Mention, Alert::Reminder, Alert::Scanner];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Alert::Giveaway => "giveaway",
+            Alert::Win => "win",
+            Alert::Mention => "mention",
+            Alert::Reminder => "reminder",
+            Alert::Scanner => "scanner",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
@@ -356,9 +385,17 @@ impl App {
     }
 
     /// Notification Windows, si l'utilisateur ne les a pas coupées
-    pub fn notify(&self, title: &str, body: &str) {
+    /// Notification Windows et alerte sonore (jouée par l'interface), selon les réglages
+    pub fn notify(&self, alert: Alert, title: &str, body: &str) {
         use tauri_plugin_notification::NotificationExt;
-        if !self.db.settings().notifications {
+        let settings = self.db.settings();
+        if settings.sound_alerts && settings.sound_events.iter().any(|e| e == alert.key()) {
+            let payload = serde_json::json!({ "kind": alert.key(), "volume": settings.sound_volume.min(100) });
+            if let Err(e) = self.handle.emit("sound-alert", payload) {
+                tracing::warn!("alerte sonore : {e}");
+            }
+        }
+        if !settings.notifications {
             return;
         }
         if let Err(e) = self.handle.notification().builder().title(title).body(body).show() {

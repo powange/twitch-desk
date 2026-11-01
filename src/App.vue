@@ -5,6 +5,7 @@ import { getVersion } from '@tauri-apps/api/app'
 import type { NavigationMenuItem } from '@nuxt/ui'
 import { useSnapshot } from './composables/useSnapshot'
 import { useUpdater } from './composables/useUpdater'
+import { installSoundAlerts } from './composables/useSoundAlerts'
 import type { Settings } from './types'
 import UpdateBanner from './components/UpdateBanner.vue'
 
@@ -50,6 +51,8 @@ const items = computed<NavigationMenuItem[]>(() => [
 async function togglePause() {
   await invoke('set_paused', { paused: !paused.value })
 }
+
+installSoundAlerts()
 
 onMounted(async () => {
   version.value = await getVersion()

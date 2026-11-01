@@ -306,11 +306,11 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
     if notify && !fresh.is_empty() {
         for m in fresh.iter().take(MAX_NOTIFICATIONS) {
             app.log("scanner", EventKind::Giveaway, format!("Scanner : {} ({}) : {}", m.stream.login, m.stream.game_name, m.stream.title));
-            app.notify(&format!("Stream repéré : {}", m.stream.display_name), &m.stream.title);
+            app.notify(crate::app::Alert::Scanner, &format!("Stream repéré : {}", m.stream.display_name), &m.stream.title);
         }
         if fresh.len() > MAX_NOTIFICATIONS {
             let rest = fresh.len() - MAX_NOTIFICATIONS;
-            app.notify("Scanner", &format!("{rest} autre(s) stream(s) repéré(s) : voir la page Scanner"));
+            app.notify(crate::app::Alert::Scanner, "Scanner", &format!("{rest} autre(s) stream(s) repéré(s) : voir la page Scanner"));
         }
     }
 }

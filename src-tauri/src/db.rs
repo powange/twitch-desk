@@ -448,6 +448,12 @@ pub struct Settings {
     pub scanner_min_viewers: u64,
     /// Scanner automatique toutes les 3 min, avec notification des nouveaux streams
     pub scanner_auto: bool,
+    /// Alertes sonores (jouées par la fenêtre, même cachée)
+    pub sound_alerts: bool,
+    /// Volume des alertes, de 0 à 100
+    pub sound_volume: u64,
+    /// Alertes avec un son : giveaway, win, mention, reminder, scanner
+    pub sound_events: Vec<String>,
 }
 
 pub const DEFAULT_SCANNER_KEYWORDS: &[&str] =
@@ -470,6 +476,9 @@ impl Default for Settings {
             scanner_languages: vec![],
             scanner_min_viewers: 0,
             scanner_auto: false,
+            sound_alerts: true,
+            sound_volume: 70,
+            sound_events: crate::app::Alert::ALL.iter().map(|a| a.key().to_owned()).collect(),
         }
     }
 }

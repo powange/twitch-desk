@@ -17,7 +17,7 @@ use serde::Serialize;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use crate::app::{App, EventKind};
+use crate::app::{Alert, App, EventKind};
 use crate::db::{GiveawayChannel, GiveawayGame, GiveawayInput, GiveawayRow, NewGiveaway, GIVEAWAY_KINDS};
 use crate::twitch::gql::{Gql, StreamInfo};
 use crate::twitch::chat::{self, ChatAuth, ChatEvent, TapEvent};
@@ -308,7 +308,7 @@ impl Monitor {
             let _ = self.app.db.set_giveaway_reminded(g.id);
             let when = if minutes == 0 { "maintenant".to_owned() } else { format!("dans {minutes} min") };
             self.app.log("giveaways", EventKind::Giveaway, format!("Tirage {when} sur {} : présence requise", g.channel));
-            self.app.notify(&format!("Tirage {when} sur {}", g.channel), "Présence requise au moment du tirage : reste sur le live");
+            self.app.notify(Alert::Reminder, &format!("Tirage {when} sur {}", g.channel), "Présence requise au moment du tirage : reste sur le live");
         }
     }
 
@@ -511,7 +511,7 @@ impl Monitor {
         };
         let share = evidence.count * 100 / evidence.window.max(1);
         self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway détecté sur {channel} : {command} ({share} % du chat)"));
-        self.app.notify(&format!("Giveaway sur {channel}"), &format!("Commande {command}, reprise par {share} % du chat"));
+        self.app.notify(Alert::Giveaway, &format!("Giveaway sur {channel}"), &format!("Commande {command}, reprise par {share} % du chat"));
         self.publish();
         schedule_auto_participation(self.app.clone(), id);
     }
@@ -534,7 +534,7 @@ impl Monitor {
         let login = channel.to_owned();
         let channel_id = self.channels.iter().find(|c| c.login == channel).map(|c| c.channel_id.clone());
         tauri::async_runtime::spawn(async move { ensure_channel_in_list(&app, &login, channel_id, crate::db::ChannelList::Se).await });
-        self.app.notify(&format!("Giveaway StreamElements sur {channel}"), "Tickets à acheter avec tes points StreamElements");
+        self.app.notify(Alert::Giveaway, &format!("Giveaway StreamElements sur {channel}"), "Tickets à acheter avec tes points StreamElements");
         self.publish();
     }
 
@@ -550,7 +550,7 @@ impl Monitor {
         match ours {
             Some(login) => {
                 self.app.log(&login, EventKind::Giveaway, format!("Tu as gagné le giveaway de {channel} !"));
-                self.app.notify("Tu as gagné !", &format!("{login} a gagné le giveaway de {channel}"));
+                self.app.notify(Alert::Win, "Tu as gagné !", &format!("{login} a gagné le giveaway de {channel}"));
             }
             None if target.is_some() => {
                 self.app.log("giveaways", EventKind::Info, format!("Tirage sur {channel} : {winner}"));
@@ -580,7 +580,7 @@ impl Monitor {
                 message: message.clone(),
             });
             self.mentions.truncate(MAX_MENTIONS);
-            self.app.notify(&format!("{author} mentionne {login} sur {channel}"), &message);
+            self.app.notify(Alert::Mention, &format!("{author} mentionne {login} sur {channel}"), &message);
             self.publish();
         }
     }

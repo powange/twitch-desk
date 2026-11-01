@@ -336,12 +336,11 @@ function liveFor(iso: string | null) {
                 </UTooltip>
               </td>
               <td class="px-3 py-2">
-                <div class="flex items-center gap-1">
-                  <UTooltip v-for="g in giftsOf(m).slice(0, 4)" :key="g.id" :text="g.title">
+                <div class="flex flex-wrap items-center gap-1 min-w-36 max-w-80">
+                  <UTooltip v-for="g in giftsOf(m)" :key="g.id" :text="g.title">
                     <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
                     <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
                   </UTooltip>
-                  <span v-if="giftsOf(m).length > 4" class="text-xs text-muted">+{{ giftsOf(m).length - 4 }}</span>
                   <span v-if="giftsOf(m).length === 0" class="text-muted">—</span>
                 </div>
               </td>

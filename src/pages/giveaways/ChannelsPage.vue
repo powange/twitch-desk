@@ -41,7 +41,11 @@ function giftsOf(c: GiveawayChannelView): { gift: Gift, attached: boolean }[] {
   const found = suggestGifts(gifts.value, text).filter(g => !attached.some(a => a.id === g.id))
   return [...attached.map(gift => ({ gift, attached: true })), ...found.map(gift => ({ gift, attached: false }))]
 }
-const interesting = (c: GiveawayChannelView) => !!c.live && c.inCategory && (currentKind(c) !== null || giftsOf(c).length > 0)
+// Cadeaux de chaque chaîne, calculés une fois par mise à jour
+const giftsByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, giftsOf(c)])))
+const channelGifts = (c: GiveawayChannelView) => giftsByLogin.value.get(c.login) ?? []
+
+const interesting = (c: GiveawayChannelView) => !!c.live && c.inCategory && (currentKind(c) !== null || channelGifts(c).length > 0)
 
 // En live dans une catégorie choisie (giveaway ou cadeaux repérés d'abord), puis en live
 // ailleurs, puis hors ligne ; plus regardées d'abord
@@ -51,8 +55,60 @@ function rank(c: GiveawayChannelView): number {
   if (c.live) return 2
   return c.liveChecked ? 3 : 4
 }
+// --- Filtres : catégorie du live et cadeaux (rien de choisi : tout) ---
+const OFFLINE = 'offline'
+const categoryFilter = ref<string[]>([])
+const giftFilter = ref<number[]>([])
+// Catégories des lives en cours, plus « Hors ligne »
+const categoryItems = computed(() => {
+  const map = new Map<string, { name: string, count: number }>()
+  let offline = 0
+  for (const c of view.value?.channels ?? []) {
+    if (!c.live) {
+      offline++
+      continue
+    }
+    const id = c.live.gameId ?? ''
+    const entry = map.get(id) ?? { name: c.live.gameName ?? 'Sans catégorie', count: 0 }
+    entry.count++
+    map.set(id, entry)
+  }
+  const items = [...map].map(([id, e]) => ({ label: `${e.name} (${e.count})`, value: id, gameId: id }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+  if (offline) items.push({ label: `Hors ligne (${offline})`, value: OFFLINE, gameId: '' })
+  return items
+})
+// Cadeaux repérés ou rattachés sur au moins une chaîne
+const giftItems = computed(() => {
+  const map = new Map<number, { gift: Gift, count: number }>()
+  for (const list of giftsByLogin.value.values()) {
+    for (const { gift } of list) {
+      const entry = map.get(gift.id) ?? { gift, count: 0 }
+      entry.count++
+      map.set(gift.id, entry)
+    }
+  }
+  return [...map.values()]
+    .sort((a, b) => b.count - a.count || a.gift.title.localeCompare(b.gift.title))
+    .map(({ gift, count }) => ({ label: `${gift.title} (${count})`, value: gift.id, image: gift.image }))
+})
+function matchesFilters(c: GiveawayChannelView) {
+  if (categoryFilter.value.length) {
+    const key = c.live ? (c.live.gameId ?? '') : OFFLINE
+    if (!categoryFilter.value.includes(key)) return false
+  }
+  if (giftFilter.value.length && !channelGifts(c).some(x => giftFilter.value.includes(x.gift.id))) return false
+  return true
+}
+const filtering = computed(() => categoryFilter.value.length > 0 || giftFilter.value.length > 0)
+function clearFilters() {
+  categoryFilter.value = []
+  giftFilter.value = []
+}
+
+const allChannels = computed(() => view.value?.channels ?? [])
 const channels = computed(() =>
-  [...(view.value?.channels ?? [])].sort((a, b) =>
+  allChannels.value.filter(matchesFilters).sort((a, b) =>
     rank(a) - rank(b) || (b.live?.viewers ?? 0) - (a.live?.viewers ?? 0) || a.login.localeCompare(b.login)
   )
 )
@@ -130,6 +186,40 @@ async function confirmRemove() {
       :actions="[{ label: 'Choisir des catégories', to: '/giveaways/categories' }]"
     />
 
+    <div class="flex items-center gap-2 flex-wrap">
+      <USelectMenu
+        v-model="categoryFilter"
+        :items="categoryItems"
+        value-key="value"
+        multiple
+        icon="i-lucide-gamepad-2"
+        placeholder="Toutes les catégories"
+        :search-input="{ placeholder: 'Rechercher une catégorie' }"
+        class="w-72"
+      >
+        <template #item-leading="{ item }">
+          <img v-if="item.gameId" :src="boxArt(null, item.gameId)" alt="" class="w-4 h-5 rounded-sm object-cover">
+        </template>
+      </USelectMenu>
+      <USelectMenu
+        v-model="giftFilter"
+        :items="giftItems"
+        value-key="value"
+        multiple
+        icon="i-lucide-gift"
+        placeholder="Tous les cadeaux"
+        :search-input="{ placeholder: 'Rechercher un cadeau' }"
+        class="w-72"
+      >
+        <template #item-leading="{ item }">
+          <img v-if="item.image" :src="item.image" referrerpolicy="no-referrer" alt="" class="size-5 rounded object-contain bg-elevated">
+          <UIcon v-else name="i-lucide-gift" class="size-5 text-muted" />
+        </template>
+      </USelectMenu>
+      <UButton v-if="filtering" label="Effacer les filtres" icon="i-lucide-x" size="sm" color="neutral" variant="ghost" @click="clearFilters" />
+      <span v-if="filtering" class="text-sm text-muted">{{ channels.length }} chaîne(s) sur {{ allChannels.length }}</span>
+    </div>
+
     <form class="flex gap-2" @submit.prevent="addChannel">
       <UInput id="new-giveaway-channel" v-model="newChannel" placeholder="Nom ou adresse de la chaîne (ex. lunarsea)" class="flex-1" icon="i-lucide-plus" />
       <UButton type="submit" label="Ajouter" :loading="adding" />
@@ -198,16 +288,15 @@ async function confirmRemove() {
               <span v-else class="text-muted">—</span>
             </td>
             <td class="px-3 py-2">
-              <div class="flex items-center gap-1">
-                <UTooltip v-for="x in giftsOf(c).slice(0, 4)" :key="x.gift.id" :text="x.attached ? `${x.gift.title} (rattaché au giveaway)` : `${x.gift.title} (repéré)`">
+              <div class="flex flex-wrap items-center gap-1 min-w-36 max-w-80">
+                <UTooltip v-for="x in channelGifts(c)" :key="x.gift.id" :text="x.attached ? `${x.gift.title} (rattaché au giveaway)` : `${x.gift.title} (repéré)`">
                   <span class="relative">
                     <img v-if="x.gift.image" :src="x.gift.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
                     <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
                     <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
                   </span>
                 </UTooltip>
-                <span v-if="giftsOf(c).length > 4" class="text-xs text-muted">+{{ giftsOf(c).length - 4 }}</span>
-                <span v-if="giftsOf(c).length === 0" class="text-muted">—</span>
+                <span v-if="channelGifts(c).length === 0" class="text-muted">—</span>
               </div>
             </td>
             <td class="px-3 py-2">
@@ -255,7 +344,9 @@ async function confirmRemove() {
             </td>
           </tr>
           <tr v-if="channels.length === 0">
-            <td colspan="10" class="px-3 py-8 text-center text-muted">Aucune chaîne surveillée. Ajoute la première avec le champ ci-dessus.</td>
+            <td colspan="10" class="px-3 py-8 text-center text-muted">
+              {{ filtering ? 'Aucune chaîne ne correspond aux filtres.' : 'Aucune chaîne surveillée. Ajoute la première avec le champ ci-dessus.' }}
+            </td>
           </tr>
         </tbody>
       </table>

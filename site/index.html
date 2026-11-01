@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Twitch Desk</title>
+  <meta name="description" content="Application Windows pour suivre les giveaways Twitch, récolter les points de chaîne et StreamElements, récupérer les drops, sur plusieurs comptes.">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <style>
+    :root {
+      --bg: #0f0d17;
+      --surface: #181523;
+      --surface-2: #211d30;
+      --border: #2e2943;
+      --text: #ece9f6;
+      --muted: #a39dba;
+      --accent: #7c5cff;
+      --accent-strong: #9277ff;
+      --gold: #ffc94d;
+      --radius: 14px;
+      color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f7f6fb;
+        --surface: #ffffff;
+        --surface-2: #f0edf9;
+        --border: #e2ddf0;
+        --text: #1d1930;
+        --muted: #635d7a;
+        --accent: #5b3fd0;
+        --accent-strong: #4a2fc0;
+        color-scheme: light;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    a { color: var(--accent-strong); }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+
+    header.hero {
+      padding: 72px 0 56px;
+      background:
+        radial-gradient(900px 380px at 20% -10%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 70%),
+        radial-gradient(600px 300px at 90% 0%, color-mix(in srgb, var(--gold) 12%, transparent), transparent 70%);
+      border-bottom: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: 16px; }
+    .brand img { width: 64px; height: 64px; }
+    h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.1; margin: 0; letter-spacing: -0.02em; }
+    .tagline { font-size: 1.2rem; color: var(--muted); max-width: 46rem; margin: 20px 0 32px; }
+    .cta { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+    .button {
+      display: inline-flex; align-items: center; gap: 10px;
+      background: var(--accent); color: #fff; text-decoration: none; font-weight: 600;
+      padding: 14px 24px; border-radius: 12px;
+      box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+    .button:hover { background: var(--accent-strong); }
+    .button svg { width: 20px; height: 20px; }
+    .release { color: var(--muted); font-size: 0.95rem; }
+    .release strong { color: var(--text); }
+    .other { margin-top: 14px; font-size: 0.9rem; color: var(--muted); }
+
+    section { padding: 56px 0 8px; }
+    h2 { font-size: 1.5rem; margin: 0 0 6px; letter-spacing: -0.01em; }
+    .lead { color: var(--muted); margin: 0 0 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px 22px;
+    }
+    .card h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-size: 1.08rem; }
+    .card h3 .icon {
+      display: inline-flex; width: 34px; height: 34px; border-radius: 9px; align-items: center; justify-content: center;
+      background: var(--surface-2); color: var(--accent-strong); font-size: 1.1rem; flex: none;
+    }
+    .card ul { margin: 0; padding-left: 1.1rem; color: var(--muted); }
+    .card li { margin: 4px 0; }
+    .card li strong { color: var(--text); font-weight: 600; }
+
+    .steps { counter-reset: step; display: grid; gap: 12px; padding: 0; list-style: none; margin: 0; }
+    .steps li {
+      counter-increment: step; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 18px 14px 60px; position: relative; color: var(--muted);
+    }
+    .steps li::before {
+      content: counter(step); position: absolute; left: 18px; top: 13px;
+      width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff;
+      display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.9rem;
+    }
+    .steps strong { color: var(--text); }
+
+    footer { margin-top: 56px; padding: 28px 0 40px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.9rem; }
+    footer p { margin: 4px 0; }
+    code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <div class="brand">
+        <img src="icon.svg" alt="">
+        <h1>Twitch Desk</h1>
+      </div>
+      <p class="tagline">
+        L'application Windows pour suivre les giveaways Twitch, récolter tes points de chaîne et StreamElements,
+        récupérer tes drops, sur plusieurs comptes à la fois. Elle tourne discrètement dans la zone de notification.
+      </p>
+      <div class="cta">
+        <a id="download" class="button" href="https://github.com/powange/twitch-desk/releases/latest">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+          Télécharger pour Windows
+        </a>
+        <span id="release" class="release">Dernière version sur GitHub</span>
+      </div>
+      <p class="other">
+        Windows 10 et 11 (64 bits). Aussi pour Linux :
+        <a id="appimage" href="https://github.com/powange/twitch-desk/releases/latest">AppImage</a> ·
+        <a id="deb" href="https://github.com/powange/twitch-desk/releases/latest">.deb</a>.
+        Les mises à jour s'installent ensuite depuis l'application.
+      </p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section>
+      <h2>Fonctionnalités</h2>
+      <p class="lead">Tout ce que fait la dernière version.</p>
+      <div class="grid">
+        <article class="card">
+          <h3><span class="icon">🎁</span>Giveaways</h3>
+          <ul>
+            <li><strong>Détection automatique</strong> dans le chat des chaînes surveillées : commande reprise par les spectateurs, lien StreamElements</li>
+            <li><strong>Gagnants</strong> annoncés par les bots et <strong>mentions</strong> de tes pseudos repérés</li>
+            <li>File d'alertes, <strong>participation en un clic</strong> avec les comptes choisis, participation automatique en option</li>
+            <li>Fiche complète : type (commande, ticket, StreamElements, points de chaîne), conditions, heure du tirage avec rappel</li>
+            <li>Clôture automatique à la fin du live</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="icon">📺</span>Chaînes surveillées</h3>
+          <ul>
+            <li>Catégorie, spectateurs et titre du live de chaque chaîne</li>
+            <li><strong>Giveaway en cours</strong> et <strong>cadeaux repérés</strong> dans le titre, la description, le message épinglé ou le giveaway StreamElements</li>
+            <li>Chaînes intéressantes en tête de liste, filtres par catégorie et par cadeau</li>
+            <li>Ajout du giveaway de la chaîne en un clic</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="icon">📡</span>Scanner</h3>
+          <ul>
+            <li>Parcourt les lives de tes catégories et garde ceux dont le titre annonce un giveaway</li>
+            <li>Mots-clés et catégories à cocher, langues, spectateurs minimum</li>
+            <li>Type de giveaway et cadeaux détectés, colonnes triables</li>
+            <li>Scan automatique toutes les 3 minutes avec notification des nouveaux streams</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="icon">🏆</span>Cadeaux et gains</h3>
+          <ul>
+            <li>Catalogue de cadeaux rangé par catégorie Twitch et par groupe, avec image et mots-clés</li>
+            <li>Cadeaux <strong>suggérés automatiquement</strong> à la création d'un giveaway</li>
+            <li>Page <strong>Mes gains</strong> : lots reçus ou en attente, note (clé, code…)</li>
+            <li>Export et import du catalogue</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="icon">💜</span>Points de chaîne</h3>
+          <ul>
+            <li><strong>Visionnage simulé</strong>, sans lecteur ni vidéo téléchargée : très peu de ressources</li>
+            <li>Bonus récupéré automatiquement, gains du jour par chaîne</li>
+            <li>Ordre des chaînes par glisser-déposer, chaînes d'un giveaway par points prioritaires</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="icon">⭐</span>StreamElements</h3>
+          <ul>
+            <li>Points gagnés par la présence dans le chat, au rythme de chaque streamer</li>
+            <li>Solde, règle de gain et giveaway en cours de chaque chaîne</li>
+            <li>Avec ton compte StreamElements : <strong>tickets achetés</strong> et achat depuis l'application</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="icon">🎮</span>Drops</h3>
+          <ul>
+            <li>Jeux souhaités par ordre de priorité, même sans campagne en cours</li>
+            <li>Visionnage d'un stream où la campagne est active</li>
+            <li><strong>Réclamation automatique</strong> de chaque drop terminé</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="icon">🔔</span>Alertes</h3>
+          <ul>
+            <li>Notifications Windows : giveaway détecté, victoire, mention, rappel de tirage, stream repéré</li>
+            <li><strong>Alertes sonores</strong>, un son par type d'alerte, volume réglable</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="icon">🔄</span>Synchronisation</h3>
+          <ul>
+            <li>Mets en commun cadeaux, groupes, giveaways, chaînes surveillées et fiches des streamers avec d'autres utilisateurs</li>
+            <li>Via ton propre serveur (Docker), protégé par un code ; le serveur choisit ce qui est partagé</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="icon">👥</span>Plusieurs comptes</h3>
+          <ul>
+            <li>Connexion par code d'appareil (twitch.tv/activate), jetons dans le Gestionnaire d'identification Windows</li>
+            <li>Points, drops et participations gérés pour chaque compte</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="icon">⚙️</span>Au quotidien</h3>
+          <ul>
+            <li>Démarrage avec Windows, fenêtre cachée dans la zone de notification</li>
+            <li><strong>Mises à jour automatiques</strong> signées, installées en un clic</li>
+            <li>Thème clair ou sombre</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Installation</h2>
+      <p class="lead">Quelques minutes, une seule fois.</p>
+      <ol class="steps">
+        <li><strong>Télécharge l'installateur</strong> avec le bouton ci-dessus et lance-le.</li>
+        <li>Si Windows affiche « Windows a protégé votre ordinateur », clique sur <strong>Informations complémentaires</strong> puis <strong>Exécuter quand même</strong> : l'installateur n'a pas de certificat Microsoft payant.</li>
+        <li>Dans l'application, <strong>Comptes → Ajouter un compte</strong>, puis entre le code affiché sur twitch.tv/activate.</li>
+        <li>Choisis tes chaînes dans Points de chaîne, StreamElements, Drops ou Giveaways : tout se lance tout seul.</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <p><a href="https://github.com/powange/twitch-desk">Code source sur GitHub</a> · <a href="https://github.com/powange/twitch-desk/releases">Toutes les versions</a></p>
+      <p>Projet indépendant, sans lien avec Twitch ni StreamElements.</p>
+    </div>
+  </footer>
+
+  <script>
+    // Dernière version publiée : lien direct vers l'installateur Windows
+    (async () => {
+      try {
+        const res = await fetch('https://api.github.com/repos/powange/twitch-desk/releases/latest')
+        if (!res.ok) return
+        const release = await res.json()
+        const find = suffix => release.assets.find(a => a.name.endsWith(suffix))
+        const exe = find('-setup.exe')
+        if (exe) document.getElementById('download').href = exe.browser_download_url
+        const appimage = find('.AppImage')
+        if (appimage) document.getElementById('appimage').href = appimage.browser_download_url
+        const deb = find('.deb')
+        if (deb) document.getElementById('deb').href = deb.browser_download_url
+        const date = new Date(release.published_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
+        const size = exe ? ` · ${(exe.size / 1024 / 1024).toFixed(1)} Mo` : ''
+        const label = document.getElementById('release')
+        label.textContent = ''
+        const strong = document.createElement('strong')
+        strong.textContent = `Version ${release.tag_name.replace(/^v/, '')}`
+        label.append(strong, ` du ${date}${size}`)
+      } catch {
+        // Hors ligne ou limite de l'API : le bouton mène à la page des versions
+      }
+    })()
+  </script>
+</body>
+</html>

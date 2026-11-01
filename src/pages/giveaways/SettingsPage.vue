@@ -2,6 +2,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
+import { SOUND_ALERTS, playSoundAlert } from '../../composables/useSoundAlerts'
+import type { SoundAlertKind } from '../../composables/useSoundAlerts'
 import type { Settings } from '../../types'
 
 const { accounts } = useSnapshot()
@@ -28,6 +30,15 @@ const autoAccountsModel = computed({
   }
 })
 
+function soundOn(kind: SoundAlertKind) {
+  return settings.value?.soundEvents.includes(kind) ?? false
+}
+function setSound(kind: SoundAlertKind, on: boolean) {
+  if (!settings.value) return
+  const rest = settings.value.soundEvents.filter(k => k !== kind)
+  settings.value.soundEvents = on ? [...rest, kind] : rest
+}
+
 const confirmAuto = ref(false)
 function setAuto(value: boolean) {
   if (!settings.value) return
@@ -48,6 +59,33 @@ function setAuto(value: boolean) {
         </div>
         <USwitch v-model="settings.notifications" aria-label="Notifications Windows" />
       </div>
+      <div class="flex items-center justify-between gap-4 px-4 py-3">
+        <div>
+          <div class="font-medium">Alertes sonores</div>
+          <div class="text-sm text-muted">Un son différent pour chaque type d'alerte, même fenêtre cachée.</div>
+        </div>
+        <USwitch v-model="settings.soundAlerts" aria-label="Alertes sonores" />
+      </div>
+      <template v-if="settings.soundAlerts">
+        <div class="flex items-center justify-between gap-4 px-4 py-3">
+          <div class="font-medium">Volume</div>
+          <div class="flex items-center gap-3 w-72">
+            <UIcon name="i-lucide-volume-1" class="size-4 text-muted" />
+            <USlider v-model="settings.soundVolume" :min="5" :max="100" :step="5" aria-label="Volume des alertes" class="flex-1" />
+            <span class="w-10 text-right text-sm tabular-nums">{{ settings.soundVolume }} %</span>
+          </div>
+        </div>
+        <div v-for="a in SOUND_ALERTS" :key="a.kind" class="flex items-center justify-between gap-4 px-4 py-2.5 pl-8">
+          <div>
+            <div class="text-sm font-medium">{{ a.label }}</div>
+            <div class="text-xs text-muted">{{ a.hint }}</div>
+          </div>
+          <div class="flex items-center gap-2">
+            <UButton icon="i-lucide-play" size="xs" color="neutral" variant="ghost" :aria-label="`Écouter : ${a.label}`" title="Écouter" @click="playSoundAlert(a.kind, settings.soundVolume)" />
+            <USwitch :model-value="soundOn(a.kind)" :aria-label="`Son : ${a.label}`" @update:model-value="v => setSound(a.kind, v)" />
+          </div>
+        </div>
+      </template>
       <div class="flex items-center justify-between gap-4 px-4 py-3">
         <div>
           <div class="font-medium">Participation automatique</div>

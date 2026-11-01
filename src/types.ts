@@ -167,6 +167,11 @@ export interface Settings {
   scannerLanguages: string[]
   scannerMinViewers: number
   scannerAuto: boolean
+  soundAlerts: boolean
+  // Volume des alertes, de 0 à 100
+  soundVolume: number
+  // Alertes avec un son : giveaway, win, mention, reminder, scanner
+  soundEvents: string[]
 }
 
 export type ChannelList = 'points' | 'se'
