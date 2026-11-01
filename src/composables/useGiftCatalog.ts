@@ -36,11 +36,21 @@ export function useKnownCategories() {
   })
 }
 
-// Cadeaux dont un mot-clé apparaît dans le texte (titre d'un live)
+// Cadeaux dont le titre ou un mot-clé apparaît dans le texte (titre d'un live, description…),
+// sans tenir compte des majuscules ni des accents, au début d'un mot (« key » trouve « keys »,
+// pas « monkey »)
 export function suggestGifts(gifts: Gift[], text: string | null | undefined): Gift[] {
   if (!text) return []
   const t = normalize(text)
-  return gifts.filter(g => g.keywords.some(k => k && t.includes(normalize(k))))
+  return gifts.filter(g => [g.title, ...g.keywords].some(term => startsWord(t, normalize(term))))
+}
+
+function startsWord(text: string, term: string) {
+  const words = term.trim().split(/\s+/).filter(Boolean)
+  if (!words.length) return false
+  // Plusieurs mots : séparés par n'importe quels espaces dans le texte
+  const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')
+  return new RegExp(`(?<![\\p{L}\\p{N}])${pattern}`, 'u').test(text)
 }
 
 function normalize(s: string) {

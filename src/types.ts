@@ -77,6 +77,15 @@ export interface Snapshot {
   // Langue de diffusion des chaînes (login → code ISO 639-1)
   languages: Record<string, string>
   scanner: ScannerView
+  // Chaînes surveillées en live : giveaway StreamElements actif, description, message épinglé
+  insights: Record<string, ChannelInsight>
+}
+
+export interface ChannelInsight {
+  description: string | null
+  pinnedMessage: string | null
+  streamelements: { title: string, description: string, command: string | null, cost: number } | null
+  checkedAt: string | null
 }
 
 export interface ScanMatch {

@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod drops;
 mod giveaways;
+mod insights;
 mod miner;
 mod scanner;
 mod secrets;
@@ -108,6 +109,7 @@ pub fn run() {
             state.spawn_emitter();
             state.spawn_languages();
             scanner::spawn(state.clone());
+            insights::spawn(state.clone());
             Ok(())
         })
         .on_window_event(|window, event| {

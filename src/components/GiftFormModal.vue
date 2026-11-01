@@ -303,7 +303,7 @@ async function save() {
           </div>
         </UFormField>
 
-        <UFormField label="Mots-clés" help="Si l'un d'eux apparaît dans le titre du live, le cadeau est proposé à la création du giveaway">
+        <UFormField label="Mots-clés" help="Le titre du cadeau compte aussi. Cherchés au début des mots (majuscules et accents ignorés) dans le titre du live, la description et le message épinglé de la chaîne, et le giveaway StreamElements">
           <div class="flex flex-wrap items-center gap-1.5">
             <UBadge v-for="k in keywords" :key="k" color="neutral" variant="subtle">
               {{ k }}

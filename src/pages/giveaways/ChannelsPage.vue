@@ -3,9 +3,12 @@ import { computed, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
-import { channelUrl, formatNumber } from '../../utils/format'
-import type { GiveawayChannelView } from '../../types'
+import { boxArt, channelUrl, formatNumber } from '../../utils/format'
+import type { Gift, GiveawayChannelView, GiveawayView } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
+import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
+import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
+import { GIVEAWAY_KIND } from '../../utils/giveaways'
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
@@ -13,18 +16,56 @@ const openExternal = useOpenExternal()
 
 const view = computed(() => snapshot.value?.giveaways)
 const hasCategories = computed(() => (view.value?.games.length ?? 0) > 0)
+const { gifts, byId } = useGiftCatalog()
 
-// En live dans une catégorie choisie, puis en live ailleurs, puis hors ligne ; plus regardées d'abord
+// --- Ce qui rend une chaîne intéressante : giveaway en cours, cadeaux repérés ---
+const insightOf = (c: GiveawayChannelView) => (c.live ? snapshot.value?.insights[c.login] : undefined)
+// Giveaway ouvert connu de la chaîne (le plus récent)
+function openGiveaway(c: GiveawayChannelView): GiveawayView | undefined {
+  return view.value?.giveaways.find(g => g.open && g.channel === c.login)
+}
+// Type en cours : giveaway ouvert connu, sinon giveaway StreamElements actif pas encore ajouté
+function currentKind(c: GiveawayChannelView) {
+  const g = openGiveaway(c)
+  if (g) return { kind: g.kind, command: g.command, added: true }
+  const se = insightOf(c)?.streamelements
+  if (se) return { kind: 'streamelements' as const, command: se.command, added: false }
+  return null
+}
+// Cadeaux du giveaway ouvert, puis ceux repérés dans le titre du live, la description,
+// le message épinglé et le giveaway StreamElements actif
+function giftsOf(c: GiveawayChannelView): { gift: Gift, attached: boolean }[] {
+  const attached = (openGiveaway(c)?.giftIds ?? []).map(id => byId.value.get(id)).filter((g): g is Gift => !!g)
+  const i = insightOf(c)
+  const text = c.live ? [c.live.title, i?.description, i?.pinnedMessage, i?.streamelements?.title, i?.streamelements?.description].filter(Boolean).join('\n') : ''
+  const found = suggestGifts(gifts.value, text).filter(g => !attached.some(a => a.id === g.id))
+  return [...attached.map(gift => ({ gift, attached: true })), ...found.map(gift => ({ gift, attached: false }))]
+}
+const interesting = (c: GiveawayChannelView) => !!c.live && c.inCategory && (currentKind(c) !== null || giftsOf(c).length > 0)
+
+// En live dans une catégorie choisie (giveaway ou cadeaux repérés d'abord), puis en live
+// ailleurs, puis hors ligne ; plus regardées d'abord
 function rank(c: GiveawayChannelView): number {
-  if (c.live && c.inCategory) return 0
-  if (c.live) return 1
-  return c.liveChecked ? 2 : 3
+  if (interesting(c)) return 0
+  if (c.live && c.inCategory) return 1
+  if (c.live) return 2
+  return c.liveChecked ? 3 : 4
 }
 const channels = computed(() =>
   [...(view.value?.channels ?? [])].sort((a, b) =>
     rank(a) - rank(b) || (b.live?.viewers ?? 0) - (a.live?.viewers ?? 0) || a.login.localeCompare(b.login)
   )
 )
+
+// --- Ajout ou modification du giveaway de la chaîne ---
+const formOpen = ref(false)
+const editing = ref<GiveawayView | null>(null)
+const formChannel = ref<string | null>(null)
+function openForm(c: GiveawayChannelView) {
+  editing.value = openGiveaway(c) ?? null
+  formChannel.value = c.login
+  formOpen.value = true
+}
 
 function status(c: GiveawayChannelView): { label: string, color: 'success' | 'warning' | 'neutral', hint: string } {
   if (c.live && c.inCategory) return { label: 'En live', color: 'success', hint: 'Giveaways surveillés' }
@@ -100,29 +141,74 @@ async function confirmRemove() {
           <tr>
             <th class="text-left px-3 py-2">Chaîne</th>
             <th class="text-left px-3 py-2">État</th>
+            <th class="text-left px-3 py-2">Catégorie</th>
+            <th class="text-right px-3 py-2">Spectateurs</th>
+            <th class="text-left px-3 py-2">Titre du live</th>
+            <th class="text-left px-3 py-2">Giveaway</th>
+            <th class="text-left px-3 py-2">Cadeaux</th>
             <th class="text-left px-3 py-2">Chat lu par</th>
             <th class="text-left px-3 py-2">Commandes ignorées</th>
             <th class="px-3 py-2" />
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in channels" :key="c.id" class="border-t border-default" :class="c.live && !c.inCategory ? 'opacity-70' : ''">
-            <td class="px-3 py-2 min-w-0">
-              <div class="flex items-center gap-1.5">
+          <tr
+            v-for="c in channels"
+            :key="c.id"
+            class="border-t border-default"
+            :class="[c.live && !c.inCategory ? 'opacity-70' : '', interesting(c) ? 'bg-primary/5 shadow-[inset_3px_0_0_var(--ui-primary)]' : '']"
+          >
+            <td class="px-3 py-2">
+              <div class="flex items-center gap-1.5 whitespace-nowrap">
                 <ChannelFlag :login="c.login" />
                 <button class="font-medium hover:underline" @click="openExternal(channelUrl(c.login))">{{ c.login }}</button>
-              </div>
-              <div v-if="c.live" class="flex items-center gap-1.5 text-xs text-muted">
-                <span class="truncate max-w-[220px]" :title="c.live.gameName ?? 'Sans catégorie'">{{ c.live.gameName ?? 'Sans catégorie' }}</span>
-                <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(c.live.viewers)} spectateurs`">
-                  <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(c.live.viewers) }}
-                </span>
               </div>
             </td>
             <td class="px-3 py-2">
               <UTooltip :text="status(c).hint" :disabled="!status(c).hint">
                 <UBadge :label="status(c).label" :color="status(c).color" variant="subtle" class="whitespace-nowrap" />
               </UTooltip>
+            </td>
+            <td class="px-3 py-2">
+              <div v-if="c.live" class="flex items-center gap-1.5 whitespace-nowrap">
+                <img v-if="c.live.gameId" :src="boxArt(null, c.live.gameId)" alt="" class="w-4 h-5 rounded-sm object-cover">
+                {{ c.live.gameName ?? 'Sans catégorie' }}
+              </div>
+              <span v-else class="text-muted">—</span>
+            </td>
+            <td class="px-3 py-2 text-right whitespace-nowrap">
+              <span v-if="c.live" class="inline-flex items-center gap-1 text-error"><UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(c.live.viewers) }}</span>
+              <span v-else class="text-muted">—</span>
+            </td>
+            <td class="px-3 py-2 min-w-64 max-w-md">
+              <span v-if="c.live" class="line-clamp-2" :title="c.live.title">{{ c.live.title }}</span>
+              <span v-else class="text-muted">—</span>
+            </td>
+            <td class="px-3 py-2 whitespace-nowrap">
+              <template v-if="currentKind(c)">
+                <div class="flex items-center gap-1.5">
+                  <UBadge :label="GIVEAWAY_KIND[currentKind(c)!.kind].label" :color="GIVEAWAY_KIND[currentKind(c)!.kind].color" variant="subtle" />
+                  <UTooltip v-if="!currentKind(c)!.added" text="Giveaway StreamElements actif, pas encore ajouté à tes giveaways">
+                    <UIcon name="i-lucide-sparkles" class="size-4 text-primary" />
+                  </UTooltip>
+                </div>
+                <div v-if="currentKind(c)!.command" class="font-mono text-xs mt-0.5">{{ currentKind(c)!.command }}</div>
+              </template>
+              <span v-else-if="c.live && !insightOf(c)" class="text-muted text-xs">Vérification…</span>
+              <span v-else class="text-muted">—</span>
+            </td>
+            <td class="px-3 py-2">
+              <div class="flex items-center gap-1">
+                <UTooltip v-for="x in giftsOf(c).slice(0, 4)" :key="x.gift.id" :text="x.attached ? `${x.gift.title} (rattaché au giveaway)` : `${x.gift.title} (repéré)`">
+                  <span class="relative">
+                    <img v-if="x.gift.image" :src="x.gift.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
+                    <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                    <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
+                  </span>
+                </UTooltip>
+                <span v-if="giftsOf(c).length > 4" class="text-xs text-muted">+{{ giftsOf(c).length - 4 }}</span>
+                <span v-if="giftsOf(c).length === 0" class="text-muted">—</span>
+              </div>
             </td>
             <td class="px-3 py-2">
               <UTooltip :text="c.reader === 'anonyme' ? 'Connexion anonyme commune (lecture seule)' : c.reader ? 'Connexion déjà présente pour StreamElements : pas de connexion en plus' : 'En cours de connexion'">
@@ -143,12 +229,33 @@ async function confirmRemove() {
                 </form>
               </div>
             </td>
-            <td class="px-3 py-2 text-right">
-              <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Ne plus surveiller" @click="toRemove = c" />
+            <td class="px-3 py-2">
+              <div class="flex justify-end items-center gap-1">
+                <UButton
+                  v-if="openGiveaway(c)"
+                  label="Modifier le giveaway"
+                  icon="i-lucide-pencil"
+                  size="xs"
+                  color="neutral"
+                  variant="soft"
+                  class="whitespace-nowrap"
+                  @click="openForm(c)"
+                />
+                <UButton
+                  v-else
+                  label="Ajouter le giveaway"
+                  icon="i-lucide-plus"
+                  size="xs"
+                  :variant="interesting(c) ? 'solid' : 'soft'"
+                  class="whitespace-nowrap"
+                  @click="openForm(c)"
+                />
+                <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Ne plus surveiller" @click="toRemove = c" />
+              </div>
             </td>
           </tr>
           <tr v-if="channels.length === 0">
-            <td colspan="5" class="px-3 py-8 text-center text-muted">Aucune chaîne surveillée. Ajoute la première avec le champ ci-dessus.</td>
+            <td colspan="10" class="px-3 py-8 text-center text-muted">Aucune chaîne surveillée. Ajoute la première avec le champ ci-dessus.</td>
           </tr>
         </tbody>
       </table>
@@ -157,6 +264,8 @@ async function confirmRemove() {
       Une chaîne où l'un de tes comptes est déjà présent pour StreamElements est lue via cette connexion. Les autres sont lues par une seule connexion anonyme commune, qui n'apparaît pour aucun de tes comptes.
       Une commande ignorée (ex. <span class="font-mono">!points</span>) ne déclenche jamais d'alerte. Quand une chaîne passe hors ligne, ses giveaways ouverts sont clos.
     </p>
+
+    <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" :channel="formChannel" />
 
     <UModal :open="toRemove !== null" title="Ne plus surveiller la chaîne ?" @update:open="v => { if (!v) toRemove = null }">
       <template #body>

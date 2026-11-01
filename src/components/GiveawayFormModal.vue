@@ -11,7 +11,8 @@ import { GIVEAWAY_KIND_ITEMS } from '../utils/giveaways'
 import type { GiveawayInput, GiveawayView } from '../types'
 
 // Création (giveaway = null) ou modification d'une fiche de giveaway
-const props = defineProps<{ giveaway: GiveawayView | null }>()
+// channel : chaîne pré-remplie pour un nouveau giveaway
+const props = defineProps<{ giveaway: GiveawayView | null, channel?: string | null }>()
 const open = defineModel<boolean>('open', { required: true })
 
 const { snapshot } = useSnapshot()
@@ -64,7 +65,7 @@ const suggestion = ref<ChannelSuggestion | null>(null)
 
 // --- Cadeaux ---
 const giftSearch = ref('')
-// Cadeaux dont un mot-clé apparaît dans le titre du live, la description de la chaîne
+// Cadeaux dont le titre ou un mot-clé apparaît dans le titre du live, la description de la chaîne
 // ou son message épinglé (comme sur le site Giveaway Twitch)
 const suggestionText = computed(() => {
   const login = form.value.channel.trim().toLowerCase()
@@ -116,7 +117,7 @@ watch(open, (isOpen) => {
   if (props.giveaway) void inspect(props.giveaway.channel)
   const g = props.giveaway
   form.value = {
-    channel: g?.channel ?? '',
+    channel: g?.channel ?? props.channel ?? '',
     kind: g?.kind ?? 'command',
     command: g?.command ?? '',
     url: g?.url ?? '',
@@ -439,7 +440,7 @@ async function save() {
                   <span class="leading-tight line-clamp-2">{{ g.title }}</span>
                   <span v-if="g.gameName" class="text-xs text-muted truncate">{{ g.gameName }}</span>
                 </span>
-                <UIcon v-if="suggested.has(g.id)" name="i-lucide-sparkles" class="absolute top-1 right-1 size-3.5 text-primary" title="Suggéré : un mot-clé apparaît dans le titre, la description, le message épinglé ou le giveaway StreamElements de la chaîne" />
+                <UIcon v-if="suggested.has(g.id)" name="i-lucide-sparkles" class="absolute top-1 right-1 size-3.5 text-primary" title="Suggéré : le titre du cadeau ou un mot-clé apparaît dans le titre, la description, le message épinglé ou le giveaway StreamElements de la chaîne" />
               </button>
             </div>
             <p v-else class="text-sm text-muted">Catalogue vide : ajoute un cadeau avec « Nouveau cadeau ».</p>
