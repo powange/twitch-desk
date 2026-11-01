@@ -214,7 +214,10 @@ function createTile(channel) {
   player.addEventListener(Twitch.Player.PLAYING, () => {
     if (started) return
     started = true
-    if (pauseOthers && featured !== null && channel !== featured) player.pause()
+    if (pauseOthers && featured !== null && channel !== featured) {
+      player.pause()
+      autoPaused.add(channel)
+    }
   })
 }
 
@@ -260,6 +263,7 @@ function removeChannel(channel) {
   channels = channels.filter(c => c !== channel)
   chats.delete(channel)
   noVideo.delete(channel)
+  autoPaused.delete(channel)
   if (featured === channel) {
     featured = null
     applyPause()
@@ -299,12 +303,22 @@ const PAUSE_KEY = 'viewer-pause-others'
 let pauseOthers = false
 try { pauseOthers = localStorage.getItem(PAUSE_KEY) === '1' } catch { /* stockage indisponible */ }
 const pauseButton = document.getElementById('pause-others')
+// Streams mis en pause par l'option : seuls eux sont relancés ensuite (un stream mis en
+// pause à la main reste en pause)
+const autoPaused = new Set()
 function applyPause() {
   pauseButton.classList.toggle('on', pauseOthers)
   for (const [c, t] of tiles) {
     const paused = pauseOthers && featured !== null && c !== featured
-    if (paused) t.player.pause()
-    else if (t.player.isPaused()) t.player.play()
+    if (paused) {
+      if (!t.player.isPaused()) {
+        t.player.pause()
+        autoPaused.add(c)
+      }
+    } else if (autoPaused.has(c)) {
+      autoPaused.delete(c)
+      if (t.player.isPaused()) t.player.play()
+    }
   }
 }
 pauseButton.addEventListener('click', () => {

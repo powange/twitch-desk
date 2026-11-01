@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getVersion } from '@tauri-apps/api/app'
@@ -7,7 +7,8 @@ import type { NavigationMenuItem } from '@nuxt/ui'
 import { useSnapshot } from './composables/useSnapshot'
 import { useUpdater } from './composables/useUpdater'
 import { installSoundAlerts } from './composables/useSoundAlerts'
-import type { Settings } from './types'
+import { useSettings } from './composables/useSettings'
+import { installLogin } from './composables/useLogin'
 import UpdateBanner from './components/UpdateBanner.vue'
 import GiveawayFormModal from './components/GiveawayFormModal.vue'
 
@@ -55,6 +56,16 @@ async function togglePause() {
 }
 
 installSoundAlerts()
+// Connexion Twitch / StreamElements : suivie même en changeant de page
+installLogin()
+
+// Mises à jour automatiques : selon le réglage (chargé au démarrage, suivi s'il change)
+const { settings } = useSettings()
+watch(() => settings.value?.autoUpdate, (on) => {
+  if (on === undefined) return
+  if (on) updater.startAutoCheck()
+  else updater.stopAutoCheck()
+}, { immediate: true })
 
 // Fiche d'un streamer demandée depuis la fenêtre des streams
 const streamerOpen = ref(false)
@@ -71,8 +82,6 @@ void listen<string>('open-streamer', async (e) => {
 
 onMounted(async () => {
   version.value = await getVersion()
-  const settings = await invoke<Settings>('get_settings')
-  if (settings.autoUpdate) updater.startAutoCheck()
 })
 </script>
 

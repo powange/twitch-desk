@@ -3,10 +3,13 @@ import { computed, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../composables/useSnapshot'
 import { timeAgo } from '../utils/format'
+import { useAction } from '../composables/useAction'
 
 // Serveur de synchronisation partagé : adresse et code communiqués par celui qui l'héberge
 const { snapshot } = useSnapshot()
 const toast = useToast()
+const { run, busy } = useAction()
+const syncNow = () => run('sync', 'Synchronisation impossible', () => invoke('sync_now'))
 
 const COLLECTION_LABELS: Record<string, string> = {
   groups: 'Groupes de cadeaux',
@@ -144,7 +147,7 @@ async function save(value = wanted.value) {
         <UBadge :label="status.label" :color="status.color" variant="subtle" />
         <span v-if="syncView.lastSync" class="text-sm text-muted">Dernière synchronisation {{ timeAgo(syncView.lastSync) }}</span>
         <span class="flex-1" />
-        <UButton label="Synchroniser maintenant" icon="i-lucide-refresh-cw" size="sm" color="neutral" variant="soft" :loading="syncView.status === 'syncing'" @click="invoke('sync_now')" />
+        <UButton label="Synchroniser maintenant" icon="i-lucide-refresh-cw" size="sm" color="neutral" variant="soft" :loading="syncView.status === 'syncing' || busy('sync')" @click="syncNow" />
       </div>
       <p v-if="syncView.error" class="text-sm text-error">{{ syncView.error }}</p>
       <div v-if="offered.length" class="flex flex-col gap-2 pt-1">

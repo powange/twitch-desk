@@ -23,15 +23,16 @@ const gameName = ref<string | null>(null)
 const categoryInput = ref('')
 const resolving = ref(false)
 const knownCategories = useKnownCategories()
-async function chooseCategory() {
+// Renvoie false si la catégorie tapée n'a pas été trouvée
+async function chooseCategory(): Promise<boolean> {
   const value = categoryInput.value.trim()
-  if (!value) return
+  if (!value) return true
   const known = knownCategories.value.find(c => c.name.toLowerCase() === value.toLowerCase())
   if (known) {
     gameId.value = known.id
     gameName.value = known.name
     categoryInput.value = ''
-    return
+    return true
   }
   resolving.value = true
   try {
@@ -39,8 +40,10 @@ async function chooseCategory() {
     gameId.value = game.id
     gameName.value = game.name
     categoryInput.value = ''
+    return true
   } catch (e) {
     toast.add({ title: 'Catégorie introuvable', description: String(e), color: 'error' })
+    return false
   } finally {
     resolving.value = false
   }
@@ -182,7 +185,8 @@ async function save() {
   if (keywordInput.value.trim()) addKeyword()
   saving.value = true
   try {
-    if (categoryInput.value.trim()) await chooseCategory()
+    // Catégorie tapée introuvable : rien n'est enregistré (à corriger ou effacer d'abord)
+    if (categoryInput.value.trim() && !(await chooseCategory())) return
     const url = imageUrl.value.trim()
     if (url && !url.startsWith('https://')) {
       toast.add({ title: 'Adresse d\'image invalide', description: 'Elle doit commencer par https://', color: 'error' })

@@ -51,16 +51,48 @@ export function useKnownCategories() {
 // pas « monkey »)
 export function suggestGifts(gifts: Gift[], text: string | null | undefined): Gift[] {
   if (!text) return []
+  const cache = compiled(gifts)
+  const hit = cache.results.get(text)
+  if (hit) {
+    // Plus récemment utilisé : remis en fin de liste
+    cache.results.delete(text)
+    cache.results.set(text, hit)
+    return hit
+  }
   const t = normalize(text)
-  return gifts.filter(g => [g.title, ...g.keywords].some(term => startsWord(t, normalize(term))))
+  const found = cache.patterns.filter(p => p.res.some(re => re.test(t))).map(p => p.gift)
+  cache.results.set(text, found)
+  // Mémoire bornée : les textes les plus anciens oubliés
+  if (cache.results.size > MAX_RESULTS) cache.results.delete(cache.results.keys().next().value!)
+  return found
 }
 
-function startsWord(text: string, term: string) {
+// Expressions de chaque cadeau compilées une fois par version du catalogue (le tableau de
+// cadeaux change quand le catalogue est relu), résultats retenus par texte
+const MAX_RESULTS = 500
+interface Compiled { patterns: { gift: Gift, res: RegExp[] }[], results: Map<string, Gift[]> }
+const compiledCache = new WeakMap<Gift[], Compiled>()
+function compiled(gifts: Gift[]): Compiled {
+  let c = compiledCache.get(gifts)
+  if (!c) {
+    c = {
+      patterns: gifts.map(gift => ({
+        gift,
+        res: [gift.title, ...gift.keywords].map(term => wordStart(normalize(term))).filter((re): re is RegExp => !!re)
+      })),
+      results: new Map()
+    }
+    compiledCache.set(gifts, c)
+  }
+  return c
+}
+
+function wordStart(term: string): RegExp | null {
   const words = term.trim().split(/\s+/).filter(Boolean)
-  if (!words.length) return false
+  if (!words.length) return null
   // Plusieurs mots : séparés par n'importe quels espaces dans le texte
   const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')
-  return new RegExp(`(?<![\\p{L}\\p{N}])${pattern}`, 'u').test(text)
+  return new RegExp(`(?<![\\p{L}\\p{N}])${pattern}`, 'u')
 }
 
 function normalize(s: string) {

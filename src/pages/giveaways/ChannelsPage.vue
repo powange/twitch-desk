@@ -16,6 +16,7 @@ import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
 import ConditionCells from '../../components/conditions/ConditionCells.vue'
 import { useConditionActions } from '../../composables/useConditionActions'
 import type { ConditionTarget } from '../../composables/useConditionActions'
+import { useAction } from '../../composables/useAction'
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
@@ -28,18 +29,26 @@ const { gifts, byId } = useGiftCatalog()
 
 // --- Ce qui rend une chaîne intéressante : giveaway en cours, cadeaux repérés ---
 const insightOf = (c: GiveawayChannelView) => (c.live ? snapshot.value?.insights[c.login] : undefined)
-// Giveaway ouvert connu de la chaîne (le plus récent)
+// Giveaway ouvert connu de chaque chaîne (le plus récent : la liste commence par les plus récents),
+// indexé une fois par mise à jour
+const openByLogin = computed(() => {
+  const map = new Map<string, GiveawayView>()
+  for (const g of view.value?.giveaways ?? []) if (g.open && !map.has(g.channel)) map.set(g.channel, g)
+  return map
+})
 function openGiveaway(c: GiveawayChannelView): GiveawayView | undefined {
-  return view.value?.giveaways.find(g => g.open && g.channel === c.login)
+  return openByLogin.value.get(c.login)
 }
 // Type en cours : giveaway ouvert connu, sinon giveaway StreamElements actif pas encore ajouté
-function currentKind(c: GiveawayChannelView) {
+function kindOf(c: GiveawayChannelView) {
   const g = openGiveaway(c)
   if (g) return { kind: g.kind, command: g.command, added: true }
   const se = insightOf(c)?.streamelements
   if (se) return { kind: 'streamelements' as const, command: se.command, added: false }
   return null
 }
+const kindByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, kindOf(c)])))
+const currentKind = (c: GiveawayChannelView) => kindByLogin.value.get(c.login) ?? null
 // Cadeaux du giveaway ouvert, puis ceux repérés dans le titre du live, la description,
 // le message épinglé et le giveaway StreamElements actif
 function giftsOf(c: GiveawayChannelView): { gift: Gift, attached: boolean }[] {
@@ -150,7 +159,7 @@ async function loadStreamers() {
 onMounted(loadStreamers)
 // Fiche ou giveaway enregistré : conditions habituelles relues
 watch([formOpen, streamerOpen], ([a, b]) => { if (!a && !b) void loadStreamers() })
-function conditionsOf(c: GiveawayChannelView): ConditionTarget {
+function computeConditions(c: GiveawayChannelView): ConditionTarget {
   const g = openGiveaway(c)
   if (g) return g
   const s = streamers.value.get(c.login)
@@ -164,7 +173,10 @@ function conditionsOf(c: GiveawayChannelView): ConditionTarget {
     minChatMinutes: s?.minChatMinutes ?? null
   }
 }
-const cond = useConditionActions(() => (view.value?.channels ?? []).map(conditionsOf))
+// Conditions de chaque chaîne, calculées une fois par mise à jour
+const conditionsByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, computeConditions(c)])))
+const conditionsOf = (c: GiveawayChannelView) => conditionsByLogin.value.get(c.login) ?? computeConditions(c)
+const cond = useConditionActions(() => [...conditionsByLogin.value.values()])
 
 function status(c: GiveawayChannelView): { label: string, color: 'success' | 'warning' | 'neutral', hint: string } {
   if (c.live && c.inCategory) return { label: 'En live', color: 'success', hint: 'Giveaways surveillés' }
@@ -189,9 +201,12 @@ async function addChannel() {
   }
 }
 
-async function importChannels() {
-  const added = await invoke<number>('import_giveaway_channels')
-  toast.add({ title: added ? `${added} chaîne(s) ajoutée(s)` : 'Toutes tes chaînes sont déjà surveillées', color: 'success', icon: 'i-lucide-check' })
+const { run, busy } = useAction()
+function importChannels() {
+  return run('import', 'Import impossible', async () => {
+    const added = await invoke<number>('import_giveaway_channels')
+    toast.add({ title: added ? `${added} chaîne(s) ajoutée(s)` : 'Toutes tes chaînes sont déjà surveillées', color: 'success', icon: 'i-lucide-check' })
+  })
 }
 
 // Fiche du streamer : chaîne (Discord, notes, commandes ignorées) et conditions habituelles
@@ -208,9 +223,9 @@ function openStreamer(c: GiveawayChannelView) {
 
 const toRemove = ref<GiveawayChannelView | null>(null)
 async function confirmRemove() {
-  if (!toRemove.value) return
-  await invoke('remove_giveaway_channel', { id: toRemove.value.id })
-  toRemove.value = null
+  const c = toRemove.value
+  if (!c) return
+  if (await run('remove', 'Chaîne non retirée', () => invoke('remove_giveaway_channel', { id: c.id }))) toRemove.value = null
 }
 </script>
 
@@ -218,7 +233,7 @@ async function confirmRemove() {
   <div class="p-6 flex flex-col gap-5">
     <div class="flex items-center gap-3">
       <h1 class="text-xl font-semibold flex-1">Chaînes surveillées</h1>
-      <UButton label="Ajouter mes chaînes Points et StreamElements" icon="i-lucide-list-plus" size="sm" color="neutral" variant="soft" @click="importChannels" />
+      <UButton label="Ajouter mes chaînes Points et StreamElements" icon="i-lucide-list-plus" size="sm" color="neutral" variant="soft" :loading="busy('import')" @click="importChannels" />
     </div>
 
     <UAlert
@@ -409,7 +424,7 @@ async function confirmRemove() {
       <template #footer>
         <div class="flex justify-end gap-2 w-full">
           <UButton label="Annuler" color="neutral" variant="ghost" @click="toRemove = null" />
-          <UButton label="Retirer" color="error" @click="confirmRemove" />
+          <UButton label="Retirer" color="error" :loading="busy('remove')" @click="confirmRemove" />
         </div>
       </template>
     </UModal>

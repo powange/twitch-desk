@@ -2,22 +2,29 @@
 import type { ConditionActions, ConditionTarget } from '../../composables/useConditionActions'
 import SolidIcon from '../SolidIcon.vue'
 
-// Une cellule par condition : ? inconnu, picto si requis (cliquable pour agir), rien sinon
+// Une cellule par condition : ? inconnu, picto si requis (cliquable pour agir), rien sinon.
+// Les pictos non cliquables restent atteignables au clavier (tabindex) pour lire leur bulle.
 defineProps<{ target: ConditionTarget, actions: ConditionActions }>()
 </script>
 
 <template>
   <td class="px-2 py-2">
     <div class="flex justify-center items-center">
-      <span v-if="target.requirePresence === null" class="text-muted" title="On ne sait pas">?</span>
+      <UTooltip v-if="target.requirePresence === null" text="Présence au tirage : on ne sait pas">
+        <span class="text-muted rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Présence au tirage : on ne sait pas">?</span>
+      </UTooltip>
       <UTooltip v-else-if="target.requirePresence" text="Présence requise au moment du tirage">
-        <UIcon name="i-lucide-user-check" class="size-4 text-emerald-600 dark:text-emerald-400 block" />
+        <span class="inline-flex rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Présence requise au moment du tirage">
+          <UIcon name="i-lucide-user-check" class="size-4 text-emerald-600 dark:text-emerald-400 block" />
+        </span>
       </UTooltip>
     </div>
   </td>
   <td class="px-2 py-2">
     <div class="flex justify-center items-center">
-      <span v-if="target.requireDiscord === null" class="text-muted" title="On ne sait pas">?</span>
+      <UTooltip v-if="target.requireDiscord === null" text="Discord du streamer : on ne sait pas">
+        <span class="text-muted rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Discord du streamer : on ne sait pas">?</span>
+      </UTooltip>
       <UTooltip v-else-if="target.requireDiscord" text="Être sur le Discord du streamer : clique pour ouvrir son invitation">
         <button
           type="button"
@@ -33,29 +40,35 @@ defineProps<{ target: ConditionTarget, actions: ConditionActions }>()
   </td>
   <td class="px-2 py-2">
     <div class="flex justify-center items-center">
-      <span v-if="target.requireFollow === null" class="text-muted" title="On ne sait pas">?</span>
+      <UTooltip v-if="target.requireFollow === null" text="Follow requis : on ne sait pas">
+        <span class="text-muted rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Follow requis : on ne sait pas">?</span>
+      </UTooltip>
       <UTooltip v-else-if="target.requireFollow" :text="actions.followTooltip(target)">
         <button
           v-if="actions.notFollowing(target.channel).length"
           type="button"
           class="inline-flex text-warning hover:text-pink-500 disabled:opacity-50"
           :disabled="actions.following === target.channel"
-          :aria-label="`Suivre ${target.channel}`"
+          :aria-label="`${actions.followLabel(target)}. Suivre ${target.channel}`"
           @click="actions.followChannel(target.channel)"
         >
           <UIcon :name="actions.following === target.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="actions.following === target.channel ? 'animate-spin' : ''" />
         </button>
-        <SolidIcon v-else-if="actions.followOk(target)" name="heart" class="size-4 block text-success" />
-        <UIcon v-else name="i-lucide-heart" class="size-4 block" :class="actions.tooRecent(target).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'" />
+        <span v-else class="inline-flex rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" :aria-label="actions.followLabel(target)">
+          <SolidIcon v-if="actions.followOk(target)" name="heart" class="size-4 block text-success" />
+          <UIcon v-else name="i-lucide-heart" class="size-4 block" :class="actions.tooRecent(target).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'" />
+        </span>
       </UTooltip>
       <span v-if="target.requireFollow && target.followMinDays" class="text-xs text-muted ml-1 whitespace-nowrap">{{ target.followMinDays }} j</span>
     </div>
   </td>
   <td class="px-2 py-2">
     <div class="flex justify-center items-center">
-      <span v-if="target.requireGreeting === null" class="text-muted" title="On ne sait pas">?</span>
+      <UTooltip v-if="target.requireGreeting === null" text="Avoir dit bonjour : on ne sait pas">
+        <span class="text-muted rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Avoir dit bonjour : on ne sait pas">?</span>
+      </UTooltip>
       <UTooltip v-else-if="target.requireGreeting" :text="actions.greetingTooltip(target.channel)">
-        <span v-if="actions.greetedByAll(target.channel)" class="relative inline-flex text-success" aria-label="Bonjour déjà dit">
+        <span v-if="actions.greetedByAll(target.channel)" class="relative inline-flex text-success rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Bonjour déjà dit par tous tes comptes">
           <UIcon name="i-lucide-hand" class="size-4 block" />
           <UIcon name="i-lucide-check" class="absolute -bottom-1 -right-1.5 size-3 bg-default rounded-full" />
         </span>
@@ -74,9 +87,11 @@ defineProps<{ target: ConditionTarget, actions: ConditionActions }>()
   </td>
   <td class="px-2 py-2">
     <div class="flex justify-center items-center">
-      <span v-if="target.minChatMinutes === null" class="text-muted" title="On ne sait pas">?</span>
+      <UTooltip v-if="target.minChatMinutes === null" text="Temps de présence dans le chat : on ne sait pas">
+        <span class="text-muted rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Temps de présence dans le chat : on ne sait pas">?</span>
+      </UTooltip>
       <UTooltip v-else-if="target.minChatMinutes > 0" :text="`Présent dans le chat depuis au moins ${target.minChatMinutes} min`">
-        <span class="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 whitespace-nowrap">
+        <span class="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 whitespace-nowrap rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" :aria-label="`Présent dans le chat depuis au moins ${target.minChatMinutes} min`">
           <UIcon name="i-lucide-timer" class="size-4" />{{ target.minChatMinutes }} min
         </span>
       </UTooltip>

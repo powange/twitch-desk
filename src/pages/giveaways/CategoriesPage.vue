@@ -6,6 +6,7 @@ import { useOpenExternal } from '../../utils/external'
 import { boxArt } from '../../utils/format'
 import type { GiveawayGame } from '../../types'
 import CategorySearchInput from '../../components/CategorySearchInput.vue'
+import { useAction } from '../../composables/useAction'
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
@@ -38,8 +39,14 @@ async function addGame(value = input.value) {
   }
 }
 
-async function remove(game: GiveawayGame) {
-  await invoke('remove_giveaway_game', { id: game.id })
+// Retrait confirmé ; la dernière catégorie retirée, tout est surveillé
+const { run, busy } = useAction()
+const toRemove = ref<GiveawayGame | null>(null)
+const removingLast = computed(() => games.value.length === 1 && games.value[0]?.id === toRemove.value?.id)
+async function confirmRemove() {
+  const game = toRemove.value
+  if (!game) return
+  if (await run('remove', 'Catégorie non retirée', () => invoke('remove_giveaway_game', { id: game.id }))) toRemove.value = null
 }
 
 function categoryUrl(slug: string) {
@@ -71,9 +78,31 @@ function categoryUrl(slug: string) {
           <button class="font-medium hover:underline text-left truncate block max-w-full" @click="openExternal(categoryUrl(game.slug))">{{ game.name }}</button>
           <div class="text-xs text-muted">{{ liveCount.get(game.gameId) ?? 0 }} chaîne(s) en live</div>
         </div>
-        <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :aria-label="`Retirer ${game.name}`" @click="remove(game)" />
+        <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :aria-label="`Retirer ${game.name}`" @click="toRemove = game" />
       </div>
     </div>
     <p v-else class="text-sm text-muted">Aucune catégorie : les giveaways sont surveillés quel que soit le jeu.</p>
+
+    <UModal :open="toRemove !== null" title="Retirer la catégorie ?" @update:open="v => { if (!v) toRemove = null }">
+      <template #body>
+        <div class="flex flex-col gap-3">
+          <p>Les giveaways ne seront plus détectés sur les chaînes en live dans {{ toRemove?.name }}.</p>
+          <UAlert
+            v-if="removingLast"
+            icon="i-lucide-triangle-alert"
+            color="warning"
+            variant="subtle"
+            title="C'est la dernière catégorie"
+            description="Sans aucune catégorie, les giveaways sont surveillés quel que soit le jeu : toutes les chaînes en live déclencheront des alertes."
+          />
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Annuler" color="neutral" variant="ghost" @click="toRemove = null" />
+          <UButton :label="removingLast ? 'Retirer et tout surveiller' : 'Retirer'" color="error" :loading="busy('remove')" @click="confirmRemove" />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

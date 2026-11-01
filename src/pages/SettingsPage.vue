@@ -9,7 +9,7 @@ import { useUpdater } from '../composables/useUpdater'
 import { useSnapshot } from '../composables/useSnapshot'
 import SyncSettings from '../components/SyncSettings.vue'
 import LogViewer from '../components/LogViewer.vue'
-import type { Settings } from '../types'
+import { useSettings } from '../composables/useSettings'
 
 const toast = useToast()
 const updater = useUpdater()
@@ -17,7 +17,8 @@ const { snapshot } = useSnapshot()
 // « auto » suit le thème de Windows
 const { store: theme } = useColorMode()
 
-const settings = ref<Settings | null>(null)
+// Réglages partagés : enregistrés tout seuls peu après chaque modification
+const { settings } = useSettings()
 const autostart = ref(false)
 const version = ref('')
 const paths = ref<{ data: string, logs: string } | null>(null)
@@ -34,7 +35,6 @@ const themeItems = [
 ]
 
 onMounted(async () => {
-  settings.value = await invoke<Settings>('get_settings')
   version.value = await getVersion()
   paths.value = await invoke('get_paths')
   try {
@@ -43,17 +43,6 @@ onMounted(async () => {
     autostart.value = false
   }
 })
-
-watch(settings, async (value, old) => {
-  if (!value || !old) return
-  try {
-    await invoke('save_settings', { settings: value })
-    if (value.autoUpdate) updater.startAutoCheck()
-    else updater.stopAutoCheck()
-  } catch (e) {
-    toast.add({ title: 'Réglage non enregistré', description: String(e), color: 'error' })
-  }
-}, { deep: true })
 
 async function setAutostart(value: boolean) {
   try {

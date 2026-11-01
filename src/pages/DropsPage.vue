@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../composables/useSnapshot'
 import { useSelectedAccount } from '../composables/useSelectedAccount'
@@ -9,6 +9,8 @@ import { boxArt, formatNumber } from '../utils/format'
 import type { DropCampaign, DropGameStatus, DropGameView, TimedDrop } from '../types'
 import ChannelFlag from '../components/ChannelFlag.vue'
 import CategorySearchInput from '../components/CategorySearchInput.vue'
+import { useAction } from '../composables/useAction'
+import { useDragReorder } from '../composables/useDragReorder'
 
 const { accounts } = useSnapshot()
 const toast = useToast()
@@ -16,6 +18,7 @@ const openExternal = useOpenExternal()
 
 const { account } = useSelectedAccount()
 const drops = computed(() => account.value?.drops)
+const { run, busy } = useAction()
 
 // --- Jeux souhaités ---
 const newGame = ref('')
@@ -35,15 +38,14 @@ async function addGame(input = newGame.value) {
   }
 }
 
-async function setGameEnabled(game: DropGameView, enabled: boolean) {
-  await invoke('set_drop_game_enabled', { id: game.id, enabled })
-}
+const setGameEnabled = (game: DropGameView, enabled: boolean) =>
+  run(`game-${game.id}`, 'Jeu non modifié', () => invoke('set_drop_game_enabled', { id: game.id, enabled }))
 
 const toRemove = ref<DropGameView | null>(null)
 async function confirmRemove() {
-  if (!toRemove.value) return
-  await invoke('remove_drop_game', { id: toRemove.value.id })
-  toRemove.value = null
+  const game = toRemove.value
+  if (!game) return
+  if (await run('remove', 'Jeu non retiré', () => invoke('remove_drop_game', { id: game.id }))) toRemove.value = null
 }
 
 const STATUS: Record<DropGameStatus, { label: string, color: 'success' | 'warning' | 'neutral' | 'info' | 'primary', hint: string }> = {
@@ -56,72 +58,13 @@ const STATUS: Record<DropGameStatus, { label: string, color: 'success' | 'warnin
   disabled: { label: 'Désactivé', color: 'neutral', hint: '' }
 }
 
-// Glisser-déposer par la poignée (même principe que la page Points de chaîne)
+// Glisser-déposer par la poignée, ou Alt+flèches (même principe que la page Points de chaîne)
 const games = computed(() => drops.value?.games ?? [])
-const grabbed = ref<number | null>(null)
-const dragging = ref<number | null>(null)
-const preview = ref<number[] | null>(null)
-const pending = ref<number[] | null>(null)
-let pendingTimer: ReturnType<typeof setTimeout> | null = null
-
-const orderedGames = computed(() => {
-  const order = preview.value ?? pending.value
-  if (!order) return games.value
-  const byId = new Map(games.value.map(g => [g.id, g]))
-  const list = order.map(id => byId.get(id)).filter((g): g is DropGameView => !!g)
-  return [...list, ...games.value.filter(g => !order.includes(g.id))]
-})
-
-watch(games, (list) => {
-  if (pending.value && list.map(g => g.id).join() === pending.value.join()) clearPending()
-})
-
-function clearPending() {
-  pending.value = null
-  if (pendingTimer) clearTimeout(pendingTimer)
-  pendingTimer = null
-}
-
-function onDragStart(event: DragEvent, game: DropGameView) {
-  dragging.value = game.id
-  preview.value = games.value.map(g => g.id)
-  event.dataTransfer?.setData('text/plain', game.name)
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
-}
-
-function onDragOver(event: DragEvent, target: DropGameView) {
-  if (dragging.value === null || !preview.value) return
-  event.preventDefault()
-  if (target.id === dragging.value) return
-  const ids = [...preview.value]
-  ids.splice(ids.indexOf(dragging.value), 1)
-  ids.splice(ids.indexOf(target.id), 0, dragging.value)
-  preview.value = ids
-}
-
-async function onDrop(event: DragEvent) {
-  event.preventDefault()
-  const ids = preview.value
-  const changed = ids && ids.some((id, i) => id !== games.value[i]?.id)
-  if (changed) {
-    pending.value = ids
-    pendingTimer = setTimeout(clearPending, 5000)
-  }
-  endDrag()
-  if (changed && account.value) {
-    try {
-      await invoke('reorder_drop_games', { accountId: account.value.id, ids })
-    } catch {
-      clearPending()
-    }
-  }
-}
-
-function endDrag() {
-  dragging.value = null
-  grabbed.value = null
-  preview.value = null
-}
+const { grabbed, dragging, ordered: orderedGames, onDragStart, onDragOver, onDrop, endDrag, onHandleKeydown } = useDragReorder(
+  () => games.value,
+  ids => account.value ? invoke('reorder_drop_games', { accountId: account.value.id, ids }) : Promise.resolve(),
+  'Ordre non enregistré'
+)
 
 // --- Campagnes ---
 const campaigns = computed(() => drops.value?.campaigns ?? [])
@@ -162,8 +105,13 @@ function rewardNames(drop: TimedDrop) {
   return drop.rewards.map(r => r.name).join(', ') || drop.name
 }
 
-async function setDropsEnabled(enabled: boolean) {
-  if (account.value) await invoke('set_drops_enabled', { id: account.value.id, enabled })
+function setDropsEnabled(enabled: boolean) {
+  const a = account.value
+  if (a) void run('drops', 'Drops non activés', () => invoke('set_drops_enabled', { id: a.id, enabled }))
+}
+function refreshDrops() {
+  const a = account.value
+  if (a) void run('refresh', 'Relecture impossible', () => invoke('refresh_drops', { accountId: a.id }))
 }
 </script>
 
@@ -194,7 +142,7 @@ async function setDropsEnabled(enabled: boolean) {
       <div v-if="!drops.enabled" class="flex items-center gap-3 border border-warning/40 bg-warning/10 rounded-lg px-4 py-2.5 text-sm">
         <UIcon name="i-lucide-pause" class="size-4 text-warning" />
         <span class="flex-1">Drops désactivés pour {{ account.login }}.</span>
-        <UButton label="Activer" size="xs" @click="setDropsEnabled(true)" />
+        <UButton label="Activer" size="xs" :loading="busy('drops')" @click="setDropsEnabled(true)" />
       </div>
 
       <div v-if="drops.target" class="flex items-center gap-3 border border-success/40 bg-success/10 rounded-lg px-4 py-2.5 text-sm">
@@ -237,21 +185,24 @@ async function setDropsEnabled(enabled: boolean) {
                 class="border-t border-default transition-colors"
                 :class="dragging === game.id ? 'bg-primary/10 opacity-70' : ''"
                 :draggable="grabbed === game.id"
-                @dragstart="onDragStart($event, game)"
+                @dragstart="onDragStart($event, game, game.name)"
                 @dragover="onDragOver($event, game)"
                 @drop="onDrop"
                 @dragend="endDrag"
               >
                 <td class="px-3 py-2">
-                  <div
-                    class="flex items-center gap-1.5 cursor-grab active:cursor-grabbing select-none"
-                    title="Glisser pour changer l'ordre"
+                  <button
+                    type="button"
+                    class="flex items-center gap-1.5 cursor-grab active:cursor-grabbing select-none rounded focus-visible:outline-2 focus-visible:outline-primary"
+                    title="Glisser pour changer l'ordre (ou Alt+flèche haut/bas)"
+                    :aria-label="`Position ${i + 1} : ${game.name}. Alt+flèche haut ou bas pour déplacer`"
                     @mousedown="grabbed = game.id"
                     @mouseup="grabbed = null"
+                    @keydown="onHandleKeydown($event, game)"
                   >
                     <UIcon name="i-lucide-grip-vertical" class="size-4 text-muted" />
-                    <span class="w-5 text-muted">{{ i + 1 }}</span>
-                  </div>
+                    <span class="w-5 text-muted text-left">{{ i + 1 }}</span>
+                  </button>
                 </td>
                 <td class="px-3 py-2">
                   <div class="flex items-center gap-3">
@@ -269,7 +220,7 @@ async function setDropsEnabled(enabled: boolean) {
                 </td>
                 <td class="px-3 py-2">
                   <div class="flex justify-center">
-                    <USwitch :model-value="game.enabled" :aria-label="`Drops de ${game.name}`" @update:model-value="v => setGameEnabled(game, v)" />
+                    <USwitch :model-value="game.enabled" :loading="busy(`game-${game.id}`)" :aria-label="`Drops de ${game.name}`" @update:model-value="v => setGameEnabled(game, v)" />
                   </div>
                 </td>
                 <td class="px-3 py-2 text-right">
@@ -291,7 +242,7 @@ async function setDropsEnabled(enabled: boolean) {
           <UTooltip text="La progression avance en direct ; l'inventaire complet est relu toutes les 10 minutes">
             <span v-if="drops.inventoryAt" class="text-xs text-muted">Inventaire relu à {{ new Date(drops.inventoryAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) }}</span>
           </UTooltip>
-          <UButton label="Relire maintenant" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" @click="account && invoke('refresh_drops', { accountId: account.id })" />
+          <UButton label="Relire maintenant" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="busy('refresh')" @click="refreshDrops" />
         </div>
         <p v-if="campaigns.length === 0" class="text-sm text-muted">
           Aucune campagne commencée. Une campagne apparaît ici dès la première minute regardée.
@@ -350,7 +301,7 @@ async function setDropsEnabled(enabled: boolean) {
       <template #footer>
         <div class="flex justify-end gap-2 w-full">
           <UButton label="Annuler" color="neutral" variant="ghost" @click="toRemove = null" />
-          <UButton label="Retirer" color="error" @click="confirmRemove" />
+          <UButton label="Retirer" color="error" :loading="busy('remove')" @click="confirmRemove" />
         </div>
       </template>
     </UModal>

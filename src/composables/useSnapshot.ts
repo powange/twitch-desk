@@ -11,8 +11,19 @@ let started = false
 async function start() {
   if (started) return
   started = true
-  await listen<Snapshot>('snapshot', e => { snapshot.value = e.payload })
-  snapshot.value = await invoke<Snapshot>('get_snapshot')
+  // Un événement arrivé pendant la lecture initiale est plus récent qu'elle : il est gardé
+  let gotEvent = false
+  try {
+    await listen<Snapshot>('snapshot', (e) => {
+      gotEvent = true
+      snapshot.value = e.payload
+    })
+    const first = await invoke<Snapshot>('get_snapshot')
+    if (!gotEvent) snapshot.value = first
+  } catch (e) {
+    // Les événements suivants rempliront l'état
+    console.error('état initial illisible', e)
+  }
 }
 
 export function useSnapshot() {
