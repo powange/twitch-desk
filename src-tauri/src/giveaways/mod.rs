@@ -45,8 +45,9 @@ pub enum MonitorCmd {
     Close(i64),
     Delete(i64),
     DismissMention(u64),
-    /// Gagnant désigné à la main (journal du chat) : giveaway ouvert de la chaîne, sinon le plus récent
-    ManualWinner { channel: String, winner: String },
+    /// Gagnant désigné à la main (journal du chat) : giveaway choisi, sinon ouvert de la chaîne,
+    /// sinon le plus récent
+    ManualWinner { channel: String, winner: String, giveaway_id: Option<i64> },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,6 +128,9 @@ pub struct GiveawayHandle {
     tap: mpsc::Sender<TapEvent>,
     view: Arc<RwLock<GiveawaysView>>,
     receivers: Mutex<Option<MonitorReceivers>>,
+    /// Participations en cours d'envoi (giveaway, compte) : manuelle et automatique ne
+    /// partent pas en même temps
+    sending: Mutex<HashSet<(i64, i64)>>,
 }
 
 impl Default for GiveawayHandle {
@@ -138,6 +142,7 @@ impl Default for GiveawayHandle {
             tap,
             view: Arc::new(RwLock::new(GiveawaysView::default())),
             receivers: Mutex::new(Some(MonitorReceivers { cmd: cmd_rx, tap: tap_rx })),
+            sending: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -169,11 +174,25 @@ struct LiveState {
     at: Instant,
 }
 
+/// Statut live relu hors de la boucle du moniteur
+struct LiveReport {
+    results: Vec<(String, Option<StreamInfo>)>,
+    /// Un jeton a été refusé : clients à refaire (jeton renouvelé entre-temps)
+    unauthorized: bool,
+}
+
 struct Monitor {
     app: Arc<App>,
     games: Vec<GiveawayGame>,
     live: HashMap<String, LiveState>,
-    gql: Option<Gql>,
+    /// Clients Twitch pour le statut live : un par compte, essayés dans l'ordre
+    gqls: Vec<Gql>,
+    live_tx: mpsc::Sender<LiveReport>,
+    live_rx: Option<mpsc::Receiver<LiveReport>>,
+    /// Relecture du statut live en cours depuis (oubliée après LIVE_CHECK_EVERY : tâche perdue)
+    live_busy: Option<Instant>,
+    /// Giveaways ouverts (toutes chaînes), relus à chaque publication : lus à chaque message
+    open: Vec<GiveawayRow>,
     view: Arc<RwLock<GiveawaysView>>,
     tap: mpsc::Sender<TapEvent>,
     channels: Vec<GiveawayChannel>,
@@ -222,11 +241,16 @@ fn now_rfc3339() -> String {
 
 impl Monitor {
     fn new(app: Arc<App>, view: Arc<RwLock<GiveawaysView>>, tap: mpsc::Sender<TapEvent>) -> Self {
+        let (live_tx, live_rx) = mpsc::channel(4);
         Self {
             app,
             games: vec![],
             live: HashMap::new(),
-            gql: None,
+            gqls: vec![],
+            live_tx,
+            live_rx: Some(live_rx),
+            live_busy: None,
+            open: vec![],
             view,
             tap,
             channels: vec![],
@@ -262,6 +286,7 @@ impl Monitor {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         let mut live_tick = tokio::time::interval(Duration::from_secs(10));
         let mut log_tick = tokio::time::interval(Duration::from_secs(5));
+        let mut live_rx = self.live_rx.take().expect("moniteur lancé une fois");
         loop {
             tokio::select! {
                 Some(event) = rx.tap.recv() => self.on_tap(event),
@@ -274,7 +299,9 @@ impl Monitor {
                     Some(_) => {}
                     None => self.anon_events = None,
                 },
-                _ = live_tick.tick() => self.check_lives().await,
+                // Statut live relu dans une tâche à part : la boucle reste libre pour le chat
+                _ = live_tick.tick() => self.check_lives(),
+                Some(report) = live_rx.recv() => self.on_live_report(report),
                 _ = log_tick.tick() => self.flush_chat_log(),
                 _ = tick.tick() => {
                     self.update_anonymous();
@@ -301,7 +328,7 @@ impl Monitor {
         }
         self.channels = self.app.db.giveaway_channels().unwrap_or_default();
         self.games = self.app.db.giveaway_games().unwrap_or_default();
-        self.gql = None;
+        self.gqls.clear();
         self.accounts = self.app.db.accounts().unwrap_or_default().into_iter().map(|a| (a.id, a.login.to_lowercase())).collect();
         let monitored: HashSet<String> = self.channels.iter().map(|c| c.login.clone()).collect();
         let stale: Vec<String> = self.coverage.keys().filter(|c| !monitored.contains(*c)).cloned().collect();
@@ -319,14 +346,16 @@ impl Monitor {
 
     /// Chaînes que la connexion anonyme doit rejoindre : lues et sans compte présent
     fn update_anonymous(&mut self) {
-        let open: Vec<GiveawayRow> = self.app.db.giveaways(RECENT_GIVEAWAYS).unwrap_or_default().into_iter().filter(|g| g.open).collect();
+        self.open = self.app.db.open_giveaways(None).unwrap_or_default();
+        let open = &self.open;
         self.open_commands.clear();
-        for g in &open {
+        for g in open {
             if let Some(c) = &g.command {
                 self.open_commands.entry(g.channel.clone()).or_default().push((g.id, c.to_lowercase()));
             }
         }
-        self.giveaway_only = open.into_iter().filter(|g| !self.monitored(&g.channel)).map(|g| g.channel).collect();
+        let monitored: HashSet<&str> = self.channels.iter().map(|c| c.login.as_str()).collect();
+        self.giveaway_only = open.iter().filter(|g| !monitored.contains(g.channel.as_str())).map(|g| g.channel.clone()).collect();
         let wanted: BTreeSet<String> = self
             .channels
             .iter()
@@ -351,12 +380,10 @@ impl Monitor {
     fn presence_reminders(&mut self) {
         let now = chrono::Utc::now();
         let due: Vec<(GiveawayRow, i64)> = self
-            .app
-            .db
-            .giveaways(RECENT_GIVEAWAYS)
-            .unwrap_or_default()
-            .into_iter()
+            .open
+            .iter()
             .filter(|g| g.open && !g.reminded && g.details.require_presence == Some(true))
+            .cloned()
             .filter_map(|g| {
                 let at = chrono::DateTime::parse_from_rfc3339(g.details.draw_at.as_deref()?).ok()?.with_timezone(&chrono::Utc);
                 let left = at - now;
@@ -365,23 +392,39 @@ impl Monitor {
             .collect();
         for (g, minutes) in due {
             let _ = self.app.db.set_giveaway_reminded(g.id);
+            if let Some(cached) = self.open.iter_mut().find(|o| o.id == g.id) {
+                cached.reminded = true;
+            }
             let when = if minutes == 0 { "maintenant".to_owned() } else { format!("dans {minutes} min") };
             self.app.log("giveaways", EventKind::Giveaway, format!("Tirage {when} sur {} : présence requise", g.channel));
             self.app.notify(Alert::Reminder, &format!("Tirage {when} sur {}", g.channel), "Présence requise au moment du tirage : reste sur le live");
         }
     }
 
-    /// Client Twitch pour le statut live : celui du premier compte connecté
-    fn gql(&mut self) -> Option<Gql> {
-        if self.gql.is_none() {
-            let account = self.app.db.accounts().ok()?.into_iter().next()?;
-            let tokens = self.app.secrets.load(&account.user_id)?;
-            self.gql = Some(Gql::new(self.app.http.clone(), tokens.access_token, Some(account.device_id)));
+    /// Clients Twitch pour le statut live : un par compte connecté (le suivant sert si un
+    /// jeton est refusé)
+    fn gqls(&mut self) -> Vec<Gql> {
+        if self.gqls.is_empty() {
+            self.gqls = self
+                .app
+                .db
+                .accounts()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|a| {
+                    let tokens = self.app.secrets.load(&a.user_id)?;
+                    Some(Gql::new(self.app.http.clone(), tokens.access_token, Some(a.device_id)))
+                })
+                .collect();
         }
-        self.gql.clone()
+        self.gqls.clone()
     }
 
-    async fn check_lives(&mut self) {
+    /// Relit le statut des chaînes dues dans une tâche à part ; résultat dans `on_live_report`
+    fn check_lives(&mut self) {
+        if self.live_busy.is_some_and(|t| t.elapsed() < LIVE_CHECK_EVERY) {
+            return;
+        }
         let now = Instant::now();
         let due: Vec<String> = self
             .channels
@@ -393,27 +436,32 @@ impl Monitor {
         if due.is_empty() {
             return;
         }
-        let Some(gql) = self.gql() else { return };
+        let gqls = self.gqls();
+        if gqls.is_empty() {
+            return;
+        }
+        self.live_busy = Some(Instant::now());
+        let tx = self.live_tx.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = tx.send(fetch_lives(gqls, due).await).await;
+        });
+    }
+
+    fn on_live_report(&mut self, report: LiveReport) {
+        self.live_busy = None;
+        if report.unauthorized {
+            // Jeton renouvelé entre-temps par le superviseur du compte : on le relira
+            self.gqls.clear();
+        }
         let mut changed = false;
-        for channel in due {
-            let info = match gql.stream_info(&channel).await {
-                Ok(info) => info,
-                Err(crate::twitch::TwitchError::Unauthorized) => {
-                    // Jeton renouvelé entre-temps par le superviseur du compte : on le relira
-                    self.gql = None;
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!("giveaways : statut de {channel} : {e}");
-                    continue;
-                }
-            };
+        for (channel, info) in report.results {
             let was_live = self.live.get(&channel).is_some_and(|l| l.info.is_some());
             if was_live && info.is_none() {
-                // Fin du live : le tirage a eu lieu ou n'aura pas lieu
+                // Fin du live : le tirage a eu lieu ou n'aura pas lieu (sauf heure de tirage à venir)
                 let closed = self.app.db.close_channel_giveaways(&channel).unwrap_or(0);
                 if closed > 0 {
                     self.app.log("giveaways", EventKind::Info, format!("{channel} est hors ligne : {closed} giveaway(s) clos"));
+                    changed = true;
                 }
             }
             if was_live != info.is_some() || self.live.get(&channel).map(|l| &l.info) != Some(&info) {
@@ -484,6 +532,9 @@ impl Monitor {
                     self.log_chat(&channel, &user, &text, moderator);
                     if self.monitored(&channel) {
                         self.on_message(&channel, &user, &text, moderator);
+                    } else {
+                        // Chaîne lue pour un giveaway ouvert : gagnant seulement, pas de détection
+                        self.on_announcement(&channel, &user.to_lowercase(), &text, moderator, false);
                     }
                 }
             }
@@ -505,7 +556,7 @@ impl Monitor {
                 let _ = self.app.db.delete_giveaway(id);
                 self.publish();
             }
-            MonitorCmd::ManualWinner { channel, winner } => self.on_winner(&channel, "manuel", &winner, None),
+            MonitorCmd::ManualWinner { channel, winner, giveaway_id } => self.on_manual_winner(&channel, &winner, giveaway_id),
             MonitorCmd::DismissMention(id) => {
                 self.mentions.retain(|m| m.id != id);
                 let _ = self.app.db.delete_mention(id as i64);
@@ -514,14 +565,9 @@ impl Monitor {
         }
     }
 
+    /// Giveaways ouverts d'une chaîne (cache relu à chaque publication), les plus récents d'abord
     fn open_giveaways(&self, channel: &str) -> Vec<GiveawayRow> {
-        self.app
-            .db
-            .giveaways(RECENT_GIVEAWAYS)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|g| g.open && g.channel == channel)
-            .collect()
+        self.open.iter().filter(|g| g.channel == channel).cloned().collect()
     }
 
     /// Journal du chat : commandes des spectateurs, tous nos messages et ceux du streamer,
@@ -543,7 +589,7 @@ impl Monitor {
             self.own_participation(channel, account, text);
             "own"
         } else if (bots::is_bot_like(&author)
-            && bots::parse_bot_message(&author, text).iter().any(|e| matches!(e, BotEvent::Winner { .. })))
+            && bots::parse_bot_message(&author, text, moderator || author == channel).iter().any(|e| matches!(e, BotEvent::Winner { .. })))
             || ((moderator || author == channel) && bots::moderator_winner(&author, text).is_some())
         {
             "winner"
@@ -673,32 +719,44 @@ impl Monitor {
         }
     }
 
-    fn on_message(&mut self, channel: &str, user: &str, text: &str, moderator: bool) {
-        let user_l = user.to_lowercase();
+    /// Annonces des bots, des modérateurs et du streamer (gagnant, lien StreamElements, tickets) ;
+    /// vrai si le message est traité (bot, ou gagnant annoncé). `monitored` : un lien
+    /// StreamElements crée un giveaway (chaîne surveillée seulement)
+    fn on_announcement(&mut self, channel: &str, user_l: &str, text: &str, moderator: bool, monitored: bool) -> bool {
+        let privileged = moderator || user_l == channel;
         // Annonce du gagnant par un modérateur (bot ou humain) ou le streamer : badges du message,
         // qu'un spectateur ne peut pas imiter
-        if (moderator || user_l == channel) && !bots::is_bot_like(&user_l) {
-            if let Some(BotEvent::Winner { bot, winner, chance }) = bots::moderator_winner(&user_l, text) {
+        if privileged && !bots::is_bot_like(user_l) {
+            if let Some(BotEvent::Winner { bot, winner, chance }) = bots::moderator_winner(user_l, text) {
                 self.on_winner(channel, &bot, &winner, chance.as_deref());
-                return;
+                return true;
             }
         }
-        if bots::is_bot_like(&user_l) {
-            for event in bots::parse_bot_message(&user_l, text) {
-                match event {
-                    BotEvent::Winner { bot, winner, chance } => self.on_winner(channel, &bot, &winner, chance.as_deref()),
-                    BotEvent::StreamElementsUrl(url) => self.on_streamelements_url(channel, &url),
-                    // « @pseudo got N tickets! (N/MAX) » : le maximum par personne du giveaway en cours
-                    BotEvent::TicketInfo { max, .. } => {
-                        if let Some(g) = self.open_giveaways(channel).first() {
-                            if self.app.db.set_ticket_max_if_unknown(g.id, max).unwrap_or(false) {
-                                self.publish();
-                            }
+        if !bots::is_bot_like(user_l) {
+            return false;
+        }
+        for event in bots::parse_bot_message(user_l, text, privileged) {
+            match event {
+                BotEvent::Winner { bot, winner, chance } => self.on_winner(channel, &bot, &winner, chance.as_deref()),
+                BotEvent::StreamElementsUrl(url) if monitored => self.on_streamelements_url(channel, &url),
+                BotEvent::StreamElementsUrl(_) => {}
+                // « @pseudo got N tickets! (N/MAX) » : le maximum par personne du giveaway en cours
+                BotEvent::TicketInfo { max, .. } => {
+                    if let Some(g) = self.open_giveaways(channel).first() {
+                        if self.app.db.set_ticket_max_if_unknown(g.id, max).unwrap_or(false) {
+                            self.publish();
                         }
                     }
-                    BotEvent::TicketPurchase { .. } => {}
                 }
+                BotEvent::TicketPurchase { .. } => {}
             }
+        }
+        true
+    }
+
+    fn on_message(&mut self, channel: &str, user: &str, text: &str, moderator: bool) {
+        let user_l = user.to_lowercase();
+        if self.on_announcement(channel, &user_l, text, moderator, true) {
             return;
         }
         self.on_mention(channel, &user_l, text);
@@ -756,7 +814,25 @@ impl Monitor {
         if open.iter().any(|g| g.url.as_deref().is_some_and(|u| u.eq_ignore_ascii_case(url))) {
             return;
         }
-        if let Ok(id) = self.app.db.insert_giveaway(&NewGiveaway {
+        // Lien déjà vu (giveaway clos à la fin d'un live précédent) : rouvert, pas recréé ; tiré : rien
+        match self.app.db.giveaway_by_url(channel, url) {
+            Ok(Some(g)) if g.winner.is_some() => return,
+            Ok(Some(g)) => {
+                if let Err(e) = self.app.db.reopen_giveaway(g.id, &now_rfc3339()) {
+                    tracing::error!("giveaway StreamElements non rouvert : {e}");
+                    return;
+                }
+                self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway StreamElements sur {channel} rouvert (lien reposté)"));
+                self.publish();
+                return;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!("giveaway StreamElements : {e}");
+                return;
+            }
+        }
+        match self.app.db.insert_giveaway(&NewGiveaway {
             channel: channel.to_owned(),
             kind: "streamelements".into(),
             command: None,
@@ -764,7 +840,13 @@ impl Monitor {
             evidence: None,
             detected_at: now_rfc3339(),
         }) {
-            let _ = self.app.db.apply_streamer_conditions(id);
+            Ok(id) => {
+                let _ = self.app.db.apply_streamer_conditions(id);
+            }
+            Err(e) => {
+                tracing::error!("giveaway StreamElements non enregistré : {e}");
+                return;
+            }
         }
         self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway StreamElements sur {channel}"));
         let app = self.app.clone();
@@ -776,17 +858,19 @@ impl Monitor {
         self.publish();
     }
 
+    fn on_manual_winner(&mut self, channel: &str, winner: &str, giveaway_id: Option<i64>) {
+        let target = manual_target(&self.app.db, channel, giveaway_id);
+        self.record_winner(channel, target, winner, None);
+    }
+
     fn on_winner(&mut self, channel: &str, bot: &str, winner: &str, chance: Option<&str>) {
         let open = self.open_giveaways(channel);
-        // Giveaway du type tiré par ce bot, sinon le plus récent
-        let wanted_kind = if bot == "streamelements" { "streamelements" } else { "command" };
-        // Gagnant désigné à la main : à défaut de giveaway ouvert, le plus récent de la chaîne
-        let latest = if bot == "manuel" && open.is_empty() {
-            self.app.db.giveaways(RECENT_GIVEAWAYS).unwrap_or_default().into_iter().find(|g| g.channel == channel)
-        } else {
-            None
-        };
-        let target = open.iter().find(|g| g.kind == wanted_kind).or_else(|| open.first()).or(latest.as_ref());
+        let target = winner_target(&open, bot).cloned();
+        self.record_winner(channel, target, winner, chance);
+    }
+
+    fn record_winner(&mut self, channel: &str, target: Option<GiveawayRow>, winner: &str, chance: Option<&str>) {
+        let target = target.as_ref();
         if let Some(g) = target {
             let _ = self.app.db.set_giveaway_winner(g.id, winner, chance, &now_rfc3339());
         }
@@ -995,9 +1079,28 @@ pub async fn participate(app: &Arc<App>, giveaway_id: i64, account_ids: &[i64], 
             results.push(ParticipationResult { account_id: *id, login: account.login.clone(), ok: true, message: "déjà inscrit".into() });
             continue;
         }
+        // Envoi déjà en cours pour ce compte (participation manuelle et automatique ensemble)
+        let Some(_sending) = SendingGuard::take(app, giveaway_id, *id) else {
+            results.push(ParticipationResult { account_id: *id, login: account.login.clone(), ok: true, message: "envoi déjà en cours".into() });
+            continue;
+        };
         // Pas plusieurs comptes à la même seconde
         if i > 0 {
             tokio::time::sleep(Duration::from_millis(rand::random_range(1500..4000))).await;
+        }
+        // Relu juste avant l'envoi : clos, ou inscrit entre-temps (depuis le chat, ou un autre envoi)
+        match app.db.giveaway(giveaway_id) {
+            Ok(Some(g)) if !g.open => {
+                results.push(ParticipationResult { account_id: *id, login: account.login.clone(), ok: false, message: "giveaway terminé".into() });
+                continue;
+            }
+            Ok(Some(g)) if g.entries.iter().any(|e| e.account_id == *id) => {
+                results.push(ParticipationResult { account_id: *id, login: account.login.clone(), ok: true, message: "déjà inscrit".into() });
+                continue;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => return Err("giveaway introuvable".into()),
+            Err(e) => return Err(e.to_string()),
         }
         let result = match app.secrets.load(&account.user_id) {
             None => Err("jeton introuvable : reconnecte ce compte".to_owned()),
@@ -1018,6 +1121,75 @@ pub async fn participate(app: &Arc<App>, giveaway_id: i64, account_ids: &[i64], 
     }
     refresh_view(app);
     Ok(results)
+}
+
+/// Envoi d'une participation réservé (giveaway, compte) ; libéré à la fin de l'envoi
+struct SendingGuard<'a> {
+    app: &'a App,
+    key: (i64, i64),
+}
+
+impl<'a> SendingGuard<'a> {
+    fn take(app: &'a App, giveaway_id: i64, account_id: i64) -> Option<Self> {
+        let key = (giveaway_id, account_id);
+        app.giveaways.sending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key).then_some(Self { app, key })
+    }
+}
+
+impl Drop for SendingGuard<'_> {
+    fn drop(&mut self) {
+        self.app.giveaways.sending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.key);
+    }
+}
+
+/// Statut live des chaînes, relu avec le premier client accepté (jeton refusé : compte suivant)
+async fn fetch_lives(mut gqls: Vec<Gql>, due: Vec<String>) -> LiveReport {
+    let mut results = vec![];
+    let mut unauthorized = false;
+    'channels: for channel in due {
+        while let Some(gql) = gqls.first() {
+            match gql.stream_info(&channel).await {
+                Ok(info) => {
+                    results.push((channel, info));
+                    continue 'channels;
+                }
+                Err(crate::twitch::TwitchError::Unauthorized) => {
+                    unauthorized = true;
+                    gqls.remove(0);
+                }
+                Err(e) => {
+                    tracing::warn!("giveaways : statut de {channel} : {e}");
+                    continue 'channels;
+                }
+            }
+        }
+        // Plus aucun jeton accepté
+        break;
+    }
+    LiveReport { results, unauthorized }
+}
+
+/// Giveaway ouvert auquel rattacher le gagnant annoncé par `bot` : StreamElements ne tire que
+/// ses giveaways ; les autres bots tirent les giveaways par commande, sinon le plus récent
+/// qui n'est pas StreamElements
+fn winner_target<'a>(open: &'a [GiveawayRow], bot: &str) -> Option<&'a GiveawayRow> {
+    if bot == "streamelements" {
+        return open.iter().find(|g| g.kind == "streamelements");
+    }
+    open.iter().find(|g| g.kind == "command").or_else(|| open.iter().find(|g| g.kind != "streamelements"))
+}
+
+/// Giveaway d'un gagnant désigné à la main : celui choisi (de cette chaîne), sinon le plus
+/// récent ouvert de la chaîne, sinon le plus récent de la chaîne
+pub fn manual_target(db: &crate::db::Db, channel: &str, giveaway_id: Option<i64>) -> Option<GiveawayRow> {
+    if let Some(id) = giveaway_id {
+        return db.giveaway(id).ok().flatten().filter(|g| g.channel == channel);
+    }
+    let open = db.open_giveaways(Some(channel)).unwrap_or_default();
+    if let Some(g) = open.into_iter().next() {
+        return Some(g);
+    }
+    db.giveaways(RECENT_GIVEAWAYS).unwrap_or_default().into_iter().find(|g| g.channel == channel)
 }
 
 /// Participation automatique (si activée) : chaque compte après un délai aléatoire
@@ -1164,6 +1336,56 @@ mod tests {
             gift_ids: vec![],
             details: GiveawayDetails::default(),
         }
+    }
+
+    fn row(id: i64, kind: &str) -> GiveawayRow {
+        let db = crate::db::Db::memory().unwrap();
+        let gid = db
+            .insert_giveaway(&NewGiveaway {
+                channel: "lunarsea".into(),
+                kind: kind.into(),
+                command: None,
+                url: None,
+                evidence: None,
+                detected_at: "2026-11-01T10:00:00Z".into(),
+            })
+            .unwrap();
+        GiveawayRow { id, ..db.giveaway(gid).unwrap().unwrap() }
+    }
+
+    #[test]
+    fn winner_targets() {
+        let open = vec![row(1, "ticket"), row(2, "streamelements"), row(3, "command")];
+        assert_eq!(winner_target(&open, "streamelements").map(|g| g.id), Some(2));
+        assert_eq!(winner_target(&open, "nightbot").map(|g| g.id), Some(3));
+        // Pas de giveaway StreamElements ouvert : le gagnant de StreamElements n'est rattaché à rien
+        let open = vec![row(1, "ticket"), row(3, "command")];
+        assert_eq!(winner_target(&open, "streamelements"), None);
+        // Un autre bot ne tire pas un giveaway StreamElements
+        assert_eq!(winner_target(&[row(2, "streamelements")], "moobot"), None);
+        assert_eq!(winner_target(&[row(2, "streamelements"), row(1, "ticket")], "moobot").map(|g| g.id), Some(1));
+    }
+
+    #[test]
+    fn manual_targets() {
+        let db = crate::db::Db::memory().unwrap();
+        let new = |channel: &str| NewGiveaway {
+            channel: channel.into(),
+            kind: "command".into(),
+            command: Some("!join".into()),
+            url: None,
+            evidence: None,
+            detected_at: "2026-11-01T10:00:00Z".into(),
+        };
+        let a = db.insert_giveaway(&new("lunarsea")).unwrap();
+        let b = db.insert_giveaway(&new("kraken_tv")).unwrap();
+        assert_eq!(manual_target(&db, "lunarsea", Some(a)).map(|g| g.id), Some(a));
+        // Giveaway d'une autre chaîne : refusé
+        assert_eq!(manual_target(&db, "lunarsea", Some(b)), None);
+        assert_eq!(manual_target(&db, "lunarsea", None).map(|g| g.id), Some(a));
+        db.close_giveaway(a).unwrap();
+        assert_eq!(manual_target(&db, "lunarsea", None).map(|g| g.id), Some(a));
+        assert_eq!(manual_target(&db, "nobody", None), None);
     }
 
     #[test]

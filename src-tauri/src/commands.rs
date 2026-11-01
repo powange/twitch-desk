@@ -24,6 +24,12 @@ fn db_err(e: rusqlite::Error) -> String {
     format!("base de données : {e}")
 }
 
+/// Travail lourd (base, fichiers) hors du fil principal : l'interface reste fluide
+async fn blocking<T: Send + 'static>(app: &AppState<'_>, f: impl FnOnce(&App) -> T + Send + 'static) -> CmdResult<T> {
+    let app: Arc<App> = app.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || f(&app)).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_snapshot(app: AppState) -> Snapshot {
     app.snapshot()
@@ -92,6 +98,8 @@ async fn finish_login(app: &Arc<App>, tokens: auth::Tokens) -> LoginEvent {
     if let Some(account) = app.db.accounts().ok().and_then(|all| all.into_iter().find(|a| a.id == id)) {
         app.start_miner(account);
     }
+    // Comptes du moniteur de giveaways (mentions, participation, statut live) à jour
+    app.giveaways.send(MonitorCmd::Reload);
     LoginEvent::Done { login: validation.login }
 }
 
@@ -112,6 +120,7 @@ pub fn remove_account(app: AppState, id: i64) -> CmdResult<()> {
         app.log(&account.login, EventKind::Info, "Compte retiré");
     }
     app.db.delete_account(id).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
     app.touch();
     Ok(())
 }
@@ -373,9 +382,13 @@ pub struct LogContent {
 const LOG_TAIL: u64 = 2 * 1024 * 1024;
 
 #[tauri::command]
-pub fn read_log(app: AppState, name: String) -> CmdResult<LogContent> {
+pub async fn read_log(app: AppState<'_>, name: String) -> CmdResult<LogContent> {
+    blocking(&app, move |app| read_log_file(app, &name)).await?
+}
+
+fn read_log_file(app: &App, name: &str) -> CmdResult<LogContent> {
     use std::io::{Read, Seek, SeekFrom};
-    let path = log_path(&app, &name)?;
+    let path = log_path(app, name)?;
     let mut file = std::fs::File::open(&path).map_err(|e| format!("lecture du journal : {e}"))?;
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let truncated = len > LOG_TAIL;
@@ -396,10 +409,13 @@ pub fn read_log(app: AppState, name: String) -> CmdResult<LogContent> {
 
 /// Copie un journal dans le fichier choisi
 #[tauri::command]
-pub fn export_log(app: AppState, name: String, path: String) -> CmdResult<()> {
-    let source = log_path(&app, &name)?;
-    std::fs::copy(source, &path).map_err(|e| format!("copie du journal : {e}"))?;
-    Ok(())
+pub async fn export_log(app: AppState<'_>, name: String, path: String) -> CmdResult<()> {
+    blocking(&app, move |app| {
+        let source = log_path(app, &name)?;
+        std::fs::copy(source, &path).map_err(|e| format!("copie du journal : {e}"))?;
+        Ok(())
+    })
+    .await?
 }
 
 /// Invitation Discord d'un streamer : celle de sa fiche, sinon celle trouvée sur sa chaîne
@@ -427,8 +443,8 @@ pub struct ChatLogMeta {
 
 /// Messages enregistrés d'une chaîne (200 par page, les plus récents d'abord)
 #[tauri::command]
-pub fn get_chat_log(
-    app: AppState,
+pub async fn get_chat_log(
+    app: AppState<'_>,
     channel: String,
     kinds: Vec<String>,
     commands: Vec<String>,
@@ -436,19 +452,23 @@ pub fn get_chat_log(
     before_id: Option<i64>,
 ) -> CmdResult<Vec<crate::db::ChatLogEntry>> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
-    app.db.chat_log(&channel, &kinds, &commands, author.as_deref(), before_id, 200).map_err(db_err)
+    blocking(&app, move |app| app.db.chat_log(&channel, &kinds, &commands, author.as_deref(), before_id, 200).map_err(db_err)).await?
 }
 
-/// Gagnant désigné à la main (tirage non détecté) : giveaway ouvert de la chaîne, sinon le plus récent
+/// Gagnant désigné à la main (tirage non détecté) : giveaway choisi (`giveaway_id`, facultatif),
+/// sinon ouvert de la chaîne, sinon le plus récent
 #[tauri::command]
-pub fn set_manual_winner(app: AppState, channel: String, winner: String) -> CmdResult<()> {
+pub fn set_manual_winner(app: AppState, channel: String, winner: String, giveaway_id: Option<i64>) -> CmdResult<()> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
     let winner = normalize_login(&winner).ok_or("Pseudo du gagnant invalide")?;
-    let exists = app.db.giveaways(200).map_err(db_err)?.iter().any(|g| g.channel == channel);
-    if !exists {
-        return Err(format!("Aucun giveaway sur {channel} : ajoute-le d'abord"));
+    // Même choix que le moniteur au moment d'enregistrer
+    if crate::giveaways::manual_target(&app.db, &channel, giveaway_id).is_none() {
+        return Err(match giveaway_id {
+            Some(_) => format!("Ce giveaway n'existe plus ou n'est pas sur {channel}"),
+            None => format!("Aucun giveaway sur {channel} : ajoute-le d'abord"),
+        });
     }
-    app.giveaways.send(MonitorCmd::ManualWinner { channel, winner });
+    app.giveaways.send(MonitorCmd::ManualWinner { channel, winner, giveaway_id });
     app.sync.poke();
     Ok(())
 }
@@ -996,12 +1016,15 @@ pub struct GiftCatalog {
 }
 
 #[tauri::command]
-pub fn get_gift_catalog(app: AppState) -> CmdResult<GiftCatalog> {
-    Ok(GiftCatalog {
-        gifts: app.db.gifts().map_err(db_err)?,
-        groups: app.db.gift_groups().map_err(db_err)?,
-        usage: app.db.gift_usage().map_err(db_err)?,
+pub async fn get_gift_catalog(app: AppState<'_>) -> CmdResult<GiftCatalog> {
+    blocking(&app, |app| {
+        Ok(GiftCatalog {
+            gifts: app.db.gifts().map_err(db_err)?,
+            groups: app.db.gift_groups().map_err(db_err)?,
+            usage: app.db.gift_usage().map_err(db_err)?,
+        })
     })
+    .await?
 }
 
 /// Image d'un cadeau : data URL d'image, 2 Mo au plus (réduite par l'interface avant l'envoi)
@@ -1098,8 +1121,8 @@ pub fn delete_gift_group(app: AppState, id: i64) -> CmdResult<()> {
 }
 
 #[tauri::command]
-pub fn get_wins(app: AppState) -> Vec<crate::giveaways::GiveawayView> {
-    crate::giveaways::won_views(&app)
+pub async fn get_wins(app: AppState<'_>) -> CmdResult<Vec<crate::giveaways::GiveawayView>> {
+    blocking(&app, crate::giveaways::won_views).await
 }
 
 #[tauri::command]
@@ -1178,7 +1201,11 @@ const GIFT_EXPORT_FORMAT: &str = "twitch-desk-gifts";
 
 /// Enregistre le catalogue dans le fichier choisi ; renvoie le nombre de cadeaux
 #[tauri::command]
-pub fn export_gifts(app: AppState, path: String) -> CmdResult<usize> {
+pub async fn export_gifts(app: AppState<'_>, path: String) -> CmdResult<usize> {
+    blocking(&app, move |app| export_gifts_to(app, &path)).await?
+}
+
+fn export_gifts_to(app: &App, path: &str) -> CmdResult<usize> {
     let groups = app.db.gift_groups().map_err(db_err)?;
     let gifts = app.db.gifts().map_err(db_err)?;
     let export = GiftExport {
@@ -1199,7 +1226,7 @@ pub fn export_gifts(app: AppState, path: String) -> CmdResult<usize> {
     };
     let count = export.gifts.len();
     let text = serde_json::to_string_pretty(&export).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| format!("écriture du fichier : {e}"))?;
+    std::fs::write(path, text).map_err(|e| format!("écriture du fichier : {e}"))?;
     Ok(count)
 }
 
@@ -1214,8 +1241,12 @@ pub struct GiftImportResult {
 /// Fusionne un fichier exporté : ajoute les cadeaux absents, met à jour ceux de même
 /// titre et même catégorie
 #[tauri::command]
-pub fn import_gifts(app: AppState, path: String) -> CmdResult<GiftImportResult> {
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("lecture du fichier : {e}"))?;
+pub async fn import_gifts(app: AppState<'_>, path: String) -> CmdResult<GiftImportResult> {
+    blocking(&app, move |app| import_gifts_from(app, &path)).await?
+}
+
+fn import_gifts_from(app: &App, path: &str) -> CmdResult<GiftImportResult> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("lecture du fichier : {e}"))?;
     let export: GiftExport = serde_json::from_str(&text).map_err(|_| "Ce fichier n'est pas un export de cadeaux Twitch Desk".to_owned())?;
     if export.format != GIFT_EXPORT_FORMAT {
         return Err("Ce fichier n'est pas un export de cadeaux Twitch Desk".into());

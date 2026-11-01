@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use crate::twitch::gql::{self, OperationsFile};
 
@@ -126,7 +127,27 @@ pub fn run() {
             app.manage(init_logging(&log_dir));
             tracing::info!("Twitch Desk {} — données dans {}", app.package_info().version, data_dir.display());
 
-            let db = db::Db::open(&data_dir.join("twitch-desk.db"))?;
+            let db = match db::Db::open(&data_dir.join("twitch-desk.db")) {
+                Ok(db) => db,
+                Err(e) => {
+                    // Base illisible (fichier abîmé, mise à jour du schéma ratée) : message à
+                    // l'utilisateur plutôt qu'un arrêt muet, puis fermeture
+                    tracing::error!("base de données : {e}");
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                    let handle = app.handle().clone();
+                    app.dialog()
+                        .message(format!(
+                            "La base de données n'a pas pu être ouverte :\n{e}\n\nDossier : {}\nUne copie d'avant la mise à jour (twitch-desk.db.bak-v…) peut s'y trouver.",
+                            data_dir.display()
+                        ))
+                        .title("Twitch Desk")
+                        .kind(MessageDialogKind::Error)
+                        .show(move |_| handle.exit(1));
+                    return Ok(());
+                }
+            };
             let settings = db.settings();
             let secrets = secrets::Secrets::new(data_dir.clone());
             let state = app::App::new(app.handle().clone(), db, secrets, data_dir.clone());
