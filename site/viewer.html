@@ -51,6 +51,11 @@
     .player { flex: 1; min-width: 0; }
     .player iframe, .chat { border: 0; display: block; width: 100%; height: 100%; }
     .chat { width: 340px; flex: none; border-left: 1px solid var(--border); }
+    /* Vidéo masquée : le lecteur continue (le son reste), le chat prend toute la place */
+    .tile.no-video .player { display: none; }
+    .tile.no-video .chat { flex: 1; width: auto; border-left: 0; }
+    .hidden-note { flex: 1; display: none; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 12px; }
+    .tile.no-video.no-chat .hidden-note { display: flex; }
     .empty { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 24px; }
   </style>
 </head>
@@ -67,8 +72,8 @@
   <div id="grid"></div>
   <script src="https://player.twitch.tv/js/embed/v1.js"></script>
   <script>
-    // Adresse : viewer.html?channels=a,b,c&chat=a,c&featured=b
-    // (chaînes affichées, chaînes avec le chat ouvert, chaîne mise en avant)
+    // Adresse : viewer.html?channels=a,b,c&chat=a,c&novideo=c&featured=b
+    // (chaînes affichées, chat ouvert, vidéo masquée, chaîne mise en avant)
     const LOGIN = /^[a-z0-9_]{1,25}$/
     const MAX = 9
     const parent = location.hostname
@@ -81,6 +86,7 @@
     }
     let channels = readList('channels')
     const chats = new Set(readList('chat'))
+    const noVideo = new Set(readList('novideo'))
     let featured = readList('featured')[0] || null
     // Chaîne → { el, player, setChat }
     const tiles = new Map()
@@ -91,6 +97,8 @@
       if (channels.length) p.set('channels', channels.join(','))
       const open = channels.filter(c => chats.has(c))
       if (open.length) p.set('chat', open.join(','))
+      const hidden = channels.filter(c => noVideo.has(c))
+      if (hidden.length) p.set('novideo', hidden.join(','))
       if (featured) p.set('featured', featured)
       history.replaceState(null, '', `${location.pathname}?${p}`)
       document.title = channels.length ? `Streams : ${channels.join(', ')}` : 'Streams'
@@ -148,6 +156,9 @@
       star.className = 'star'
       star.textContent = '★'
       star.title = 'Mettre en avant (agrandir)'
+      const videoButton = document.createElement('button')
+      videoButton.textContent = 'Vidéo'
+      videoButton.title = 'Afficher ou masquer la vidéo (le son continue)'
       const chatButton = document.createElement('button')
       chatButton.textContent = 'Chat'
       chatButton.title = 'Afficher ou masquer le chat'
@@ -155,13 +166,16 @@
       close.textContent = '✕'
       close.title = 'Retirer ce stream'
       close.setAttribute('aria-label', `Retirer ${channel}`)
-      bar.append(name, star, chatButton, close)
+      bar.append(name, star, videoButton, chatButton, close)
 
       const body = document.createElement('div')
       body.className = 'body'
       const holder = document.createElement('div')
       holder.className = 'player'
-      body.append(holder)
+      const note = document.createElement('div')
+      note.className = 'hidden-note'
+      note.textContent = 'Vidéo et chat masqués'
+      body.append(holder, note)
       el.append(bar, body)
       grid.append(el)
 
@@ -188,10 +202,20 @@
           chatFrame = null
         }
         chatButton.classList.toggle('on', open)
+        el.classList.toggle('no-chat', !open)
         if (open) chats.add(channel)
         else chats.delete(channel)
       }
       setChat(chats.has(channel))
+
+      function setVideo(show) {
+        videoButton.classList.toggle('on', show)
+        el.classList.toggle('no-video', !show)
+        if (show) noVideo.delete(channel)
+        else noVideo.add(channel)
+      }
+      setVideo(!noVideo.has(channel))
+      videoButton.addEventListener('click', () => { setVideo(el.classList.contains('no-video')); saveState() })
       chatButton.addEventListener('click', () => { setChat(!chatFrame); saveState() })
       star.addEventListener('click', () => {
         featured = featured === channel ? null : channel
@@ -234,6 +258,7 @@
       tiles.delete(channel)
       channels = channels.filter(c => c !== channel)
       chats.delete(channel)
+      noVideo.delete(channel)
       if (featured === channel) featured = null
       showEmpty()
       layout()
