@@ -41,7 +41,14 @@ export function participationConditions(d: GiveawayDetails, kind: GiveawayKind):
   }
   if (d.requireFollow !== null) {
     out.push(d.requireFollow
-      ? { key: 'follow', icon: 'i-lucide-heart', label: 'Follow requis pour participer', colorClass: 'text-pink-600 dark:text-pink-400', strike: false }
+      ? {
+          key: 'follow',
+          icon: 'i-lucide-heart',
+          label: d.followMinDays ? `Follow requis depuis au moins ${d.followMinDays} jour(s)` : 'Follow requis pour participer',
+          colorClass: 'text-pink-600 dark:text-pink-400',
+          strike: false,
+          suffix: d.followMinDays ? `${d.followMinDays} j` : undefined
+        }
       : { key: 'follow', icon: 'i-lucide-heart-off', label: 'Follow non requis', colorClass: 'text-muted', strike: false })
   }
   if (d.requirePresence !== null) {
@@ -57,6 +64,16 @@ export function participationConditions(d: GiveawayDetails, kind: GiveawayKind):
       colorClass: d.requireDiscord ? 'text-indigo-600 dark:text-indigo-400' : 'text-muted',
       strike: !d.requireDiscord
     })
+  }
+  if (d.requireGreeting !== null) {
+    out.push(d.requireGreeting
+      ? { key: 'greeting', icon: 'i-lucide-hand', label: 'Avoir dit bonjour dans le chat', colorClass: 'text-amber-600 dark:text-amber-400', strike: false }
+      : { key: 'greeting', icon: 'i-lucide-hand', label: 'Bonjour non requis', colorClass: 'text-muted', strike: true })
+  }
+  if (d.minChatMinutes !== null) {
+    out.push(d.minChatMinutes > 0
+      ? { key: 'chat', icon: 'i-lucide-timer', label: `Présent dans le chat depuis au moins ${d.minChatMinutes} min`, colorClass: 'text-sky-600 dark:text-sky-400', strike: false, suffix: `${d.minChatMinutes} min` }
+      : { key: 'chat', icon: 'i-lucide-timer-off', label: 'Pas de temps de présence minimum', colorClass: 'text-muted', strike: false })
   }
   return out
 }

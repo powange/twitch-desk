@@ -406,6 +406,8 @@ pub struct FollowState {
     login: String,
     /// None : impossible à savoir (compte à reconnecter, erreur Twitch)
     follows: Option<bool>,
+    /// Date du follow
+    followed_at: Option<String>,
 }
 
 /// Comptes qui suivent (ou non) une chaîne
@@ -414,11 +416,11 @@ pub async fn follow_status(app: AppState<'_>, channel: String) -> CmdResult<Vec<
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
     let mut out = vec![];
     for account in app.db.accounts().map_err(db_err)? {
-        let follows = match app.secrets.load(&account.user_id) {
+        let state = match app.secrets.load(&account.user_id) {
             Some(tokens) => {
                 let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id.clone()));
                 match gql.follow_state(&channel).await {
-                    Ok(state) => state.map(|(_, f)| f),
+                    Ok(state) => state.map(|(_, since)| since),
                     Err(e) => {
                         tracing::warn!("follow de {} sur {channel} : {e}", account.login);
                         None
@@ -427,7 +429,12 @@ pub async fn follow_status(app: AppState<'_>, channel: String) -> CmdResult<Vec<
             }
             None => None,
         };
-        out.push(FollowState { account_id: account.id, login: account.login, follows });
+        out.push(FollowState {
+            account_id: account.id,
+            login: account.login,
+            follows: state.as_ref().map(Option::is_some),
+            followed_at: state.flatten(),
+        });
     }
     Ok(out)
 }
@@ -442,8 +449,8 @@ pub async fn follow_channel(app: AppState<'_>, channel: String, account_ids: Vec
         let tokens = app.secrets.load(&account.user_id).ok_or_else(|| format!("Reconnecte {}", account.login))?;
         let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id.clone()));
         let result = match gql.follow_state(&channel).await {
-            Ok(Some((_, true))) => Ok(()),
-            Ok(Some((channel_id, false))) => gql.follow(&channel_id).await,
+            Ok(Some((_, Some(_)))) => Ok(()),
+            Ok(Some((channel_id, None))) => gql.follow(&channel_id).await,
             Ok(None) => Err(crate::twitch::TwitchError::Gql("chaîne introuvable".into())),
             Err(e) => Err(e),
         };

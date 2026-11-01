@@ -288,7 +288,8 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>) -> rusqli
                 .prepare(
                     "SELECT id, sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance, drawn_at,
                             ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
-                            require_follow, require_presence, require_discord, notes
+                            require_follow, require_presence, require_discord, notes,
+                            require_greeting, min_chat_minutes, follow_min_days
                      FROM giveaways WHERE sync_id IS NOT NULL
                          AND (?2 IS NULL OR sync_id = ?2) AND (?2 IS NOT NULL OR status = 'open' OR detected_at >= ?1)",
                 )?
@@ -316,6 +317,9 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>) -> rusqli
                             "requirePresence": r.get::<_, Option<bool>>(18)?,
                             "requireDiscord": r.get::<_, Option<bool>>(19)?,
                             "notes": r.get::<_, Option<String>>(20)?,
+                            "requireGreeting": r.get::<_, Option<bool>>(21)?,
+                            "minChatMinutes": r.get::<_, Option<i64>>(22)?,
+                            "followMinDays": r.get::<_, Option<i64>>(23)?,
                         }),
                     ))
                 })?
@@ -544,13 +548,16 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                 bool_of(data, "requirePresence"),
                 bool_of(data, "requireDiscord"),
                 str_of(data, "notes"),
+                bool_of(data, "requireGreeting"),
+                int_of(data, "minChatMinutes"),
+                int_of(data, "followMinDays"),
             ];
             if local_id(conn, "giveaways", id)?.is_some() {
                 conn.execute(
                     "UPDATE giveaways SET channel = ?2, kind = ?3, command = ?4, url = ?5, detected_at = ?6, status = ?7, manual = ?8,
                          winner = ?9, winner_chance = ?10, drawn_at = ?11, ticket_unique = ?12, ticket_max = ?13,
                          reward_name = ?14, reward_cost = ?15, draw_at = ?16, require_follow = ?17, require_presence = ?18,
-                         require_discord = ?19, notes = ?20,
+                         require_discord = ?19, notes = ?20, require_greeting = ?21, min_chat_minutes = ?22, follow_min_days = ?23,
                          reminded = CASE WHEN draw_at IS ?16 THEN reminded ELSE 0 END
                      WHERE sync_id = ?1",
                     values,
@@ -560,8 +567,9 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                 conn.execute(
                     "INSERT INTO giveaways (sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance,
                          drawn_at, ticket_unique, ticket_max, reward_name, reward_cost, draw_at, require_follow, require_presence,
-                         require_discord, notes, handled)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?7 != 'open')",
+                         require_discord, notes, require_greeting, min_chat_minutes, follow_min_days, handled)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                         ?21, ?22, ?23, ?7 != 'open')",
                     values,
                 )?;
             }

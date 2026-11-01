@@ -298,6 +298,12 @@ export interface GiveawayDetails {
   requirePresence: boolean | null
   requireDiscord: boolean | null
   notes: string | null
+  // Avoir dit bonjour dans le chat
+  requireGreeting: boolean | null
+  // Présence minimum dans le chat en minutes (0 : non requis, null : on ne sait pas)
+  minChatMinutes: number | null
+  // Follow depuis au moins tant de jours (avec le follow requis)
+  followMinDays: number | null
 }
 
 export interface GiveawayInput extends GiveawayDetails {

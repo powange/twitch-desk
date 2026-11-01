@@ -31,7 +31,9 @@ const TRI_OPTIONS: { label: string, value: TriState, title: string }[] = [
 const CONDITIONS = [
   { key: 'follow', label: 'Follow requis', icon: 'i-lucide-heart' },
   { key: 'presence', label: 'Présence au tirage', icon: 'i-lucide-user-check' },
-  { key: 'discord', label: 'Discord du streamer', icon: 'i-simple-icons-discord' }
+  { key: 'discord', label: 'Discord du streamer', icon: 'i-simple-icons-discord' },
+  { key: 'greeting', label: 'Avoir dit bonjour dans le chat', icon: 'i-lucide-hand' },
+  { key: 'chatTime', label: 'Temps de présence minimum dans le chat', icon: 'i-lucide-timer' }
 ] as const
 const toTri = (v: boolean | null): TriState => v === true ? 'yes' : v === false ? 'no' : 'unknown'
 const fromTri = (v: TriState): boolean | null => v === 'yes' ? true : v === 'no' ? false : null
@@ -57,6 +59,10 @@ const form = ref({
   follow: 'unknown' as TriState,
   presence: 'unknown' as TriState,
   discord: 'unknown' as TriState,
+  greeting: 'unknown' as TriState,
+  chatTime: 'unknown' as TriState,
+  chatMinutes: null as number | null,
+  followDays: null as number | null,
   notes: '',
   giftIds: [] as number[]
 })
@@ -153,6 +159,10 @@ watch(open, (isOpen) => {
     follow: toTri(g?.requireFollow ?? null),
     presence: toTri(g?.requirePresence ?? null),
     discord: toTri(g?.requireDiscord ?? null),
+    greeting: toTri(g?.requireGreeting ?? null),
+    chatTime: g?.minChatMinutes == null ? 'unknown' : g.minChatMinutes > 0 ? 'yes' : 'no',
+    chatMinutes: g?.minChatMinutes ? g.minChatMinutes : null,
+    followDays: g?.followMinDays ?? null,
     notes: g?.notes ?? '',
     giftIds: [...(g?.giftIds ?? [])]
   }
@@ -237,7 +247,7 @@ const KIND_ICONS: Record<GiveawayInput['kind'], string> = {
 
 const sections = computed(() => {
   const f = form.value
-  const conditions = [f.follow, f.presence, f.discord].filter(v => v !== 'unknown').length
+  const conditions = [f.follow, f.presence, f.discord, f.greeting, f.chatTime].filter(v => v !== 'unknown').length
   return [
     { key: 'channel' as const, label: 'Chaîne', icon: 'i-lucide-tv', summary: f.channel.trim() || 'à choisir', missing: !f.channel.trim() },
     { key: 'giveaway' as const, label: 'Giveaway', icon: 'i-lucide-gift', summary: (f.kind === 'command' || f.kind === 'ticket') && !f.command.trim() ? 'commande à détecter' : GIVEAWAY_KIND_ITEMS.find(k => k.value === f.kind)?.label ?? '', missing: false },
@@ -269,6 +279,10 @@ async function save() {
     requireFollow: fromTri(f.follow),
     requirePresence: fromTri(f.presence),
     requireDiscord: fromTri(f.discord),
+    requireGreeting: fromTri(f.greeting),
+    // Présence dans le chat : durée si requise, 0 si non requise, null si on ne sait pas
+    minChatMinutes: f.chatTime === 'yes' ? (f.chatMinutes ?? null) : f.chatTime === 'no' ? 0 : null,
+    followMinDays: f.follow === 'yes' ? (f.followDays || null) : null,
     notes: f.notes || null,
     giftIds: f.giftIds
   }
@@ -501,7 +515,7 @@ async function save() {
           <!-- Conditions : une par ligne -->
           <div v-show="section === 'conditions'" class="flex flex-col gap-3">
             <p class="text-sm text-muted">Ce qu'il faut pour participer. « ? » : on ne sait pas.</p>
-            <div v-for="c in CONDITIONS" :key="c.key" class="flex items-center justify-between gap-4 border border-default rounded-lg px-4 py-3">
+            <div v-for="c in CONDITIONS" :key="c.key" class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border border-default rounded-lg px-4 py-3">
               <span class="inline-flex items-center gap-2.5">
                 <UIcon :name="c.icon" class="size-5 text-muted" />{{ c.label }}
               </span>
@@ -519,6 +533,17 @@ async function save() {
                   @click="form[c.key] = o.value"
                 />
               </UFieldGroup>
+              <!-- Précisions : ancienneté du follow, durée de présence -->
+              <span v-if="c.key === 'follow' && form.follow === 'yes'" class="basis-full flex items-center justify-end gap-2 text-sm text-muted">
+                depuis au moins
+                <UInputNumber id="gw-follow-days" v-model="form.followDays" :min="1" :max="3650" placeholder="—" size="sm" class="w-28" />
+                jour(s)
+              </span>
+              <span v-if="c.key === 'chatTime' && form.chatTime === 'yes'" class="basis-full flex items-center justify-end gap-2 text-sm text-muted">
+                au moins
+                <UInputNumber id="gw-chat-minutes" v-model="form.chatMinutes" :min="1" :max="1440" placeholder="—" size="sm" class="w-28" />
+                minute(s)
+              </span>
             </div>
           </div>
         </div>

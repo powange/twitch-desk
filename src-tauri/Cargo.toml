@@ -44,6 +44,11 @@ rand = "0.9"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 
+# Windows : réglage du navigateur intégré (protection contre le pistage)
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
+
 [profile.release]
 codegen-units = 1
 lto = true

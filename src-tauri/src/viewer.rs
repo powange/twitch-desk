@@ -109,6 +109,33 @@ pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(),
     Ok(())
 }
 
+/// Windows : protection contre le pistage du navigateur intégré désactivée pour l'application.
+/// Réglée sur « Équilibrée » par défaut, elle prive le lecteur et le chat de Twitch, intégrés
+/// dans la page multi-stream, de la session twitch.tv (connexion redemandée à chaque ouverture,
+/// « Autoriser l'accès au stockage »). Le réglage vaut pour tout le profil de l'application.
+#[cfg(windows)]
+pub fn allow_embedded_twitch_session(window: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Profile3, ICoreWebView2_13, COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_NONE,
+    };
+    use windows_core::Interface;
+    let result = window.with_webview(|webview| unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else { return };
+        let Ok(core) = core.cast::<ICoreWebView2_13>() else { return };
+        let Ok(profile) = core.Profile() else { return };
+        let Ok(profile) = profile.cast::<ICoreWebView2Profile3>() else { return };
+        if let Err(e) = profile.SetPreferredTrackingPreventionLevel(COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_NONE) {
+            tracing::warn!("protection contre le pistage : {e}");
+        }
+    });
+    if let Err(e) = result {
+        tracing::warn!("navigateur intégré : {e}");
+    }
+}
+
+#[cfg(not(windows))]
+pub fn allow_embedded_twitch_session(_window: &tauri::WebviewWindow) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

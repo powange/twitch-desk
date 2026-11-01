@@ -242,6 +242,11 @@ const MIGRATIONS: &[&str] = &[r#"
         seen_at TEXT NOT NULL,
         PRIMARY KEY (channel, command)
     );
+"#, r#"
+    -- Conditions : avoir dit bonjour, temps de présence dans le chat, ancienneté du follow
+    ALTER TABLE giveaways ADD COLUMN require_greeting INTEGER;
+    ALTER TABLE giveaways ADD COLUMN min_chat_minutes INTEGER;
+    ALTER TABLE giveaways ADD COLUMN follow_min_days INTEGER;
 "#];
 
 /// Types de giveaway
@@ -440,6 +445,12 @@ pub struct GiveawayDetails {
     pub require_presence: Option<bool>,
     pub require_discord: Option<bool>,
     pub notes: Option<String>,
+    /// Avoir dit bonjour dans le chat
+    pub require_greeting: Option<bool>,
+    /// Temps de présence minimum dans le chat, en minutes (0 : non requis, None : on ne sait pas)
+    pub min_chat_minutes: Option<i64>,
+    /// Follow depuis au moins tant de jours (avec le follow requis)
+    pub follow_min_days: Option<i64>,
 }
 
 /// Fiche saisie à la main (création ou modification)
@@ -995,7 +1006,7 @@ impl Db {
             "SELECT id, channel, kind, command, url, evidence, detected_at, status, handled, winner, winner_chance, drawn_at,
                     ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                     require_follow, require_presence, require_discord, notes, manual, reminded,
-                    prize_received, prize_note
+                    prize_received, prize_note, require_greeting, min_chat_minutes, follow_min_days
              FROM giveaways ORDER BY status = 'open' DESC, detected_at DESC LIMIT ?1",
         )?;
         let mut rows: Vec<GiveawayRow> = stmt
@@ -1024,6 +1035,9 @@ impl Db {
                         require_presence: r.get(18)?,
                         require_discord: r.get(19)?,
                         notes: r.get(20)?,
+                        require_greeting: r.get(25)?,
+                        min_chat_minutes: r.get(26)?,
+                        follow_min_days: r.get(27)?,
                     },
                     manual: r.get(21)?,
                     reminded: r.get(22)?,
@@ -1063,7 +1077,7 @@ impl Db {
         self.conn().execute(
             "UPDATE giveaways SET channel = ?2, kind = ?3, command = ?4, url = ?5, ticket_unique = ?6, ticket_max = ?7,
                  reward_name = ?8, reward_cost = ?9, draw_at = ?10, require_follow = ?11, require_presence = ?12,
-                 require_discord = ?13, notes = ?14,
+                 require_discord = ?13, notes = ?14, require_greeting = ?15, min_chat_minutes = ?16, follow_min_days = ?17,
                  reminded = CASE WHEN draw_at IS ?10 THEN reminded ELSE 0 END
              WHERE id = ?1",
             params![
@@ -1080,7 +1094,10 @@ impl Db {
                 d.require_follow,
                 d.require_presence,
                 d.require_discord,
-                d.notes
+                d.notes,
+                d.require_greeting,
+                d.min_chat_minutes,
+                d.follow_min_days
             ],
         )?;
         Ok(())

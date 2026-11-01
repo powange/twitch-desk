@@ -1020,6 +1020,16 @@ pub fn validate_input(mut g: GiveawayInput) -> Result<GiveawayInput, String> {
         ),
     };
     d.notes = d.notes.take().map(|n| n.trim().chars().take(1000).collect::<String>()).filter(|n| !n.is_empty());
+    if d.min_chat_minutes.is_some_and(|m| !(0..=1440).contains(&m)) {
+        return Err("Temps de présence dans le chat invalide (24 h au plus)".into());
+    }
+    if d.follow_min_days.is_some_and(|n| !(1..=3650).contains(&n)) {
+        return Err("Ancienneté du follow invalide (1 à 3650 jours)".into());
+    }
+    // Ancienneté du follow : n'a de sens qu'avec le follow requis
+    if d.require_follow != Some(true) {
+        d.follow_min_days = None;
+    }
     Ok(g)
 }
 
@@ -1061,6 +1071,13 @@ mod tests {
         assert_eq!(t.details.ticket_max, Some(1));
         assert_eq!(t.details.reward_name, None);
         assert_eq!(t.details.draw_at.as_deref(), Some("2026-11-01T21:30:00Z"));
+
+        // Ancienneté du follow gardée seulement avec le follow requis
+        let mut f = input("command");
+        f.details.follow_min_days = Some(30);
+        assert_eq!(validate_input(f.clone()).unwrap().details.follow_min_days, None);
+        f.details.require_follow = Some(true);
+        assert_eq!(validate_input(f).unwrap().details.follow_min_days, Some(30));
 
         // Commande pas encore connue : acceptée, la détection la complétera
         let mut c = input("command");

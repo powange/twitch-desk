@@ -22,7 +22,7 @@ const view = computed(() => snapshot.value?.giveaways)
 const giveaways = computed(() => view.value?.giveaways ?? [])
 
 // --- Follow requis : nos comptes suivent-ils la chaîne ? (relu à l'ouverture de la page) ---
-interface FollowState { accountId: number, login: string, follows: boolean | null }
+interface FollowState { accountId: number, login: string, follows: boolean | null, followedAt: string | null }
 const follows = reactive<Record<string, FollowState[] | 'loading'>>({})
 const following = ref<string | null>(null)
 async function loadFollows(channel: string) {
@@ -42,14 +42,29 @@ function followList(channel: string): FollowState[] | null {
   return Array.isArray(f) ? f : null
 }
 const notFollowing = (channel: string) => (followList(channel) ?? []).filter(f => f.follows === false)
-function followTooltip(channel: string) {
-  const list = followList(channel)
-  if (!list) return 'Follow requis : vérification…'
+// Jours depuis le follow d'un compte
+const followDays = (f: FollowState) => f.followedAt ? Math.floor((Date.now() - new Date(f.followedAt).getTime()) / 86_400_000) : null
+// Comptes qui suivent, mais depuis moins longtemps que demandé
+function tooRecent(g: GiveawayView) {
+  const min = g.followMinDays
+  if (!min) return []
+  return (followList(g.channel) ?? []).filter(f => f.follows && (followDays(f) ?? 0) < min)
+}
+const followOk = (g: GiveawayView) => {
+  const list = followList(g.channel)
+  return !!list && list.every(f => f.follows) && tooRecent(g).length === 0
+}
+function followTooltip(g: GiveawayView) {
+  const list = followList(g.channel)
+  const head = g.followMinDays ? `Follow requis depuis au moins ${g.followMinDays} jour(s)` : 'Follow requis'
+  if (!list) return `${head} : vérification…`
   const missing = list.filter(f => f.follows === false).map(f => f.login)
   const unknown = list.filter(f => f.follows === null).map(f => f.login)
-  const parts = ['Follow requis']
+  const recent = tooRecent(g).map(f => `${f.login} (${followDays(f)} j)`)
+  const parts = [head]
   if (missing.length) parts.push(`pas suivie par ${missing.join(', ')} : clique pour suivre`)
-  else if (!unknown.length) parts.push('suivie par tous tes comptes')
+  if (recent.length) parts.push(`follow trop récent : ${recent.join(', ')}`)
+  if (!missing.length && !recent.length && !unknown.length) parts.push('suivie par tous tes comptes')
   if (unknown.length) parts.push(`état inconnu pour ${unknown.join(', ')}`)
   return parts.join(' · ')
 }
@@ -213,7 +228,9 @@ function share(g: GiveawayView) {
             <button class="hover:underline" @click="openExternal(channelUrl(g.channel))">{{ g.channel }}</button>
           </span>
           <UBadge :label="GIVEAWAY_KIND[g.kind].label" :color="GIVEAWAY_KIND[g.kind].color" variant="subtle" size="sm" />
-          <span v-if="g.command" class="font-mono bg-elevated px-1.5 py-0.5 rounded">{{ g.command }}</span>
+          <UTooltip v-if="g.command" text="Copier la commande">
+            <button type="button" class="font-mono bg-elevated px-1.5 py-0.5 rounded hover:text-primary" @click="copyCommand(g.command)">{{ g.command }}</button>
+          </UTooltip>
           <GiveawayConditions :details="g" :kind="g.kind" />
           <span v-if="g.drawAt" class="text-sm text-muted inline-flex items-center gap-1"><UIcon name="i-lucide-clock" class="size-4" />Tirage {{ formatDrawAt(g.drawAt) }}</span>
           <UTooltip v-if="g.evidence" :text="evidenceText(g)">
@@ -290,7 +307,21 @@ function share(g: GiveawayView) {
               <th class="px-2 py-2">
                 <div class="flex justify-center">
                   <UTooltip text="Follow de la chaîne requis (vert : suivie par tous tes comptes ; clique pour suivre sinon)">
-                  <UIcon name="i-lucide-heart" class="size-4 block" aria-label="Follow requis" />
+                    <UIcon name="i-lucide-heart" class="size-4 block" aria-label="Follow requis" />
+                  </UTooltip>
+                </div>
+              </th>
+              <th class="px-2 py-2">
+                <div class="flex justify-center">
+                  <UTooltip text="Avoir dit bonjour dans le chat">
+                    <UIcon name="i-lucide-hand" class="size-4 block" aria-label="Avoir dit bonjour" />
+                  </UTooltip>
+                </div>
+              </th>
+              <th class="px-2 py-2">
+                <div class="flex justify-center">
+                  <UTooltip text="Temps de présence minimum dans le chat">
+                    <UIcon name="i-lucide-timer" class="size-4 block" aria-label="Temps de présence dans le chat" />
                   </UTooltip>
                 </div>
               </th>
@@ -383,7 +414,7 @@ function share(g: GiveawayView) {
               <td class="px-2 py-2">
                 <div class="flex justify-center items-center">
                   <span v-if="g.requireFollow === null" class="text-muted" title="On ne sait pas">?</span>
-                  <UTooltip v-else-if="g.requireFollow" :text="g.open ? followTooltip(g.channel) : 'Follow requis'">
+                  <UTooltip v-else-if="g.requireFollow" :text="g.open ? followTooltip(g) : g.followMinDays ? `Follow requis depuis au moins ${g.followMinDays} jour(s)` : 'Follow requis'">
                     <button
                       v-if="g.open && notFollowing(g.channel).length"
                       type="button"
@@ -398,8 +429,27 @@ function share(g: GiveawayView) {
                       v-else
                       name="i-lucide-heart"
                       class="size-4 block"
-                      :class="g.open && followList(g.channel) && followList(g.channel)!.every(f => f.follows) ? 'text-success fill-current' : 'text-pink-600 dark:text-pink-400'"
+                      :class="g.open && followOk(g) ? 'text-success fill-current' : g.open && tooRecent(g).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'"
                     />
+                  </UTooltip>
+                  <span v-if="g.requireFollow && g.followMinDays" class="text-xs text-muted ml-1 whitespace-nowrap">{{ g.followMinDays }} j</span>
+                </div>
+              </td>
+              <td class="px-2 py-2">
+                <div class="flex justify-center items-center">
+                  <span v-if="g.requireGreeting === null" class="text-muted" title="On ne sait pas">?</span>
+                  <UTooltip v-else-if="g.requireGreeting" text="Avoir dit bonjour dans le chat">
+                    <UIcon name="i-lucide-hand" class="size-4 text-amber-600 dark:text-amber-400 block" />
+                  </UTooltip>
+                </div>
+              </td>
+              <td class="px-2 py-2">
+                <div class="flex justify-center items-center">
+                  <span v-if="g.minChatMinutes === null" class="text-muted" title="On ne sait pas">?</span>
+                  <UTooltip v-else-if="g.minChatMinutes > 0" :text="`Présent dans le chat depuis au moins ${g.minChatMinutes} min`">
+                    <span class="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 whitespace-nowrap">
+                      <UIcon name="i-lucide-timer" class="size-4" />{{ g.minChatMinutes }} min
+                    </span>
                   </UTooltip>
                 </div>
               </td>
@@ -449,7 +499,7 @@ function share(g: GiveawayView) {
               </td>
             </tr>
             <tr v-if="giveaways.length === 0">
-              <td colspan="13" class="px-3 py-8 text-center text-muted">Aucun giveaway pour l'instant. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».</td>
+              <td colspan="15" class="px-3 py-8 text-center text-muted">Aucun giveaway pour l'instant. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».</td>
             </tr>
           </tbody>
         </table>

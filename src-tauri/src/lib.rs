@@ -132,6 +132,9 @@ pub fn run() {
             state.spawn_languages();
             scanner::spawn(state.clone());
             insights::spawn(state.clone());
+            if let Some(main) = app.get_webview_window("main") {
+                viewer::allow_embedded_twitch_session(&main);
+            }
             sync::spawn(state.clone());
             Ok(())
         })

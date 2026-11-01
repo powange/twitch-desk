@@ -162,15 +162,16 @@ impl Gql {
         }
     }
 
-    /// Le compte suit-il la chaîne ? Renvoie aussi l'identifiant de la chaîne (None : introuvable)
-    pub async fn follow_state(&self, login: &str) -> Result<Option<(String, bool)>> {
+    /// Depuis quand le compte suit la chaîne (None : ne la suit pas), avec l'identifiant de la
+    /// chaîne ; None si la chaîne est introuvable
+    pub async fn follow_state(&self, login: &str) -> Result<Option<(String, Option<String>)>> {
         let data = self
             .query("query FollowState($login: String!) { user(login: $login) { id self { follower { followedAt } } } }", json!({ "login": login }))
             .await?;
         let Some(user) = data.get("user").filter(|u| !u.is_null()) else { return Ok(None) };
         let id = user.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
-        let follows = user.pointer("/self/follower/followedAt").is_some_and(|v| !v.is_null());
-        Ok(Some((id, follows)))
+        let since = user.pointer("/self/follower/followedAt").and_then(Value::as_str).map(str::to_owned);
+        Ok(Some((id, since)))
     }
 
     /// Suit une chaîne (notifications de live laissées à Twitch)
