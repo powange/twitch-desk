@@ -1,7 +1,9 @@
 # Publie une version : pousser un tag vX.Y.Z (même numéro que tauri.conf.json).
-# Compile Windows (installateur NSIS) et Linux (AppImage, .deb), signe chaque
-# paquet et publie latest.json, que l'application lit pour se mettre à jour.
-# Les tests passent dans ci.yml à chaque push sur main.
+# Vérifie le numéro et les tests, compile Windows (installateur NSIS) et Linux (AppImage,
+# .deb), signe chaque paquet et publie latest.json, que l'application lit pour se mettre à
+# jour. La release reste en brouillon jusqu'à ce que tous les paquets soient envoyés : un
+# brouillon n'est pas la « dernière release », les applications gardent donc la version
+# précédente (releases/latest/download/latest.json) tant que la nouvelle n'est pas complète.
 name: Release
 
 on:
@@ -9,17 +11,39 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  version:
+    name: Numéro de version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Tag et version de l'application identiques
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          conf=$(jq -r .version src-tauri/tauri.conf.json)
+          cargo=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
+          echo "tag $tag, tauri.conf.json $conf, Cargo.toml $cargo"
+          if [ "$tag" != "$conf" ] || [ "$tag" != "$cargo" ]; then
+            echo "::error::Le tag $GITHUB_REF_NAME ne correspond pas à la version de l'application ($conf / $cargo)"
+            exit 1
+          fi
+
+  test:
+    name: Tests ${{ matrix.platform }}
+    needs: version
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         platform: [windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Dépendances Linux
         if: matrix.platform == 'ubuntu-22.04'
@@ -27,16 +51,95 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: matrix.platform == 'ubuntu-22.04'
         with:
           node-version: 24
-          cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      # Relu sans enregistrer (un cache enregistré sur un tag serait inutilisable) : sous Linux
+      # celui de ci.yml (même compilation), sous Windows celui de cache.yml (sources des crates)
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri -> target
+          shared-key: ${{ matrix.platform == 'ubuntu-22.04' && 'ci' || 'release' }}
+          save-if: false
+
+      # Interface : vérification des types (vue-tsc) et compilation, une fois (Linux)
+      - name: Interface
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          npm ci
+          npm run build
+
+      # Sous Windows, l'interface n'est pas compilée : dossier vide pour generate_context!
+      - name: Dossier de l'interface
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: mkdir -p dist
+
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  draft:
+    name: Release en brouillon
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      id: ${{ steps.release.outputs.id }}
+    steps:
+      # Brouillon créé une fois ici : les deux compilations y envoient leurs paquets
+      - id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -1)
+          if [ -z "$id" ]; then
+            id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$TAG" -f name="Twitch Desk $TAG" -f body="Voir les changements dans le dépôt." \
+              -F draft=true -F prerelease=false --jq .id)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: draft
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Dépendances Linux
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      # Sans cache npm : un cache enregistré sur un tag ne resservirait jamais
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
 
       # Cache des dépendances compilées, préparé sur main par cache.yml (un tag ne peut relire
       # que le cache de main) ; jamais enregistré ici : il resterait attaché au tag, inutilisable
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri -> target
           shared-key: release
@@ -44,15 +147,30 @@ jobs:
 
       - run: npm ci
 
-      - uses: tauri-apps/tauri-action@v0
+      # Clé de signature des mises à jour : passée à cette seule étape (pas au job), pour
+      # qu'aucune autre étape ni action ne la voie
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Twitch Desk ${{ github.ref_name }}
-          releaseBody: Voir les changements dans le dépôt.
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.draft.outputs.id }}
           includeUpdaterJson: true
+
+  publish:
+    name: Publication
+    needs: [draft, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # Tous les paquets et latest.json sont en place : la release devient la dernière, les
+      # applications voient la mise à jour
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ID: ${{ needs.draft.outputs.id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$ID" --jq '.assets[].name' | grep -qx latest.json \
+            || { echo "::error::latest.json absent de la release"; exit 1; }
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F draft=false -f make_latest=true --jq .html_url

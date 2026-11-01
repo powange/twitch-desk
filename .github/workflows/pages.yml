@@ -26,15 +26,33 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Après une release : le tag publié ; à la main : la branche choisie
           ref: ${{ github.event.workflow_run.head_branch || github.ref }}
-      # Page multi-stream : intégrée à l'application (public/), copie de secours sur GitHub Pages
-      - run: cp public/viewer.html public/viewer.js site/
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+          # Tous les tags : copies de la page multi-stream de chaque version
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      # Page multi-stream : intégrée à l'application (public/), copie de secours sur GitHub Pages.
+      # À la racine : celle du tag publié. Dans viewer/<version>/ : celle de chaque version
+      # publiée, reprise des tags à chaque déploiement (un déploiement remplace tout le site)
+      - name: Page multi-stream
+        run: |
+          cp public/viewer.html public/viewer.js site/
+          for tag in $(git tag -l 'v*'); do
+            git cat-file -e "$tag:public/viewer.html" 2>/dev/null || continue
+            git cat-file -e "$tag:public/viewer.js" 2>/dev/null || continue
+            dir="site/viewer/${tag#v}"
+            mkdir -p "$dir"
+            git show "$tag:public/viewer.html" > "$dir/viewer.html"
+            git show "$tag:public/viewer.js" > "$dir/viewer.js"
+            cp site/icon.svg "$dir/"
+          done
+          ls site/viewer
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: site
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

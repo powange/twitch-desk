@@ -1,0 +1,47 @@
+# Mises à jour proposées par Dependabot, regroupées pour limiter le nombre de demandes de
+# fusion : actions GitHub (épinglées par commit) chaque semaine, le reste chaque mois
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: monthly
+    groups:
+      app-rust-minor:
+        update-types: [minor, patch]
+      app-rust-major:
+        update-types: [major]
+
+  - package-ecosystem: cargo
+    directory: /server
+    schedule:
+      interval: monthly
+    groups:
+      server-rust:
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      npm-minor:
+        update-types: [minor, patch]
+      npm-major:
+        update-types: [major]
+
+  - package-ecosystem: docker
+    directory: /server
+    schedule:
+      interval: monthly
+    groups:
+      server-images:
+        patterns: ['*']
