@@ -16,6 +16,8 @@ use crate::app::App;
 const LABEL: &str = "viewer";
 const PIN_ID: &str = "viewer-pin";
 const RELOAD_ID: &str = "viewer-reload";
+/// Bloqueur de publicités Twitch (vaft, MIT) : voir vendor/vaft/README.md
+const VAFT: &str = include_str!("../vendor/vaft/vaft.user.js");
 /// Page multi-stream ; `TWITCH_DESK_VIEWER_URL` la remplace (essais)
 const VIEWER_URL: &str = "https://powange.github.io/twitch-desk/viewer.html";
 
@@ -66,7 +68,12 @@ pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(),
     } else {
         WebviewUrl::App(format!("viewer.html?{query}").into())
     };
-    let window = WebviewWindowBuilder::new(handle, LABEL, source)
+    let mut builder = WebviewWindowBuilder::new(handle, LABEL, source);
+    if app.db.settings().viewer_adblock {
+        // Seulement dans les lecteurs (player.twitch.tv), pas dans la page ni le chat
+        builder = builder.initialization_script_for_all_frames(format!("if (location.hostname === 'player.twitch.tv') {{\n{VAFT}\n}}"));
+    }
+    let window = builder
         // Page de l'application servie en https://tauri.localhost (Windows) : Twitch exige HTTPS
         .use_https_scheme(true)
         .title("Streams")

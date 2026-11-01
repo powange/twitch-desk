@@ -153,6 +153,16 @@ async function checkUpdates() {
           <USelect v-model="settings.viewerSource" :items="viewerItems" class="w-56" />
         </div>
         <div class="flex items-center justify-between gap-4 px-4 py-3">
+          <div>
+            <div class="font-medium">Bloquer les publicités Twitch</div>
+            <div class="text-sm text-muted">
+              Dans les lecteurs de la fenêtre des streams (script vaft de TwitchAdSolutions). Peut cesser de fonctionner quand Twitch change ses publicités.
+              Prend effet à la prochaine ouverture de la fenêtre.
+            </div>
+          </div>
+          <USwitch v-model="settings.viewerAdblock" aria-label="Bloquer les publicités Twitch" />
+        </div>
+        <div class="flex items-center justify-between gap-4 px-4 py-3">
           <div class="font-medium">Thème</div>
               <USelect v-model="theme" :items="themeItems" class="w-36" />
             </div>

@@ -569,6 +569,8 @@ pub struct Settings {
     pub detect_keywords: bool,
     /// Page multi-stream : « local » (intégrée à l'application) ou « github » (page GitHub)
     pub viewer_source: String,
+    /// Fenêtre « Streams » : bloqueur de publicités Twitch (vaft) dans les lecteurs
+    pub viewer_adblock: bool,
 }
 
 pub const DEFAULT_SCANNER_KEYWORDS: &[&str] =
@@ -602,6 +604,7 @@ impl Default for Settings {
             detect_cooldown_secs: 600,
             detect_keywords: true,
             viewer_source: "local".into(),
+            viewer_adblock: false,
         }
     }
 }

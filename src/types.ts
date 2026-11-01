@@ -192,6 +192,8 @@ export interface Settings {
   detectKeywords: boolean
   // Page multi-stream : intégrée à l'application, ou page GitHub (secours)
   viewerSource: 'local' | 'github'
+  // Fenêtre « Streams » : bloqueur de publicités Twitch dans les lecteurs
+  viewerAdblock: boolean
 }
 
 export type ChannelList = 'points' | 'se'
