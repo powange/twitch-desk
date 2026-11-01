@@ -4,10 +4,11 @@ import { useSnapshot } from '../composables/useSnapshot'
 import { LANGUAGES } from '../utils/languages'
 
 // Drapeau de la langue de diffusion d'une chaîne (rien tant qu'elle n'est pas connue)
-const props = defineProps<{ login: string }>()
+// `lang` : langue déjà connue (sinon, celle relevée pour les chaînes suivies)
+const props = defineProps<{ login: string, lang?: string | null }>()
 const { snapshot } = useSnapshot()
 
-const code = computed(() => snapshot.value?.languages[props.login.toLowerCase()])
+const code = computed(() => props.lang ?? snapshot.value?.languages[props.login.toLowerCase()])
 const lang = computed(() => (code.value ? LANGUAGES[code.value] : undefined))
 </script>
 

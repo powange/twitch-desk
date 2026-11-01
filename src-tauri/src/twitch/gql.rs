@@ -268,6 +268,118 @@ pub async fn channel_languages(http: &reqwest::Client, logins: &[String]) -> Res
     Ok(out)
 }
 
+/// Fiche publique d'une chaîne (requête sans connexion, comme les langues)
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelProfile {
+    pub login: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub profile_image: Option<String>,
+    pub language: Option<String>,
+    pub followers: Option<i64>,
+    /// En live : spectateurs, catégorie, titre, début du live
+    pub live: bool,
+    pub viewers: Option<i64>,
+    pub game_id: Option<String>,
+    pub game_name: Option<String>,
+    pub title: Option<String>,
+    pub started_at: Option<String>,
+    /// Message épinglé dans le chat (meilleur effort : Twitch peut ne pas le donner)
+    pub pinned_message: Option<String>,
+    pub pinned_by: Option<String>,
+    /// Invitation Discord trouvée dans les liens de la chaîne ou sa description
+    pub discord: Option<String>,
+}
+
+/// Invitation Discord dans un texte (discord.gg/…, discord.com/invite/…), en adresse complète
+pub fn find_discord(text: &str) -> Option<String> {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(?:https?://)?(?:www\.)?(discord\.gg|discord(?:app)?\.com/invite)/([A-Za-z0-9-]{2,64})").unwrap()
+    });
+    let c = RE.captures(text)?;
+    let host = if c[1].eq_ignore_ascii_case("discord.gg") { "discord.gg" } else { "discord.com/invite" };
+    Some(format!("https://{host}/{}", &c[2]))
+}
+
+pub async fn channel_profile(http: &reqwest::Client, login: &str) -> Result<Option<ChannelProfile>> {
+    if !is_login(login) {
+        return Ok(None);
+    }
+    let query = format!(
+        "query {{ user(login: \"{login}\") {{ login displayName description profileImageURL(width: 150) \
+         followers {{ totalCount }} channel {{ socialMedias {{ name url }} }} \
+         broadcastSettings {{ language title game {{ id displayName }} }} \
+         stream {{ viewersCount createdAt title game {{ id displayName }} }} }} }}"
+    );
+    let value = raw_query(http, &query).await?;
+    let mut profile = match parse_profile(&value) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    // Message épinglé : requête à part, une erreur ne doit pas faire perdre la fiche
+    let pinned = format!(
+        "query {{ channel(name: \"{login}\") {{ pinnedChatMessages(first: 1) {{ edges {{ node {{ \
+         pinnedBy {{ displayName }} pinnedMessage {{ content {{ text }} sender {{ displayName }} }} }} }} }} }} }}"
+    );
+    match raw_query(http, &pinned).await {
+        Ok(v) => {
+            let node = v.pointer("/data/channel/pinnedChatMessages/edges/0/node");
+            profile.pinned_message = node
+                .and_then(|n| n.pointer("/pinnedMessage/content/text"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            profile.pinned_by = node
+                .and_then(|n| n.pointer("/pinnedMessage/sender/displayName").or_else(|| n.pointer("/pinnedBy/displayName")))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+
+        }
+        Err(e) => tracing::debug!("message épinglé de {login} : {e}"),
+    }
+    Ok(Some(profile))
+}
+
+async fn raw_query(http: &reqwest::Client, query: &str) -> Result<Value> {
+    let res = http
+        .post(GQL_URL)
+        .header("Client-Id", WEB_CLIENT_ID)
+        .header("User-Agent", super::BROWSER_USER_AGENT)
+        .json(&json!({ "query": query }))
+        .send()
+        .await?;
+    Ok(res.json().await?)
+}
+
+fn parse_profile(value: &Value) -> Option<ChannelProfile> {
+    let u = value.pointer("/data/user").filter(|u| !u.is_null())?;
+    let s = |v: &Value, p: &str| v.pointer(p).and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_owned);
+    let stream = u.get("stream").filter(|x| !x.is_null());
+    let settings = u.get("broadcastSettings");
+    Some(ChannelProfile {
+        login: s(u, "/login")?.to_lowercase(),
+        display_name: s(u, "/displayName").unwrap_or_default(),
+        description: s(u, "/description"),
+        profile_image: s(u, "/profileImageURL"),
+        language: settings.and_then(|b| s(b, "/language")).map(|l| l.to_lowercase()),
+        followers: u.pointer("/followers/totalCount").and_then(Value::as_i64),
+        live: stream.is_some(),
+        viewers: stream.and_then(|x| x.get("viewersCount")).and_then(Value::as_i64),
+        game_id: stream.and_then(|x| s(x, "/game/id")).or_else(|| settings.and_then(|b| s(b, "/game/id"))),
+        game_name: stream.and_then(|x| s(x, "/game/displayName")).or_else(|| settings.and_then(|b| s(b, "/game/displayName"))),
+        title: stream.and_then(|x| s(x, "/title")).or_else(|| settings.and_then(|b| s(b, "/title"))),
+        started_at: stream.and_then(|x| s(x, "/createdAt")),
+        pinned_message: None,
+        pinned_by: None,
+        // Liens de la chaîne d'abord (bouton Discord du profil), sinon la description
+        discord: u
+            .pointer("/channel/socialMedias")
+            .and_then(Value::as_array)
+            .and_then(|links| links.iter().filter_map(|l| l.get("url").and_then(Value::as_str)).find_map(find_discord))
+            .or_else(|| s(u, "/description").as_deref().and_then(find_discord)),
+    })
+}
+
 fn is_login(s: &str) -> bool {
     !s.is_empty() && s.len() <= 25 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
@@ -383,6 +495,34 @@ mod tests {
         ] {
             assert!(!hashes_for(name).is_empty(), "{name}");
         }
+    }
+
+    #[test]
+    fn discord_links() {
+        assert_eq!(find_discord("Rejoins-nous : discord.gg/SeaOfThievesFR !").as_deref(), Some("https://discord.gg/SeaOfThievesFR"));
+        assert_eq!(find_discord("https://discord.com/invite/abc-123"), Some("https://discord.com/invite/abc-123".into()));
+        assert_eq!(find_discord("https://www.discordapp.com/invite/xyz"), Some("https://discord.com/invite/xyz".into()));
+        assert_eq!(find_discord("pas de discord ici"), None);
+        let v = json!({"data":{"user":{"login":"a","displayName":"A","description":"discord.gg/desc",
+            "channel":{"socialMedias":[{"name":"x","url":"https://twitter.com/a"},{"name":"discord","url":"https://discord.gg/social"}]}}}});
+        assert_eq!(parse_profile(&v).unwrap().discord.as_deref(), Some("https://discord.gg/social"));
+    }
+
+    #[test]
+    fn profile_parsing() {
+        let v = json!({"data":{"user":{"login":"LevraiDoffy","displayName":"LevraiDoffy","description":"Pirate 24/7",
+            "profileImageURL":"https://x/p.png","followers":{"totalCount":12345},
+            "broadcastSettings":{"language":"FR","title":"Réglages","game":{"id":"490377","displayName":"Sea of Thieves"}},
+            "stream":{"viewersCount":151,"createdAt":"2026-10-30T12:00:00Z","title":"En live","game":{"id":"490377","displayName":"Sea of Thieves"}}}}});
+        let p = parse_profile(&v).unwrap();
+        assert!(p.live);
+        assert_eq!((p.login.as_str(), p.viewers, p.followers), ("levraidoffy", Some(151), Some(12345)));
+        assert_eq!((p.language.as_deref(), p.title.as_deref()), (Some("fr"), Some("En live")));
+        let off = json!({"data":{"user":{"login":"a","displayName":"A","stream":null,"broadcastSettings":{"title":"Hors live","game":null}}}});
+        let p = parse_profile(&off).unwrap();
+        assert!(!p.live && p.viewers.is_none());
+        assert_eq!(p.title.as_deref(), Some("Hors live"));
+        assert!(parse_profile(&json!({"data":{"user":null}})).is_none());
     }
 
     #[test]

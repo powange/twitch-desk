@@ -13,6 +13,8 @@ declare module 'vue' {
   export interface GlobalComponents {
     AccountPicker: typeof import('./src/components/AccountPicker.vue')['default']
     ChannelFlag: typeof import('./src/components/ChannelFlag.vue')['default']
+    ChannelProfileCard: typeof import('./src/components/ChannelProfileCard.vue')['default']
+    GiftFormModal: typeof import('./src/components/GiftFormModal.vue')['default']
     GiveawayConditions: typeof import('./src/components/GiveawayConditions.vue')['default']
     GiveawayFormModal: typeof import('./src/components/GiveawayFormModal.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

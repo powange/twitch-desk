@@ -1,5 +1,6 @@
 //! Base locale SQLite : comptes, chaînes suivies, gains de points, réglages.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -131,6 +132,51 @@ const MIGRATIONS: &[&str] = &[r#"
     ALTER TABLE giveaways ADD COLUMN notes TEXT;
     ALTER TABLE giveaways ADD COLUMN manual INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE giveaways ADD COLUMN reminded INTEGER NOT NULL DEFAULT 0;
+"#, r#"
+    -- Catalogue de cadeaux (comme le site Giveaway Twitch) et suivi de nos gains
+    CREATE TABLE gift_groups (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE
+    );
+    CREATE TABLE gifts (
+        id INTEGER PRIMARY KEY,
+        title TEXT NOT NULL,
+        -- Image en data URL, réduite à l'ajout
+        image TEXT,
+        group_id INTEGER REFERENCES gift_groups(id) ON DELETE SET NULL,
+        keywords TEXT NOT NULL DEFAULT '[]'
+    );
+    CREATE TABLE giveaway_gifts (
+        giveaway_id INTEGER NOT NULL REFERENCES giveaways(id) ON DELETE CASCADE,
+        gift_id INTEGER NOT NULL REFERENCES gifts(id) ON DELETE CASCADE,
+        PRIMARY KEY (giveaway_id, gift_id)
+    );
+    -- Lot d'un giveaway gagné : reçu ou non, et note (clé, code…)
+    ALTER TABLE giveaways ADD COLUMN prize_received INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE giveaways ADD COLUMN prize_note TEXT;
+"#, r#"
+    -- Cadeau rattaché à une catégorie Twitch (jeu) ; groupes propres à une catégorie.
+    -- Table des groupes reconstruite (nom unique par catégorie) sans toucher aux cadeaux.
+    PRAGMA foreign_keys = OFF;
+    ALTER TABLE gifts ADD COLUMN game_id TEXT;
+    ALTER TABLE gifts ADD COLUMN game_name TEXT;
+    CREATE TABLE gift_groups_new (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        game_id TEXT
+    );
+    INSERT INTO gift_groups_new (id, name, game_id) SELECT id, name, NULL FROM gift_groups;
+    DROP TABLE gift_groups;
+    ALTER TABLE gift_groups_new RENAME TO gift_groups;
+    CREATE UNIQUE INDEX gift_groups_name ON gift_groups (IFNULL(game_id, ''), name);
+    PRAGMA foreign_keys = ON;
+"#, r#"
+    -- Informations propres au streamer (et non à un giveaway), retrouvées à chaque giveaway
+    CREATE TABLE streamers (
+        login TEXT PRIMARY KEY,
+        discord_url TEXT,
+        notes TEXT
+    );
 "#];
 
 /// Types de giveaway
@@ -166,6 +212,43 @@ pub struct Account {
     pub device_id: String,
     pub points_enabled: bool,
     pub drops_enabled: bool,
+}
+
+/// Informations propres à un streamer
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Streamer {
+    pub login: String,
+    /// Lien d'invitation au Discord du streamer
+    pub discord_url: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GiftGroup {
+    pub id: i64,
+    pub name: String,
+    /// Catégorie (jeu Twitch) du groupe ; None : groupe sans catégorie
+    pub game_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Gift {
+    #[serde(default)]
+    pub id: i64,
+    pub title: String,
+    pub image: Option<String>,
+    pub group_id: Option<i64>,
+    /// Mots qui, dans le titre d'un live, suggèrent ce cadeau
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    /// Catégorie Twitch (jeu) du cadeau
+    #[serde(default)]
+    pub game_id: Option<String>,
+    #[serde(default)]
+    pub game_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -225,6 +308,10 @@ pub struct GiveawayRow {
     pub winner_chance: Option<String>,
     pub drawn_at: Option<String>,
     pub entries: Vec<GiveawayEntry>,
+    /// Cadeaux du catalogue rattachés au giveaway
+    pub gift_ids: Vec<i64>,
+    pub prize_received: bool,
+    pub prize_note: Option<String>,
     #[serde(flatten)]
     pub details: GiveawayDetails,
     /// Créé à la main (pas détecté dans le chat)
@@ -262,6 +349,8 @@ pub struct GiveawayInput {
     pub kind: String,
     pub command: Option<String>,
     pub url: Option<String>,
+    #[serde(default)]
+    pub gift_ids: Vec<i64>,
     #[serde(flatten)]
     pub details: GiveawayDetails,
 }
@@ -728,7 +817,8 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT id, channel, kind, command, url, evidence, detected_at, status, handled, winner, winner_chance, drawn_at,
                     ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
-                    require_follow, require_presence, require_discord, notes, manual, reminded
+                    require_follow, require_presence, require_discord, notes, manual, reminded,
+                    prize_received, prize_note
              FROM giveaways ORDER BY status = 'open' DESC, detected_at DESC LIMIT ?1",
         )?;
         let mut rows: Vec<GiveawayRow> = stmt
@@ -760,14 +850,19 @@ impl Db {
                     },
                     manual: r.get(21)?,
                     reminded: r.get(22)?,
+                    gift_ids: vec![],
+                    prize_received: r.get(23)?,
+                    prize_note: r.get(24)?,
                 })
             })?
             .collect::<DbResult<_>>()?;
         let mut stmt = conn.prepare("SELECT account_id, at, auto FROM giveaway_entries WHERE giveaway_id = ?1 ORDER BY at")?;
+        let mut gifts = conn.prepare("SELECT gift_id FROM giveaway_gifts WHERE giveaway_id = ?1 ORDER BY gift_id")?;
         for g in &mut rows {
             g.entries = stmt
                 .query_map([g.id], |r| Ok(GiveawayEntry { account_id: r.get(0)?, at: r.get(1)?, auto: r.get(2)? }))?
                 .collect::<DbResult<_>>()?;
+            g.gift_ids = gifts.query_map([g.id], |r| r.get(0))?.collect::<DbResult<_>>()?;
         }
         Ok(rows)
     }
@@ -787,6 +882,7 @@ impl Db {
 
     pub fn update_giveaway(&self, id: i64, g: &GiveawayInput) -> DbResult<()> {
         let d = &g.details;
+        self.set_giveaway_gifts(id, &g.gift_ids)?;
         self.conn().execute(
             "UPDATE giveaways SET channel = ?2, kind = ?3, command = ?4, url = ?5, ticket_unique = ?6, ticket_max = ?7,
                  reward_name = ?8, reward_cost = ?9, draw_at = ?10, require_follow = ?11, require_presence = ?12,
@@ -811,6 +907,137 @@ impl Db {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn set_giveaway_gifts(&self, id: i64, gift_ids: &[i64]) -> DbResult<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM giveaway_gifts WHERE giveaway_id = ?1", [id])?;
+        for gift in gift_ids {
+            tx.execute("INSERT OR IGNORE INTO giveaway_gifts (giveaway_id, gift_id) VALUES (?1, ?2)", params![id, gift])?;
+        }
+        tx.commit()
+    }
+
+    pub fn set_prize(&self, id: i64, received: bool, note: Option<&str>) -> DbResult<()> {
+        self.conn().execute(
+            "UPDATE giveaways SET prize_received = ?2, prize_note = ?3 WHERE id = ?1",
+            params![id, received, note],
+        )?;
+        Ok(())
+    }
+
+    /// Giveaways gagnés par un de nos comptes (pseudos en minuscules), les plus récents d'abord
+    pub fn won_giveaways(&self, logins: &[String]) -> DbResult<Vec<GiveawayRow>> {
+        Ok(self
+            .giveaways(5000)?
+            .into_iter()
+            .filter(|g| g.winner.as_deref().is_some_and(|w| logins.iter().any(|l| l.eq_ignore_ascii_case(w))))
+            .collect())
+    }
+
+    // --- Streamers ---
+
+    pub fn streamer(&self, login: &str) -> DbResult<Option<Streamer>> {
+        self.conn()
+            .query_row("SELECT login, discord_url, notes FROM streamers WHERE login = ?1", [login], |r| {
+                Ok(Streamer { login: r.get(0)?, discord_url: r.get(1)?, notes: r.get(2)? })
+            })
+            .optional()
+    }
+
+    pub fn save_streamer(&self, s: &Streamer) -> DbResult<()> {
+        self.conn().execute(
+            "INSERT INTO streamers (login, discord_url, notes) VALUES (?1, ?2, ?3)
+             ON CONFLICT(login) DO UPDATE SET discord_url = excluded.discord_url, notes = excluded.notes",
+            params![s.login, s.discord_url, s.notes],
+        )?;
+        Ok(())
+    }
+
+    /// Chaînes ayant un giveaway par points de chaîne ouvert (prioritaires pour le visionnage)
+    pub fn open_channelpoints_channels(&self) -> DbResult<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT DISTINCT channel FROM giveaways WHERE status = 'open' AND kind = 'channelpoints'")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect()
+    }
+
+    // --- Catalogue de cadeaux ---
+
+    pub fn gift_groups(&self) -> DbResult<Vec<GiftGroup>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT id, name, game_id FROM gift_groups ORDER BY name COLLATE NOCASE")?;
+        let rows = stmt.query_map([], |r| Ok(GiftGroup { id: r.get(0)?, name: r.get(1)?, game_id: r.get(2)? }))?;
+        rows.collect()
+    }
+
+    /// Groupe d'après son nom dans une catégorie (créé s'il n'existe pas)
+    pub fn ensure_gift_group(&self, name: &str, game_id: Option<&str>) -> DbResult<i64> {
+        let conn = self.conn();
+        conn.execute("INSERT OR IGNORE INTO gift_groups (name, game_id) VALUES (?1, ?2)", params![name, game_id])?;
+        conn.query_row(
+            "SELECT id FROM gift_groups WHERE name = ?1 AND game_id IS ?2",
+            params![name, game_id],
+            |r| r.get(0),
+        )
+    }
+
+    pub fn delete_gift_group(&self, id: i64) -> DbResult<()> {
+        self.conn().execute("DELETE FROM gift_groups WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn gifts(&self) -> DbResult<Vec<Gift>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, image, group_id, keywords, game_id, game_name FROM gifts ORDER BY title COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let keywords: String = r.get(4)?;
+            Ok(Gift {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                image: r.get(2)?,
+                group_id: r.get(3)?,
+                keywords: serde_json::from_str(&keywords).unwrap_or_default(),
+                game_id: r.get(5)?,
+                game_name: r.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Ajoute (id 0) ou modifie un cadeau ; renvoie son identifiant
+    pub fn save_gift(&self, g: &Gift) -> DbResult<i64> {
+        let conn = self.conn();
+        let keywords = serde_json::to_string(&g.keywords).expect("liste sérialisable");
+        if g.id == 0 {
+            conn.execute(
+                "INSERT INTO gifts (title, image, group_id, keywords, game_id, game_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![g.title, g.image, g.group_id, keywords, g.game_id, g.game_name],
+            )?;
+            Ok(conn.last_insert_rowid())
+        } else {
+            conn.execute(
+                "UPDATE gifts SET title = ?2, image = ?3, group_id = ?4, keywords = ?5, game_id = ?6, game_name = ?7 WHERE id = ?1",
+                params![g.id, g.title, g.image, g.group_id, keywords, g.game_id, g.game_name],
+            )?;
+            Ok(g.id)
+        }
+    }
+
+    pub fn delete_gift(&self, id: i64) -> DbResult<()> {
+        self.conn().execute("DELETE FROM gifts WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Nombre de giveaways par cadeau
+    pub fn gift_usage(&self) -> DbResult<HashMap<i64, i64>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT gift_id, COUNT(*) FROM giveaway_gifts GROUP BY gift_id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
     }
 
     /// Maximum de tickets annoncé par le bot, s'il n'est pas déjà renseigné
@@ -965,6 +1192,7 @@ mod tests {
             kind: "ticket".into(),
             command: Some("!ticket".into()),
             url: None,
+            gift_ids: vec![],
             details: GiveawayDetails {
                 ticket_unique: Some(false),
                 draw_at: Some("2026-11-01T21:00:00Z".into()),
@@ -979,13 +1207,43 @@ mod tests {
         assert_eq!((row.kind.as_str(), row.details.ticket_max, row.details.require_presence), ("ticket", Some(5), Some(true)));
         db.set_giveaway_reminded(g).unwrap();
         assert!(db.giveaway(g).unwrap().unwrap().reminded);
+        let group = db.ensure_gift_group("Navires", Some("490377")).unwrap();
+        assert_eq!(db.ensure_gift_group("Navires", Some("490377")).unwrap(), group);
+        // Même nom dans une autre catégorie, ou sans catégorie : autres groupes
+        assert_ne!(db.ensure_gift_group("Navires", Some("263490")).unwrap(), group);
+        let loose = db.ensure_gift_group("Navires", None).unwrap();
+        assert_eq!(db.ensure_gift_group("Navires", None).unwrap(), loose);
+        let gift = db
+            .save_gift(&Gift {
+                id: 0,
+                title: "Navire Obsidienne".into(),
+                image: Some("https://example.com/navire.png".into()),
+                group_id: Some(group),
+                keywords: vec!["obsidienne".into()],
+                game_id: Some("490377".into()),
+                game_name: Some("Sea of Thieves".into()),
+            })
+            .unwrap();
+        assert_eq!(db.gifts().unwrap()[0].game_name.as_deref(), Some("Sea of Thieves"));
+        let mut input = input.clone();
+        input.gift_ids = vec![gift];
         let manual = db.insert_manual_giveaway(&input, "2026-11-01T12:00:00Z").unwrap();
+        assert_eq!(db.giveaway(manual).unwrap().unwrap().gift_ids, vec![gift]);
+        assert_eq!(db.gift_usage().unwrap().get(&gift), Some(&1));
+        assert_eq!(db.gifts().unwrap()[0].keywords, vec!["obsidienne"]);
         let row = db.giveaway(manual).unwrap().unwrap();
         assert!(row.manual && row.handled && !row.reminded);
         assert_eq!(row.details.draw_at.as_deref(), Some("2026-11-01T21:00:00Z"));
         db.set_giveaway_winner(g, "powange", Some("3%"), "2026-11-01T11:00:00Z").unwrap();
         let row = db.giveaway(g).unwrap().unwrap();
         assert_eq!((row.winner.as_deref(), row.open), (Some("powange"), false));
+        assert_eq!(db.won_giveaways(&["POWANGE".into()]).unwrap().len(), 1);
+        db.set_prize(g, true, Some("XXXX-YYYY")).unwrap();
+        let row = db.giveaway(g).unwrap().unwrap();
+        assert!(row.prize_received);
+        assert_eq!(row.prize_note.as_deref(), Some("XXXX-YYYY"));
+        db.delete_gift(gift).unwrap();
+        assert!(db.giveaway(manual).unwrap().unwrap().gift_ids.is_empty());
     }
 
     #[test]
@@ -1005,6 +1263,17 @@ mod tests {
         assert_eq!(db.set_drop_game_enabled(games[0].id, false).unwrap(), Some(a));
         assert_eq!(db.remove_drop_game(games[0].id).unwrap(), Some(a));
         assert_eq!(db.drop_games(a).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn streamers() {
+        let db = Db::memory().unwrap();
+        assert_eq!(db.streamer("levraidoffy").unwrap(), None);
+        let s = Streamer { login: "levraidoffy".into(), discord_url: Some("https://discord.gg/abc".into()), notes: None };
+        db.save_streamer(&s).unwrap();
+        db.save_streamer(&Streamer { notes: Some("Tirage à 22 h".into()), ..s.clone() }).unwrap();
+        let back = db.streamer("levraidoffy").unwrap().unwrap();
+        assert_eq!((back.discord_url.as_deref(), back.notes.as_deref()), (Some("https://discord.gg/abc"), Some("Tirage à 22 h")));
     }
 
     #[test]

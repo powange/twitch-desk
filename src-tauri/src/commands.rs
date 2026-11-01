@@ -424,6 +424,10 @@ pub struct ChannelSuggestion {
     pub streamelements: Option<SeSuggestion>,
     /// Commande du dernier giveaway encore ouvert détecté dans son chat
     pub detected_command: Option<String>,
+    /// Fiche publique de la chaîne (None : chaîne inconnue de Twitch)
+    pub profile: Option<crate::twitch::gql::ChannelProfile>,
+    /// Ce qu'on a noté sur ce streamer
+    pub streamer: Option<crate::db::Streamer>,
 }
 
 #[derive(Serialize)]
@@ -446,6 +450,10 @@ pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdRe
         .into_iter()
         .find(|g| g.open && g.channel == login && g.kind == "command")
         .and_then(|g| g.command);
+    let profile = crate::twitch::gql::channel_profile(&app.http, &login).await.unwrap_or_else(|e| {
+        tracing::warn!("fiche de {login} : {e}");
+        None
+    });
     // Meilleur effort : StreamElements injoignable = pas de suggestion
     let streamelements = match streamelements::channel_id(&app.http, &login).await {
         Ok(Some(se_id)) => streamelements::active_giveaway(&app.http, &se_id).await.ok().flatten().map(|g| SeSuggestion {
@@ -457,32 +465,283 @@ pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdRe
         }),
         _ => None,
     };
-    Ok(ChannelSuggestion { streamelements, detected_command })
+    let streamer = app.db.streamer(&login).map_err(db_err)?;
+    Ok(ChannelSuggestion { streamelements, detected_command, profile, streamer })
+}
+
+/// StreamElements → page StreamElements ; points de chaîne → page Points (prioritaire)
+async fn add_giveaway_channel_to_lists(app: &Arc<App>, input: &crate::db::GiveawayInput) {
+    let list = match input.kind.as_str() {
+        "streamelements" => crate::db::ChannelList::Se,
+        "channelpoints" => crate::db::ChannelList::Points,
+        _ => return,
+    };
+    crate::giveaways::ensure_channel_in_list(app, &input.channel, None, list).await;
+}
+
+/// Enregistre ce qu'on sait d'un streamer (lien Discord, notes)
+#[tauri::command]
+pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<()> {
+    let login = normalize_login(&streamer.login).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    let discord_url = streamer.discord_url.map(|d| d.trim().to_owned()).filter(|d| !d.is_empty());
+    if let Some(url) = &discord_url {
+        if !url.starts_with("https://") || url.len() > 300 || url.contains(char::is_whitespace) {
+            return Err("Lien Discord invalide (il doit commencer par https://)".into());
+        }
+    }
+    let notes = streamer.notes.map(|n| n.trim().chars().take(2000).collect::<String>()).filter(|n| !n.is_empty());
+    app.db.save_streamer(&crate::db::Streamer { login, discord_url, notes }).map_err(db_err)
 }
 
 #[tauri::command]
 pub async fn create_giveaway(app: AppState<'_>, input: crate::db::GiveawayInput) -> CmdResult<i64> {
     let app: Arc<App> = app.inner().clone();
-    let input = crate::giveaways::validate_input(input)?;
+    let mut input = crate::giveaways::validate_input(input)?;
+    input.gift_ids = known_gifts(&app, &input.gift_ids);
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let id = app.db.insert_manual_giveaway(&input, &at).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
-    if input.kind == "streamelements" {
-        crate::giveaways::ensure_streamelements_channel(&app, &input.channel, None).await;
-    }
+    add_giveaway_channel_to_lists(&app, &input).await;
     Ok(id)
 }
 
 #[tauri::command]
 pub async fn update_giveaway(app: AppState<'_>, id: i64, input: crate::db::GiveawayInput) -> CmdResult<()> {
     let app: Arc<App> = app.inner().clone();
-    let input = crate::giveaways::validate_input(input)?;
+    let mut input = crate::giveaways::validate_input(input)?;
+    input.gift_ids = known_gifts(&app, &input.gift_ids);
     app.db.update_giveaway(id, &input).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
-    if input.kind == "streamelements" {
-        crate::giveaways::ensure_streamelements_channel(&app, &input.channel, None).await;
-    }
+    add_giveaway_channel_to_lists(&app, &input).await;
     Ok(())
+}
+
+// --- Catalogue de cadeaux et gains ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GiftCatalog {
+    pub gifts: Vec<crate::db::Gift>,
+    pub groups: Vec<crate::db::GiftGroup>,
+    /// Nombre de giveaways par cadeau
+    pub usage: std::collections::HashMap<i64, i64>,
+}
+
+#[tauri::command]
+pub fn get_gift_catalog(app: AppState) -> CmdResult<GiftCatalog> {
+    Ok(GiftCatalog {
+        gifts: app.db.gifts().map_err(db_err)?,
+        groups: app.db.gift_groups().map_err(db_err)?,
+        usage: app.db.gift_usage().map_err(db_err)?,
+    })
+}
+
+/// Image d'un cadeau : data URL d'image, 2 Mo au plus (réduite par l'interface avant l'envoi)
+const MAX_GIFT_IMAGE: usize = 2 * 1024 * 1024;
+
+/// Ajoute (id 0) ou modifie un cadeau ; `group_name` : groupe choisi ou à créer (vide : aucun)
+#[tauri::command]
+pub fn save_gift(app: AppState, mut gift: crate::db::Gift, group_name: Option<String>) -> CmdResult<i64> {
+    gift.title = gift.title.trim().to_owned();
+    if gift.title.is_empty() {
+        return Err("Donne un titre au cadeau".into());
+    }
+    if gift.title.chars().count() > 120 {
+        return Err("Titre trop long (120 caractères au plus)".into());
+    }
+    gift.image = gift.image.map(|i| i.trim().to_owned()).filter(|i| !i.is_empty());
+    if let Some(image) = &gift.image {
+        let uploaded = image.starts_with("data:image/") && image.len() <= MAX_GIFT_IMAGE;
+        let online = image.starts_with("https://") && image.len() <= 2048 && !image.contains(char::is_whitespace);
+        if !uploaded && !online {
+            return Err("Image invalide : colle une image, ou l'adresse https:// d'une image en ligne".into());
+        }
+    }
+    gift.game_id = gift.game_id.filter(|g| !g.trim().is_empty());
+    if gift.game_id.is_none() {
+        gift.game_name = None;
+    }
+    let mut keywords: Vec<String> = vec![];
+    for k in &gift.keywords {
+        let k = k.trim().to_lowercase();
+        if !k.is_empty() && !keywords.contains(&k) {
+            keywords.push(k);
+        }
+    }
+    gift.keywords = keywords;
+    gift.group_id = match group_name.map(|g| g.trim().to_owned()).filter(|g| !g.is_empty()) {
+        Some(name) => Some(app.db.ensure_gift_group(&name, gift.game_id.as_deref()).map_err(db_err)?),
+        None => None,
+    };
+    let id = app.db.save_gift(&gift).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn delete_gift(app: AppState, id: i64) -> CmdResult<()> {
+    app.db.delete_gift(id).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_gift_group(app: AppState, id: i64) -> CmdResult<()> {
+    app.db.delete_gift_group(id).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn get_wins(app: AppState) -> Vec<crate::giveaways::GiveawayView> {
+    crate::giveaways::won_views(&app)
+}
+
+#[tauri::command]
+pub fn set_prize(app: AppState, id: i64, received: bool, note: Option<String>) -> CmdResult<()> {
+    let note = note.map(|n| n.trim().chars().take(500).collect::<String>()).filter(|n| !n.is_empty());
+    app.db.set_prize(id, received, note.as_deref()).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(())
+}
+
+/// Catégorie Twitch (jeu) d'après son nom exact ou l'adresse de sa catégorie
+#[tauri::command]
+pub async fn resolve_category(app: AppState<'_>, input: String) -> CmdResult<crate::drops::Game> {
+    let input = input.trim().to_owned();
+    if input.is_empty() {
+        return Err("Indique le nom de la catégorie ou son adresse".into());
+    }
+    let account = app.db.accounts().map_err(db_err)?.into_iter().next().ok_or("Connecte d'abord un compte Twitch")?;
+    let tokens = app.secrets.load(&account.user_id).ok_or("Reconnecte ton compte Twitch")?;
+    let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id));
+    let slug = match crate::drops::category_slug(&input) {
+        Some(slug) => slug,
+        None => gql
+            .game_by_name(&input)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|(_, slug)| slug)
+            .ok_or_else(|| format!("Catégorie « {input} » introuvable : écris son nom exact comme sur Twitch, ou colle son adresse"))?,
+    };
+    gql.game_by_slug(&slug)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Catégorie « {slug} » introuvable sur Twitch"))
+}
+
+/// Fichier d'export du catalogue : autonome (groupes par nom, catégories par identifiant)
+#[derive(Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GiftExport {
+    format: String,
+    version: u32,
+    exported_at: String,
+    gifts: Vec<GiftExportItem>,
+}
+
+#[derive(Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GiftExportItem {
+    title: String,
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    group: Option<String>,
+    #[serde(default)]
+    keywords: Vec<String>,
+    #[serde(default)]
+    game_id: Option<String>,
+    #[serde(default)]
+    game_name: Option<String>,
+}
+
+const GIFT_EXPORT_FORMAT: &str = "twitch-desk-gifts";
+
+/// Enregistre le catalogue dans le fichier choisi ; renvoie le nombre de cadeaux
+#[tauri::command]
+pub fn export_gifts(app: AppState, path: String) -> CmdResult<usize> {
+    let groups = app.db.gift_groups().map_err(db_err)?;
+    let gifts = app.db.gifts().map_err(db_err)?;
+    let export = GiftExport {
+        format: GIFT_EXPORT_FORMAT.into(),
+        version: 1,
+        exported_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        gifts: gifts
+            .into_iter()
+            .map(|g| GiftExportItem {
+                group: g.group_id.and_then(|id| groups.iter().find(|x| x.id == id).map(|x| x.name.clone())),
+                title: g.title,
+                image: g.image,
+                keywords: g.keywords,
+                game_id: g.game_id,
+                game_name: g.game_name,
+            })
+            .collect(),
+    };
+    let count = export.gifts.len();
+    let text = serde_json::to_string_pretty(&export).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| format!("écriture du fichier : {e}"))?;
+    Ok(count)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GiftImportResult {
+    pub added: usize,
+    pub updated: usize,
+    pub skipped: usize,
+}
+
+/// Fusionne un fichier exporté : ajoute les cadeaux absents, met à jour ceux de même
+/// titre et même catégorie
+#[tauri::command]
+pub fn import_gifts(app: AppState, path: String) -> CmdResult<GiftImportResult> {
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("lecture du fichier : {e}"))?;
+    let export: GiftExport = serde_json::from_str(&text).map_err(|_| "Ce fichier n'est pas un export de cadeaux Twitch Desk".to_owned())?;
+    if export.format != GIFT_EXPORT_FORMAT {
+        return Err("Ce fichier n'est pas un export de cadeaux Twitch Desk".into());
+    }
+    let existing = app.db.gifts().map_err(db_err)?;
+    let mut result = GiftImportResult { added: 0, updated: 0, skipped: 0 };
+    for item in export.gifts {
+        let title = item.title.trim().to_owned();
+        let image_ok = item
+            .image
+            .as_deref()
+            .is_none_or(|i| (i.starts_with("data:image/") && i.len() <= MAX_GIFT_IMAGE) || (i.starts_with("https://") && i.len() <= 2048));
+        if title.is_empty() || title.chars().count() > 120 || !image_ok {
+            result.skipped += 1;
+            continue;
+        }
+        let game_id = item.game_id.filter(|g| !g.is_empty());
+        let group_id = match item.group.map(|g| g.trim().to_owned()).filter(|g| !g.is_empty()) {
+            Some(name) => Some(app.db.ensure_gift_group(&name, game_id.as_deref()).map_err(db_err)?),
+            None => None,
+        };
+        let same = existing.iter().find(|g| g.title.eq_ignore_ascii_case(&title) && g.game_id == game_id);
+        let gift = crate::db::Gift {
+            id: same.map_or(0, |g| g.id),
+            title,
+            image: item.image,
+            group_id,
+            keywords: item.keywords.into_iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect(),
+            game_name: if game_id.is_some() { item.game_name } else { None },
+            game_id,
+        };
+        app.db.save_gift(&gift).map_err(db_err)?;
+        if same.is_some() {
+            result.updated += 1;
+        } else {
+            result.added += 1;
+        }
+    }
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(result)
+}
+
+/// Garde les cadeaux qui existent encore dans le catalogue
+fn known_gifts(app: &App, ids: &[i64]) -> Vec<i64> {
+    let known: Vec<i64> = app.db.gifts().unwrap_or_default().into_iter().map(|g| g.id).collect();
+    ids.iter().copied().filter(|id| known.contains(id)).collect()
 }
 
 #[tauri::command]

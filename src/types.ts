@@ -27,6 +27,8 @@ export interface ChannelView {
   // Listes où figure la chaîne : page Points de chaîne, page StreamElements
   inPoints: boolean
   inSe: boolean
+  // Prioritaire pour les points : giveaway par points de chaîne ouvert
+  priority: boolean
   chatPresence: boolean
   inChat: boolean
   seRank: number | null
@@ -216,6 +218,7 @@ export interface GiveawayInput extends GiveawayDetails {
   kind: GiveawayKind
   command: string | null
   url: string | null
+  giftIds: number[]
 }
 
 export interface GiveawayView extends GiveawayDetails {
@@ -223,6 +226,10 @@ export interface GiveawayView extends GiveawayDetails {
   channel: string
   kind: GiveawayKind
   manual: boolean
+  giftIds: number[]
+  // Lot d'un giveaway gagné
+  prizeReceived: boolean
+  prizeNote: string | null
   command: string | null
   url: string | null
   detectedAt: string
@@ -279,4 +286,40 @@ export interface ParticipationResult {
   login: string
   ok: boolean
   message: string
+}
+
+// --- Catalogue de cadeaux ---
+
+export interface Gift {
+  id: number
+  title: string
+  // Data URL de l'image, réduite à l'ajout
+  image: string | null
+  groupId: number | null
+  // Mots qui, dans le titre d'un live, suggèrent ce cadeau
+  keywords: string[]
+  // Catégorie Twitch (jeu) du cadeau
+  gameId: string | null
+  gameName: string | null
+}
+
+export interface GiftGroup {
+  id: number
+  name: string
+  // Catégorie du groupe (null : sans catégorie)
+  gameId: string | null
+}
+
+export interface TwitchGame {
+  id: string
+  name: string
+  slug: string | null
+  boxArt: string | null
+}
+
+export interface GiftCatalog {
+  gifts: Gift[]
+  groups: GiftGroup[]
+  // Nombre de giveaways par cadeau
+  usage: Record<string, number>
 }

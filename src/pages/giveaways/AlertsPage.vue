@@ -8,6 +8,7 @@ import type { GiveawayView, ParticipationResult } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayConditions from '../../components/GiveawayConditions.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
+import { useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, formatDrawAt } from '../../utils/giveaways'
 
 const { snapshot, accounts } = useSnapshot()
@@ -65,6 +66,8 @@ function evidenceText(g: GiveawayView) {
   if (!e) return ''
   return `${e.count} messages sur les ${e.window} derniers, par ${e.users.length} pseudos différents : ${e.users.slice(0, 8).join(', ')}${e.users.length > 8 ? '…' : ''}`
 }
+
+const { byId: giftById } = useGiftCatalog()
 
 // Formulaire : null = nouveau giveaway
 const formOpen = ref(false)
@@ -167,6 +170,7 @@ function share(g: GiveawayView) {
               <th class="text-left px-3 py-2">Chaîne</th>
               <th class="text-left px-3 py-2">Type</th>
               <th class="text-left px-3 py-2">Commande</th>
+              <th class="text-left px-3 py-2">Cadeaux</th>
               <th class="text-left px-3 py-2">Conditions</th>
               <th class="text-left px-3 py-2">Tirage</th>
               <th class="text-left px-3 py-2">Participations</th>
@@ -192,6 +196,16 @@ function share(g: GiveawayView) {
                 <button v-else-if="g.url" class="text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
                 <span v-else-if="g.rewardName">{{ g.rewardName }}<template v-if="g.rewardCost !== null"> ({{ g.rewardCost }} pts)</template></span>
                 <span v-else class="text-muted">—</span>
+              </td>
+              <td class="px-3 py-2">
+                <div class="flex items-center gap-1">
+                  <UTooltip v-for="id in g.giftIds.slice(0, 4)" :key="id" :text="giftById.get(id)?.title ?? ''">
+                    <img v-if="giftById.get(id)?.image" :src="giftById.get(id)?.image ?? ''" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
+                    <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                  </UTooltip>
+                  <span v-if="g.giftIds.length > 4" class="text-xs text-muted">+{{ g.giftIds.length - 4 }}</span>
+                  <span v-if="g.giftIds.length === 0" class="text-muted">—</span>
+                </div>
               </td>
               <td class="px-3 py-2"><GiveawayConditions :details="g" :kind="g.kind" /></td>
               <td class="px-3 py-2 whitespace-nowrap" :class="g.drawAt ? '' : 'text-muted'">{{ formatDrawAt(g.drawAt) }}</td>
@@ -238,7 +252,7 @@ function share(g: GiveawayView) {
               </td>
             </tr>
             <tr v-if="giveaways.length === 0">
-              <td colspan="10" class="px-3 py-8 text-center text-muted">Aucun giveaway pour l'instant. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».</td>
+              <td colspan="11" class="px-3 py-8 text-center text-muted">Aucun giveaway pour l'instant. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».</td>
             </tr>
           </tbody>
         </table>

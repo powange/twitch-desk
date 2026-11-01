@@ -166,6 +166,9 @@ function endDrag() {
                 <div class="flex items-center gap-1.5">
                   <ChannelFlag :login="channel.login" />
                   <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
+                  <UTooltip v-if="channel.priority" text="Giveaway par points de chaîne en cours : regardée en priorité">
+                    <UBadge label="Prioritaire" icon="i-lucide-gift" color="primary" variant="subtle" size="sm" />
+                  </UTooltip>
                 </div>
                 <div v-if="channel.live" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
                   <span class="truncate max-w-[320px]" :title="channel.live.gameName ?? 'Sans catégorie'">{{ channel.live.gameName ?? 'Sans catégorie' }}</span>

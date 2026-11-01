@@ -533,7 +533,7 @@ impl Monitor {
         let app = self.app.clone();
         let login = channel.to_owned();
         let channel_id = self.channels.iter().find(|c| c.login == channel).map(|c| c.channel_id.clone());
-        tauri::async_runtime::spawn(async move { ensure_streamelements_channel(&app, &login, channel_id).await });
+        tauri::async_runtime::spawn(async move { ensure_channel_in_list(&app, &login, channel_id, crate::db::ChannelList::Se).await });
         self.app.notify(&format!("Giveaway StreamElements sur {channel}"), "Tickets à acheter avec tes points StreamElements");
         self.publish();
     }
@@ -611,6 +611,7 @@ impl Monitor {
     }
 
     fn publish(&mut self) {
+        update_point_priority(&self.app);
         let view = GiveawaysView {
             channels: self.channel_views(),
             games: self.games.clone(),
@@ -624,10 +625,11 @@ impl Monitor {
 }
 
 fn build_views(app: &App, accounts: &[(i64, String)]) -> Vec<GiveawayView> {
-    app.db
-        .giveaways(RECENT_GIVEAWAYS)
-        .unwrap_or_default()
-        .into_iter()
+    rows_to_views(app, app.db.giveaways(RECENT_GIVEAWAYS).unwrap_or_default(), accounts)
+}
+
+fn rows_to_views(app: &App, rows: Vec<GiveawayRow>, accounts: &[(i64, String)]) -> Vec<GiveawayView> {
+    rows.into_iter()
         .map(|row| {
             let login_of = |id: i64| accounts.iter().find(|(a, _)| *a == id).map(|(_, l)| l.clone()).unwrap_or_default();
             let mut entries_view: Vec<GiveawayEntryView> = row
@@ -670,13 +672,32 @@ fn build_views(app: &App, accounts: &[(i64, String)]) -> Vec<GiveawayView> {
         .collect()
 }
 
+/// Giveaways gagnés par nos comptes (page « Mes gains »)
+pub fn won_views(app: &App) -> Vec<GiveawayView> {
+    let accounts: Vec<(i64, String)> =
+        app.db.accounts().unwrap_or_default().into_iter().map(|a| (a.id, a.login.to_lowercase())).collect();
+    let logins: Vec<String> = accounts.iter().map(|(_, l)| l.clone()).collect();
+    let rows = app.db.won_giveaways(&logins).unwrap_or_default();
+    rows_to_views(app, rows, &accounts)
+}
+
 /// Rafraîchit la vue après une participation (hors de la boucle du moniteur)
 pub fn refresh_view(app: &App) {
+    update_point_priority(app);
     let accounts: Vec<(i64, String)> =
         app.db.accounts().unwrap_or_default().into_iter().map(|a| (a.id, a.login.to_lowercase())).collect();
     let giveaways = build_views(app, &accounts);
     app.giveaways.view.write().unwrap().giveaways = giveaways;
     app.touch();
+}
+
+/// Chaînes prioritaires pour les points : un giveaway par points de chaîne y est ouvert
+fn update_point_priority(app: &App) {
+    let channels: std::collections::HashSet<String> = app.db.open_channelpoints_channels().unwrap_or_default().into_iter().collect();
+    if *app.point_priority.read().unwrap() != channels {
+        *app.point_priority.write().unwrap() = channels;
+        app.broadcast(crate::miner::MinerCommand::Wake);
+    }
 }
 
 /// Résultat d'une participation, compte par compte
@@ -768,9 +789,10 @@ fn schedule_auto_participation(app: Arc<App>, giveaway_id: i64) {
     }
 }
 
-/// Giveaway StreamElements : sa chaîne rejoint la liste StreamElements de chaque compte
-/// (présence dans le chat pour les points, achat des tickets). Meilleur effort.
-pub async fn ensure_streamelements_channel(app: &Arc<App>, login: &str, channel_id: Option<String>) {
+/// Chaîne d'un giveaway : rejoint une liste de chaque compte. StreamElements : présence
+/// dans le chat (points, achat des tickets) ; points de chaîne : récolte, en priorité tant
+/// que le giveaway est ouvert. Meilleur effort.
+pub async fn ensure_channel_in_list(app: &Arc<App>, login: &str, channel_id: Option<String>, list: crate::db::ChannelList) {
     let accounts = app.db.accounts().unwrap_or_default();
     let Some(first) = accounts.first() else { return };
     let channel_id = match channel_id {
@@ -785,12 +807,17 @@ pub async fn ensure_streamelements_channel(app: &Arc<App>, login: &str, channel_
         }
     };
     for account in accounts {
-        let already = app.db.channels(account.id).unwrap_or_default().iter().any(|c| c.login == login && c.in_se);
+        let (already, page) = match list {
+            crate::db::ChannelList::Se => (app.db.channels(account.id).unwrap_or_default().iter().any(|c| c.login == login && c.in_se), "StreamElements"),
+            crate::db::ChannelList::Points => {
+                (app.db.channels(account.id).unwrap_or_default().iter().any(|c| c.login == login && c.in_points), "Points de chaîne")
+            }
+        };
         if already {
             continue;
         }
-        if app.db.add_channel(account.id, login, &channel_id, crate::db::ChannelList::Se).is_ok() {
-            app.log(&account.login, EventKind::Info, format!("{login} ajoutée à StreamElements (giveaway StreamElements)"));
+        if app.db.add_channel(account.id, login, &channel_id, list).is_ok() {
+            app.log(&account.login, EventKind::Info, format!("{login} ajoutée à {page} (giveaway)"));
             app.send(account.id, crate::miner::MinerCommand::Reload);
         }
     }
@@ -865,6 +892,7 @@ mod tests {
             kind: kind.into(),
             command: Some(" Coffre ".into()),
             url: None,
+            gift_ids: vec![],
             details: GiveawayDetails::default(),
         }
     }

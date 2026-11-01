@@ -34,12 +34,14 @@ const items = computed<NavigationMenuItem[]>(() => [
       { label: 'Alertes', icon: 'i-lucide-bell', to: '/giveaways', exact: true },
       { label: 'Chaînes', icon: 'i-lucide-tv', to: '/giveaways/channels' },
       { label: 'Catégories', icon: 'i-lucide-gamepad-2', to: '/giveaways/categories' },
+      { label: 'Cadeaux', icon: 'i-lucide-package', to: '/giveaways/gifts' },
+      { label: 'Mes gains', icon: 'i-lucide-trophy', to: '/giveaways/wins' },
       { label: 'Réglages', icon: 'i-lucide-sliders-horizontal', to: '/giveaways/settings' }
     ]
   },
   { label: 'Points de chaîne', icon: 'i-lucide-coins', to: '/points', badge: watchingCount.value || undefined },
-  { label: 'Drops', icon: 'i-lucide-package-open', to: '/drops', badge: dropsCount.value || undefined },
   { label: 'StreamElements', icon: 'i-lucide-ticket', to: '/streamelements', badge: inChatCount.value || undefined },
+  { label: 'Drops', icon: 'i-lucide-package-open', to: '/drops', badge: dropsCount.value || undefined },
   { label: 'Comptes', icon: 'i-lucide-users', to: '/accounts', badge: needsAttention.value ? { label: String(needsAttention.value), color: 'error' } : undefined },
   { label: 'Paramètres', icon: 'i-lucide-settings', to: '/settings' }
 ])

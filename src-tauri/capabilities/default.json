@@ -11,6 +11,7 @@
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
     "opener:default",
-    "notification:default"
+    "notification:default",
+    "dialog:default"
   ]
 }

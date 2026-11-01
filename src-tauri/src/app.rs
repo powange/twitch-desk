@@ -57,6 +57,8 @@ pub struct ChannelView {
     pub last_bonus_at: Option<String>,
     pub in_points: bool,
     pub in_se: bool,
+    /// Prioritaire pour les points : giveaway par points de chaîne ouvert
+    pub priority: bool,
     pub chat_presence: bool,
     pub in_chat: bool,
     pub se_rank: Option<i64>,
@@ -152,6 +154,8 @@ pub struct App {
     dirty: Notify,
     pub login_task: Mutex<Option<JoinHandle<()>>>,
     pub giveaways: crate::giveaways::GiveawayHandle,
+    /// Chaînes à regarder en premier pour les points : giveaway par points de chaîne ouvert
+    pub point_priority: RwLock<std::collections::HashSet<String>>,
     languages: RwLock<HashMap<String, String>>,
 }
 
@@ -170,6 +174,7 @@ impl App {
             dirty: Notify::new(),
             login_task: Mutex::new(None),
             giveaways: crate::giveaways::GiveawayHandle::default(),
+            point_priority: RwLock::new(std::collections::HashSet::new()),
             languages: RwLock::new(HashMap::new()),
         })
     }

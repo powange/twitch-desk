@@ -72,6 +72,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let log_dir = data_dir.join("logs");
@@ -157,6 +158,16 @@ pub fn run() {
             commands::dismiss_mention,
             commands::create_giveaway,
             commands::inspect_giveaway_channel,
+            commands::get_gift_catalog,
+            commands::save_gift,
+            commands::delete_gift,
+            commands::delete_gift_group,
+            commands::get_wins,
+            commands::set_prize,
+            commands::resolve_category,
+            commands::save_streamer,
+            commands::export_gifts,
+            commands::import_gifts,
             commands::update_giveaway,
             commands::add_giveaway_game,
             commands::remove_giveaway_game,

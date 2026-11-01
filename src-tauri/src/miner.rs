@@ -743,17 +743,24 @@ impl Miner {
         }
         let drop_login = self.drops.watching_login().map(str::to_owned);
 
-        // Choix des chaînes regardées pour les points
+        // Choix des chaînes regardées pour les points : celles d'un giveaway par points de
+        // chaîne ouvert d'abord, puis l'ordre de la liste
         let selected = if self.active() {
-            let candidates: Vec<_> = self
-                .channels
+            let priority = self.app.point_priority.read().unwrap().clone();
+            let mut order: Vec<usize> = (0..self.channels.len()).collect();
+            order.sort_by_key(|i| !priority.contains(&self.channels[*i].ch.login));
+            let candidates: Vec<_> = order
                 .iter()
-                .map(|c| {
+                .map(|i| {
+                    let c = &self.channels[*i];
                     let taken = drop_login.as_deref() == Some(c.ch.login.as_str());
                     (c.ch.farms_points() && !taken, c.live.is_some(), c.cooling(now))
                 })
                 .collect();
             select_watched(&candidates, MAX_WATCHED - usize::from(drop_login.is_some()))
+                .into_iter()
+                .map(|k| order[k])
+                .collect()
         } else {
             vec![]
         };
@@ -1015,6 +1022,7 @@ impl Miner {
                 live: c.live.clone(),
                 in_points: c.ch.in_points,
                 in_se: c.ch.in_se,
+                priority: self.app.point_priority.read().unwrap().contains(&c.ch.login),
                 se_rank: c.se_rank,
                 se_loyalty: c.se_loyalty.clone(),
                 se_giveaway: c.se_giveaway.clone(),
