@@ -126,7 +126,10 @@ function share(g: GiveawayView) {
           <span class="text-xs text-muted ml-auto">{{ timeAgo(g.detectedAt, now) }}</span>
         </div>
         <div class="flex items-center gap-2 flex-wrap">
-          <template v-if="g.kind === 'command' || g.kind === 'ticket'">
+          <span v-if="(g.kind === 'command' || g.kind === 'ticket') && !g.command" class="text-sm text-muted">
+            <UIcon name="i-lucide-hourglass" class="size-3.5 align-middle" /> Commande pas encore connue : elle sera remplie dès que la détection la repère dans le chat.
+          </span>
+          <template v-else-if="g.kind === 'command' || g.kind === 'ticket'">
             <span class="text-sm text-muted">Participer avec</span>
             <UButton
               v-for="a in accounts"
@@ -242,7 +245,7 @@ function share(g: GiveawayView) {
               <td class="px-3 py-2">
                 <div class="flex justify-end gap-1">
                   <UButton
-                    v-if="g.open && (g.kind === 'command' || g.kind === 'ticket') && accounts.some(a => !entered(g, a.id))"
+                    v-if="g.open && (g.kind === 'command' || g.kind === 'ticket') && g.command && accounts.some(a => !entered(g, a.id))"
                     label="Participer"
                     size="xs"
                     :loading="participating === g.id"

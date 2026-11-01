@@ -24,6 +24,24 @@ use crate::twitch::gql::{self, OperationsFile};
 /// Argument passé par le démarrage automatique avec Windows
 const MINIMIZED_ARG: &str = "--minimized";
 
+fn window_flags() -> tauri_plugin_window_state::StateFlags {
+    tauri_plugin_window_state::StateFlags::all() - tauri_plugin_window_state::StateFlags::VISIBLE
+}
+
+/// Enregistre taille et position des fenêtres : à faire avant toute sortie qui ne passe pas
+/// par la fermeture normale (fenêtre cachée, « Quitter », installation d'une mise à jour)
+pub fn save_windows(app: &tauri::AppHandle) {
+    use tauri_plugin_window_state::AppHandleExt;
+    if let Err(e) = app.save_window_state(window_flags()) {
+        tracing::warn!("taille des fenêtres : {e}");
+    }
+}
+
+#[tauri::command]
+fn save_window_state(app: tauri::AppHandle) {
+    save_windows(&app);
+}
+
 fn init_logging(dir: &Path) -> tracing_appender::non_blocking::WorkerGuard {
     use tracing_subscriber::prelude::*;
     let file = tracing_appender::rolling::Builder::new()
@@ -70,7 +88,9 @@ async fn refresh_operations(http: reqwest::Client, cache: std::path::PathBuf) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show_main(app)))
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Taille, position et plein écran des fenêtres retenus ; la visibilité au démarrage
+        // dépend du réglage « Démarrer réduit »
+        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(window_flags()).build())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![MINIMIZED_ARG])))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -126,6 +146,7 @@ pub fn run() {
                     .unwrap_or(true);
                 if to_tray {
                     api.prevent_close();
+                    save_windows(window.app_handle());
                     let _ = window.hide();
                 }
             }
@@ -166,7 +187,8 @@ pub fn run() {
             commands::add_giveaway_channel,
             commands::import_giveaway_channels,
             commands::remove_giveaway_channel,
-            commands::set_giveaway_excluded,
+            commands::set_ignored_commands,
+            save_window_state,
             commands::participate_giveaway,
             commands::dismiss_giveaway,
             commands::close_giveaway,

@@ -329,16 +329,21 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>) -> rusqli
                 .collect()
         }
         "channels" => conn
-            .prepare("SELECT login, channel_id, excluded FROM giveaway_channels WHERE ?1 IS NULL OR login = ?1")?
-            .query_map([only], |r| {
-                let excluded: Vec<String> = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default();
-                Ok((r.get(0)?, json!({ "channelId": r.get::<_, String>(1)?, "excluded": excluded })))
-            })?
+            .prepare("SELECT login, channel_id FROM giveaway_channels WHERE ?1 IS NULL OR login = ?1")?
+            .query_map([only], |r| Ok((r.get(0)?, json!({ "channelId": r.get::<_, String>(1)? }))))?
             .collect(),
         "streamers" => conn
-            .prepare("SELECT login, discord_url, notes FROM streamers WHERE ?1 IS NULL OR login = ?1")?
+            .prepare("SELECT login, discord_url, notes, ignored_commands FROM streamers WHERE ?1 IS NULL OR login = ?1")?
             .query_map([only], |r| {
-                Ok((r.get(0)?, json!({ "discordUrl": r.get::<_, Option<String>>(1)?, "notes": r.get::<_, Option<String>>(2)? })))
+                let ignored: Vec<String> = serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default();
+                Ok((
+                    r.get(0)?,
+                    json!({
+                        "discordUrl": r.get::<_, Option<String>>(1)?,
+                        "notes": r.get::<_, Option<String>>(2)?,
+                        "ignoredCommands": ignored,
+                    }),
+                ))
             })?
             .collect(),
         _ => Ok(vec![]),
@@ -577,12 +582,12 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                 return Ok(false);
             }
             let Some(channel_id) = str_of(data, "channelId") else { return Ok(false) };
-            let excluded = serde_json::to_string(&strings_of(data, "excluded")).expect("liste sérialisable");
+            // Les commandes ignorées voyagent avec la fiche du streamer
             conn.execute(
-                "INSERT INTO giveaway_channels (login, channel_id, position, excluded)
-                 VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM giveaway_channels), ?3)
-                 ON CONFLICT(login) DO UPDATE SET channel_id = excluded.channel_id, excluded = excluded.excluded",
-                params![id, channel_id, excluded],
+                "INSERT INTO giveaway_channels (login, channel_id, position)
+                 VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM giveaway_channels))
+                 ON CONFLICT(login) DO UPDATE SET channel_id = excluded.channel_id",
+                params![id, channel_id],
             )?;
         }
         "streamers" => {
@@ -594,6 +599,11 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                  ON CONFLICT(login) DO UPDATE SET discord_url = excluded.discord_url, notes = excluded.notes",
                 params![id, str_of(data, "discordUrl"), str_of(data, "notes")],
             )?;
+            // Absent (version plus ancienne) : les commandes ignorées locales restent
+            if data.get("ignoredCommands").is_some() {
+                let ignored = serde_json::to_string(&strings_of(data, "ignoredCommands")).expect("liste sérialisable");
+                conn.execute("UPDATE streamers SET ignored_commands = ?2 WHERE login = ?1", params![id, ignored])?;
+            }
         }
         _ => return Ok(false),
     }
@@ -986,7 +996,7 @@ mod tests {
         };
         a.insert_manual_giveaway(&input, "2026-11-01T10:00:00Z").unwrap();
         a.add_giveaway_channel("lunarsea", "123").unwrap();
-        a.save_streamer(&crate::db::Streamer { login: "lunarsea".into(), discord_url: Some("https://discord.gg/x".into()), notes: None })
+        a.save_streamer(&crate::db::Streamer { login: "lunarsea".into(), discord_url: Some("https://discord.gg/x".into()), notes: None, ignored_commands: vec!["!points".into()] })
             .unwrap();
         assign_ids(&a.conn()).unwrap();
         for c in COLLECTIONS {

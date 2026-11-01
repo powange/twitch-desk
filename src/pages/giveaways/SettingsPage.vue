@@ -72,6 +72,22 @@ function setSound(kind: SoundAlertKind, on: boolean) {
   settings.value.soundEvents = on ? [...rest, kind] : rest
 }
 
+// Détection : seuil en messages (même calcul que l'application), délai lisible
+const detectCount = computed(() => {
+  const s = settings.value
+  return s ? Math.max(2, Math.ceil(s.detectWindow * s.detectPercent / 100)) : 0
+})
+function durationLabel(secs: number) {
+  if (secs < 60) return `${secs} s`
+  const m = Math.floor(secs / 60)
+  const rest = secs % 60
+  return rest ? `${m} min ${rest} s` : `${m} min`
+}
+function resetDetection() {
+  if (!settings.value) return
+  Object.assign(settings.value, { detectWindow: 20, detectPercent: 35, detectMaxPerUser: 2, detectCooldownSecs: 600 })
+}
+
 const confirmAuto = ref(false)
 function setAuto(value: boolean) {
   if (!settings.value) return
@@ -160,6 +176,38 @@ function setAuto(value: boolean) {
           <USelect v-model="autoAccountsModel" :items="autoAccountItems" multiple class="w-64" placeholder="Aucun compte" />
         </div>
       </template>
+    </div>
+
+    <div v-if="settings" class="flex flex-col gap-2">
+      <div class="flex items-end gap-3">
+        <div class="flex-1">
+          <h2 class="font-semibold">Détection des giveaways</h2>
+          <p class="text-sm text-muted">Plus le seuil est bas, plus la détection réagit tôt (et se trompe plus souvent).</p>
+        </div>
+        <UButton label="Valeurs par défaut" size="xs" color="neutral" variant="ghost" @click="resetDetection" />
+      </div>
+      <div class="border border-default rounded-lg divide-y divide-default">
+        <div class="flex flex-col gap-2 px-4 py-3">
+          <div class="font-medium">Seuil de l'alerte : {{ settings.detectPercent }} % ({{ detectCount }}+ messages)</div>
+          <USlider v-model="settings.detectPercent" :min="10" :max="80" :step="5" aria-label="Seuil de l'alerte" />
+          <div class="text-sm text-muted">Alerte quand ce pourcentage des derniers messages du chat utilise une même commande.</div>
+        </div>
+        <div class="flex flex-col gap-2 px-4 py-3">
+          <div class="font-medium">Messages analysés : {{ settings.detectWindow }}</div>
+          <USlider v-model="settings.detectWindow" :min="10" :max="60" :step="5" aria-label="Messages analysés" />
+          <div class="text-sm text-muted">Nombre de derniers messages du chat pris en compte. Plus il est grand, plus la détection est stable sur les chats rapides.</div>
+        </div>
+        <div class="flex flex-col gap-2 px-4 py-3">
+          <div class="font-medium">Délai entre deux alertes : {{ durationLabel(settings.detectCooldownSecs) }}</div>
+          <USlider v-model="settings.detectCooldownSecs" :min="10" :max="1800" :step="10" aria-label="Délai entre deux alertes" />
+          <div class="text-sm text-muted">Délai minimum avant une nouvelle alerte pour la même commande sur un même stream.</div>
+        </div>
+        <div class="flex flex-col gap-2 px-4 py-3">
+          <div class="font-medium">Messages comptés par spectateur : {{ settings.detectMaxPerUser }}</div>
+          <USlider v-model="settings.detectMaxPerUser" :min="1" :max="5" :step="1" aria-label="Messages comptés par spectateur" />
+          <div class="text-sm text-muted">Un même spectateur ne compte pas plus de fois : un spammeur seul ne déclenche rien.</div>
+        </div>
+      </div>
     </div>
 
     <UModal :open="confirmAuto" title="Activer la participation automatique ?" @update:open="v => { if (!v) confirmAuto = false }">

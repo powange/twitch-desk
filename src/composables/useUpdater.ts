@@ -1,5 +1,6 @@
 import { ref, shallowRef } from 'vue'
 import { check, type Update } from '@tauri-apps/plugin-updater'
+import { invoke } from '@tauri-apps/api/core'
 import { relaunch } from '@tauri-apps/plugin-process'
 
 // Mise à jour automatique : vérification au démarrage puis toutes les 6 h.
@@ -60,6 +61,8 @@ async function install() {
   let total = 0
   let received = 0
   try {
+    // L'installateur ferme l'application lui-même : taille de la fenêtre enregistrée avant
+    await invoke('save_window_state').catch(() => {})
     await update.downloadAndInstall((event) => {
       if (event.event === 'Started') total = event.data.contentLength ?? 0
       if (event.event === 'Progress') {

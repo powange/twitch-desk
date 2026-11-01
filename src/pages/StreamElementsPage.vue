@@ -79,6 +79,18 @@ async function setRefresh(channel: ChannelView, value: string) {
   }
 }
 
+// Chance de gagner : nos tickets sur le total des tickets du giveaway (null : inconnue)
+function chance(channel: ChannelView): string | null {
+  const g = channel.seGiveaway
+  const mine = channel.seMyTickets
+  if (!g || mine === null || mine <= 0 || g.totalTickets <= 0) return null
+  // Total relu moins souvent que nos tickets : jamais plus de 100 %
+  const pct = Math.min(100, mine / Math.max(g.totalTickets, mine) * 100)
+  if (pct < 0.01) return '< 0,01 %'
+  const digits = pct >= 10 ? 0 : pct >= 1 ? 1 : 2
+  return `${pct.toLocaleString('fr-FR', { minimumFractionDigits: digits, maximumFractionDigits: digits })} %`
+}
+
 function giveawayUrl(login: string, id: string) {
   return `https://streamelements.com/${login}/giveaway/${id}`
 }
@@ -183,8 +195,10 @@ function affordable(channel: ChannelView): number | null {
               <td class="px-1.5 py-2">
                 <div class="flex flex-col items-start gap-1">
                   <UBadge :color="status(channel).color" variant="subtle" :label="status(channel).label" size="sm" class="whitespace-nowrap" />
-                  <UTooltip v-if="channel.seGiveaway" :text="channel.seGiveaway.title || 'Giveaway StreamElements'">
-                    <UBadge icon="i-lucide-gift" label="Giveaway en cours" color="primary" variant="subtle" size="sm" class="whitespace-nowrap" />
+                  <UTooltip v-if="channel.seGiveaway" :text="`${channel.seGiveaway.title || 'Giveaway StreamElements'} : ouvrir la page du giveaway`">
+                    <button type="button" class="cursor-pointer" @click="openExternal(giveawayUrl(channel.login, channel.seGiveaway.id))">
+                      <UBadge icon="i-lucide-gift" label="Giveaway en cours" color="primary" variant="subtle" size="sm" class="whitespace-nowrap hover:bg-primary/20" />
+                    </button>
                   </UTooltip>
                 </div>
               </td>
@@ -237,6 +251,9 @@ function affordable(channel: ChannelView): number | null {
                 <template v-if="channel.seGiveaway">
                   <b>{{ channel.seMyTickets ?? '?' }}</b>
                   <span class="text-muted"> / {{ channel.seGiveaway.maxTickets ? formatNumber(channel.seGiveaway.maxTickets) : '∞' }}</span>
+                  <UTooltip v-if="chance(channel) !== null" text="Chance de gagner : tes tickets sur le total des tickets achetés par tous les participants">
+                    <div class="text-xs text-success">{{ chance(channel) }} de chance</div>
+                  </UTooltip>
                 </template>
                 <span v-else class="text-muted">—</span>
               </td>

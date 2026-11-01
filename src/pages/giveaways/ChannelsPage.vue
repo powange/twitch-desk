@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
@@ -8,6 +8,7 @@ import { boxArt, channelUrl, formatNumber } from '../../utils/format'
 import type { Gift, GiveawayChannelView, GiveawayView } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
+import MonitoredChannelSettings from '../../components/MonitoredChannelSettings.vue'
 import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 
@@ -153,15 +154,13 @@ async function importChannels() {
   toast.add({ title: added ? `${added} chaîne(s) ajoutée(s)` : 'Toutes tes chaînes sont déjà surveillées', color: 'success', icon: 'i-lucide-check' })
 }
 
-const excludedInput = reactive<Record<number, string>>({})
-async function addExcluded(c: GiveawayChannelView) {
-  const value = (excludedInput[c.id] ?? '').trim()
-  if (!value) return
-  await invoke('set_giveaway_excluded', { id: c.id, excluded: [...c.excluded, value] })
-  excludedInput[c.id] = ''
-}
-async function removeExcluded(c: GiveawayChannelView, cmd: string) {
-  await invoke('set_giveaway_excluded', { id: c.id, excluded: c.excluded.filter(x => x !== cmd) })
+// Réglages d'une chaîne (commandes ignorées…) : la vue à jour est relue par son identifiant
+const settingsId = ref<number | null>(null)
+const settingsOpen = ref(false)
+const settingsChannel = computed(() => allChannels.value.find(c => c.id === settingsId.value) ?? null)
+function openSettings(c: GiveawayChannelView) {
+  settingsId.value = c.id
+  settingsOpen.value = true
 }
 
 const toRemove = ref<GiveawayChannelView | null>(null)
@@ -239,7 +238,6 @@ async function confirmRemove() {
             <th class="text-left px-3 py-2">Giveaway</th>
             <th class="text-left px-3 py-2">Cadeaux</th>
             <th class="text-left px-3 py-2">Chat lu par</th>
-            <th class="text-left px-3 py-2">Commandes ignorées</th>
             <th class="px-3 py-2" />
           </tr>
         </thead>
@@ -310,17 +308,6 @@ async function confirmRemove() {
               </UTooltip>
             </td>
             <td class="px-3 py-2">
-              <div class="flex items-center gap-1 flex-wrap">
-                <UBadge v-for="cmd in c.excluded" :key="cmd" color="neutral" variant="subtle" class="font-mono">
-                  {{ cmd }}
-                  <button class="ml-1 hover:text-error" :aria-label="`Ne plus ignorer ${cmd}`" @click="removeExcluded(c, cmd)">×</button>
-                </UBadge>
-                <form class="inline-flex" @submit.prevent="addExcluded(c)">
-                  <UInput :id="`excluded-${c.id}`" v-model="excludedInput[c.id]" placeholder="!commande" size="xs" class="w-28" />
-                </form>
-              </div>
-            </td>
-            <td class="px-3 py-2">
               <div class="flex justify-end items-center gap-1">
                 <UButton v-if="c.live" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${c.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(c.login)" />
                 <UButton
@@ -342,12 +329,21 @@ async function confirmRemove() {
                   class="whitespace-nowrap"
                   @click="openForm(c)"
                 />
+                <UButton
+                  icon="i-lucide-settings-2"
+                  size="xs"
+                  variant="ghost"
+                  color="neutral"
+                  :aria-label="`Réglages de ${c.login}`"
+                  :title="c.excluded.length ? `Réglages (${c.excluded.length} commande(s) ignorée(s))` : 'Réglages de la chaîne'"
+                  @click="openSettings(c)"
+                />
                 <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Ne plus surveiller" @click="toRemove = c" />
               </div>
             </td>
           </tr>
           <tr v-if="channels.length === 0">
-            <td colspan="10" class="px-3 py-8 text-center text-muted">
+            <td colspan="9" class="px-3 py-8 text-center text-muted">
               {{ filtering ? 'Aucune chaîne ne correspond aux filtres.' : 'Aucune chaîne surveillée. Ajoute la première avec le champ ci-dessus.' }}
             </td>
           </tr>
@@ -356,10 +352,11 @@ async function confirmRemove() {
     </div>
     <p class="text-xs text-muted max-w-[85ch]">
       Une chaîne où l'un de tes comptes est déjà présent pour StreamElements est lue via cette connexion. Les autres sont lues par une seule connexion anonyme commune, qui n'apparaît pour aucun de tes comptes.
-      Une commande ignorée (ex. <span class="font-mono">!points</span>) ne déclenche jamais d'alerte. Quand une chaîne passe hors ligne, ses giveaways ouverts sont clos.
+      Une commande ignorée (ex. <span class="font-mono">!points</span>, bouton réglages de la chaîne) ne déclenche jamais d'alerte. Quand une chaîne passe hors ligne, ses giveaways ouverts sont clos.
     </p>
 
     <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" :channel="formChannel" />
+    <MonitoredChannelSettings v-model:open="settingsOpen" :channel="settingsChannel" />
 
     <UModal :open="toRemove !== null" title="Ne plus surveiller la chaîne ?" @update:open="v => { if (!v) toRemove = null }">
       <template #body>

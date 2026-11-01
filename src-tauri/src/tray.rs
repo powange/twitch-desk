@@ -48,7 +48,10 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
                     refresh(app, paused);
                 }
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                crate::save_windows(app);
+                app.exit(0)
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

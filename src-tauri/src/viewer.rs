@@ -26,6 +26,11 @@ fn valid_login(login: &str) -> bool {
     !login.is_empty() && login.len() <= 25 && login.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// Adresse sur twitch.tv (connexion, chat), en https
+fn is_twitch(url: &url::Url) -> bool {
+    url.scheme() == "https" && url.host_str().is_some_and(|h| h == "twitch.tv" || h.ends_with(".twitch.tv"))
+}
+
 fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let pin = CheckMenuItem::with_id(app, PIN_ID, "Toujours au premier plan", true, false, None::<&str>)?;
     let reload = MenuItem::with_id(app, RELOAD_ID, "Recharger les streams", true, None::<&str>)?;
@@ -60,6 +65,22 @@ pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(),
         .inner_size(1280.0, 760.0)
         .min_inner_size(480.0, 320.0)
         .menu(menu(handle).map_err(|e| format!("menu : {e}"))?)
+        // Fenêtres surgissantes : celles de Twitch (connexion au chat) s'ouvrent dans
+        // l'application, les autres liens dans le navigateur
+        .on_new_window({
+            let handle = handle.clone();
+            move |url, _features| {
+                if is_twitch(&url) {
+                    tauri::webview::NewWindowResponse::Allow
+                } else {
+                    use tauri_plugin_opener::OpenerExt;
+                    if matches!(url.scheme(), "http" | "https") {
+                        let _ = handle.opener().open_url(url.as_str(), None::<&str>);
+                    }
+                    tauri::webview::NewWindowResponse::Deny
+                }
+            }
+        })
         .build()
         .map_err(|e| format!("fenêtre des streams : {e}"))?;
     window.on_menu_event(|window, event| match event.id().as_ref() {
@@ -78,4 +99,19 @@ pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(),
         _ => {}
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_twitch_popups_stay_in_the_app() {
+        let ok = |u: &str| is_twitch(&u.parse().unwrap());
+        assert!(ok("https://www.twitch.tv/login?popup=true"));
+        assert!(ok("https://id.twitch.tv/oauth2/authorize"));
+        assert!(!ok("http://www.twitch.tv/login"));
+        assert!(!ok("https://twitch.tv.evil.example/login"));
+        assert!(!ok("https://example.com"));
+    }
 }

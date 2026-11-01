@@ -180,6 +180,11 @@ export interface Settings {
   soundChoices: Record<string, string>
   // Nom du fichier choisi pour chaque alerte
   soundFiles: Record<string, string>
+  // Détection d'une commande de giveaway
+  detectWindow: number
+  detectPercent: number
+  detectMaxPerUser: number
+  detectCooldownSecs: number
 }
 
 export type ChannelList = 'points' | 'se'

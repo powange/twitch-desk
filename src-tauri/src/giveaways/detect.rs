@@ -11,11 +11,43 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-pub const BUFFER_SIZE: usize = 20;
-pub const COMMAND_MIN_COUNT: usize = 7;
-const COMMAND_REARM_COUNT: usize = 3;
-const MAX_PER_USER: usize = 2;
-pub const COMMAND_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+/// Règles de détection d'une commande de giveaway (Giveaways → Réglages)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DetectParams {
+    /// Derniers messages analysés
+    pub window: usize,
+    /// Messages avec la même commande pour déclencher l'alerte
+    pub min_count: usize,
+    /// Messages d'un même spectateur comptés pour une commande
+    pub max_per_user: usize,
+    /// Délai minimum entre deux alertes pour la même commande sur une chaîne
+    pub cooldown: Duration,
+}
+
+impl Default for DetectParams {
+    fn default() -> Self {
+        Self { window: 20, min_count: 7, max_per_user: 2, cooldown: Duration::from_secs(10 * 60) }
+    }
+}
+
+impl DetectParams {
+    pub fn from_settings(s: &crate::db::Settings) -> Self {
+        let window = (s.detect_window as usize).clamp(10, 100);
+        // Seuil en pourcentage du nombre de messages analysés, 2 messages au moins
+        let min_count = (window as u64 * s.detect_percent.clamp(5, 100)).div_ceil(100).max(2) as usize;
+        Self {
+            window,
+            min_count,
+            max_per_user: (s.detect_max_per_user as usize).clamp(1, 10),
+            cooldown: Duration::from_secs(s.detect_cooldown_secs.clamp(10, 3600)),
+        }
+    }
+
+    /// La commande déjà signalée peut redéclencher une alerte une fois retombée sous ce nombre
+    fn rearm(&self) -> usize {
+        (self.min_count / 2).max(1)
+    }
+}
 /// Commande d'achat de tickets StreamElements : tapée en boucle pendant tout un
 /// giveaway StreamElements, elle masquerait la vraie commande ; ignorée seulement
 /// quand un giveaway StreamElements est actif sur la chaîne
@@ -73,9 +105,14 @@ struct ChannelState {
 pub struct Detector {
     channels: HashMap<String, ChannelState>,
     last_alert: HashMap<(String, String), Instant>,
+    params: DetectParams,
 }
 
 impl Detector {
+    pub fn set_params(&mut self, params: DetectParams) {
+        self.params = params;
+    }
+
     pub fn forget(&mut self, channel: &str) {
         self.channels.remove(channel);
         self.last_alert.retain(|(c, _), _| c != channel);
@@ -89,10 +126,10 @@ impl Detector {
     fn push_at(&mut self, channel: &str, user: &str, message: &str, ignored: &[String], now: Instant) -> Option<(String, Evidence)> {
         let state = self.channels.entry(channel.to_owned()).or_default();
         state.buffer.push_back((user.to_lowercase(), message.to_owned()));
-        while state.buffer.len() > BUFFER_SIZE {
+        while state.buffer.len() > self.params.window {
             state.buffer.pop_front();
         }
-        if state.buffer.len() < COMMAND_MIN_COUNT {
+        if state.buffer.len() < self.params.min_count {
             return None;
         }
 
@@ -106,7 +143,7 @@ impl Detector {
             }
             // Contribution plafonnée par pseudo : un spammeur seul n'atteint pas le seuil
             let from_user = per_user.entry((cmd.clone(), user.clone())).or_default();
-            if *from_user >= MAX_PER_USER {
+            if *from_user >= self.params.max_per_user {
                 continue;
             }
             *from_user += 1;
@@ -119,18 +156,18 @@ impl Detector {
 
         // Réarmer seulement quand la commande déjà signalée est vraiment retombée
         if let Some(alerted) = &state.alerted {
-            if counts.get(alerted).copied().unwrap_or(0) < COMMAND_REARM_COUNT {
+            if counts.get(alerted).copied().unwrap_or(0) < self.params.rearm() {
                 state.alerted = None;
             }
         }
 
         let (top, count) = counts.iter().max_by_key(|(_, c)| **c).map(|(k, c)| (k.clone(), *c))?;
-        if count < COMMAND_MIN_COUNT || state.alerted.as_deref() == Some(top.as_str()) {
+        if count < self.params.min_count || state.alerted.as_deref() == Some(top.as_str()) {
             return None;
         }
         state.alerted = Some(top.clone());
         let key = (channel.to_owned(), top.clone());
-        if self.last_alert.get(&key).is_some_and(|t| now.duration_since(*t) < COMMAND_COOLDOWN) {
+        if self.last_alert.get(&key).is_some_and(|t| now.duration_since(*t) < self.params.cooldown) {
             return None;
         }
         self.last_alert.insert(key, now);
@@ -225,12 +262,28 @@ mod tests {
         for i in 0..20 {
             d.push_at("c", &format!("y{i}"), "bonjour", &[], now);
         }
-        let later = now + COMMAND_COOLDOWN;
+        let later = now + DetectParams::default().cooldown;
         let mut again = None;
         for i in 0..7 {
             again = again.or(d.push_at("c", &format!("w{i}"), "!coffre", &[], later));
         }
         assert!(again.is_some());
+    }
+
+    #[test]
+    fn params_from_settings() {
+        let defaults = DetectParams::from_settings(&crate::db::Settings::default());
+        assert_eq!(defaults, DetectParams::default());
+        let s = crate::db::Settings { detect_window: 20, detect_percent: 25, ..Default::default() };
+        assert_eq!(DetectParams::from_settings(&s).min_count, 5);
+        let mut d = Detector::default();
+        d.set_params(DetectParams::from_settings(&s));
+        let now = Instant::now();
+        let mut hit = None;
+        for i in 0..5 {
+            hit = d.push_at("c", &format!("u{i}"), "!coffre", &[], now);
+        }
+        assert_eq!(hit.map(|(c, _)| c).as_deref(), Some("!coffre"));
     }
 
     #[test]

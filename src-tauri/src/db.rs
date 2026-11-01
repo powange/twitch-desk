@@ -209,6 +209,12 @@ const MIGRATIONS: &[&str] = &[r#"
 "#, r#"
     -- Points de chaîne : solde à atteindre, puis place à la chaîne suivante
     ALTER TABLE channels ADD COLUMN max_balance INTEGER;
+"#, r#"
+    -- Commandes ignorées : sur la fiche du streamer (et non plus sur la chaîne surveillée)
+    ALTER TABLE streamers ADD COLUMN ignored_commands TEXT NOT NULL DEFAULT '[]';
+    INSERT INTO streamers (login, ignored_commands)
+        SELECT login, excluded FROM giveaway_channels WHERE excluded != '[]'
+        ON CONFLICT(login) DO UPDATE SET ignored_commands = excluded.ignored_commands;
 "#];
 
 /// Types de giveaway
@@ -254,6 +260,8 @@ pub struct Streamer {
     /// Lien d'invitation au Discord du streamer
     pub discord_url: Option<String>,
     pub notes: Option<String>,
+    /// Commandes du chat que la détection de giveaway ignore sur sa chaîne
+    pub ignored_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -478,6 +486,14 @@ pub struct Settings {
     pub sound_choices: std::collections::BTreeMap<String, String>,
     /// Nom du fichier choisi pour chaque alerte (affichage)
     pub sound_files: std::collections::BTreeMap<String, String>,
+    /// Détection d'une commande de giveaway : derniers messages analysés
+    pub detect_window: u64,
+    /// Pourcentage de ces messages avec la même commande pour déclencher l'alerte
+    pub detect_percent: u64,
+    /// Messages d'un même spectateur comptés pour une commande
+    pub detect_max_per_user: u64,
+    /// Délai minimum entre deux alertes pour la même commande sur une chaîne, en secondes
+    pub detect_cooldown_secs: u64,
 }
 
 pub const DEFAULT_SCANNER_KEYWORDS: &[&str] =
@@ -505,6 +521,10 @@ impl Default for Settings {
             sound_events: crate::app::Alert::ALL.iter().map(|a| a.key().to_owned()).collect(),
             sound_choices: Default::default(),
             sound_files: Default::default(),
+            detect_window: 20,
+            detect_percent: 35,
+            detect_max_per_user: 2,
+            detect_cooldown_secs: 600,
         }
     }
 }
@@ -820,7 +840,11 @@ impl Db {
 
     pub fn giveaway_channels(&self) -> DbResult<Vec<GiveawayChannel>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT id, login, channel_id, excluded FROM giveaway_channels ORDER BY position, id")?;
+        // Commandes ignorées : celles de la fiche du streamer
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.login, c.channel_id, COALESCE(s.ignored_commands, '[]')
+             FROM giveaway_channels c LEFT JOIN streamers s ON s.login = c.login ORDER BY c.position, c.id",
+        )?;
         let rows = stmt.query_map([], |r| {
             let excluded: String = r.get(3)?;
             Ok(GiveawayChannel {
@@ -849,9 +873,14 @@ impl Db {
         Ok(())
     }
 
-    pub fn set_giveaway_excluded(&self, id: i64, excluded: &[String]) -> DbResult<()> {
-        let value = serde_json::to_string(excluded).expect("liste sérialisable");
-        self.conn().execute("UPDATE giveaway_channels SET excluded = ?2 WHERE id = ?1", params![id, value])?;
+    /// Commandes ignorées d'un streamer (fiche créée au besoin)
+    pub fn set_ignored_commands(&self, login: &str, commands: &[String]) -> DbResult<()> {
+        let value = serde_json::to_string(commands).expect("liste sérialisable");
+        self.conn().execute(
+            "INSERT INTO streamers (login, ignored_commands) VALUES (?1, ?2)
+             ON CONFLICT(login) DO UPDATE SET ignored_commands = excluded.ignored_commands",
+            params![login, value],
+        )?;
         Ok(())
     }
 
@@ -1022,17 +1051,23 @@ impl Db {
 
     pub fn streamer(&self, login: &str) -> DbResult<Option<Streamer>> {
         self.conn()
-            .query_row("SELECT login, discord_url, notes FROM streamers WHERE login = ?1", [login], |r| {
-                Ok(Streamer { login: r.get(0)?, discord_url: r.get(1)?, notes: r.get(2)? })
+            .query_row("SELECT login, discord_url, notes, ignored_commands FROM streamers WHERE login = ?1", [login], |r| {
+                Ok(Streamer {
+                    login: r.get(0)?,
+                    discord_url: r.get(1)?,
+                    notes: r.get(2)?,
+                    ignored_commands: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default(),
+                })
             })
             .optional()
     }
 
     pub fn save_streamer(&self, s: &Streamer) -> DbResult<()> {
         self.conn().execute(
-            "INSERT INTO streamers (login, discord_url, notes) VALUES (?1, ?2, ?3)
-             ON CONFLICT(login) DO UPDATE SET discord_url = excluded.discord_url, notes = excluded.notes",
-            params![s.login, s.discord_url, s.notes],
+            "INSERT INTO streamers (login, discord_url, notes, ignored_commands) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(login) DO UPDATE SET discord_url = excluded.discord_url, notes = excluded.notes,
+                 ignored_commands = excluded.ignored_commands",
+            params![s.login, s.discord_url, s.notes, serde_json::to_string(&s.ignored_commands).expect("liste sérialisable")],
         )?;
         Ok(())
     }
@@ -1140,6 +1175,16 @@ impl Db {
         let mut stmt = conn.prepare("SELECT gift_id, COUNT(*) FROM giveaway_gifts GROUP BY gift_id")?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect()
+    }
+
+    /// Commande d'un giveaway saisi sans commande, trouvée ensuite par la détection
+    pub fn set_giveaway_command_if_unknown(&self, id: i64, command: &str) -> DbResult<bool> {
+        let n = self.conn().execute(
+            // Remis dans la file d'alertes : il est maintenant possible d'y participer
+            "UPDATE giveaways SET command = ?2, handled = 0 WHERE id = ?1 AND (command IS NULL OR command = '')",
+            params![id, command],
+        )?;
+        Ok(n > 0)
     }
 
     /// Maximum de tickets annoncé par le bot, s'il n'est pas déjà renseigné
@@ -1297,8 +1342,9 @@ mod tests {
         db.add_giveaway_channel("lunarsea", "11").unwrap();
         let ch = db.giveaway_channels().unwrap();
         assert_eq!(ch.len(), 1);
-        db.set_giveaway_excluded(ch[0].id, &["!points".into()]).unwrap();
+        db.set_ignored_commands("lunarsea", &["!points".into()]).unwrap();
         assert_eq!(db.giveaway_channels().unwrap()[0].excluded, vec!["!points"]);
+        assert_eq!(db.streamer("lunarsea").unwrap().unwrap().ignored_commands, vec!["!points"]);
 
         let new = |at: &str| NewGiveaway {
             channel: "lunarsea".into(),
@@ -1408,7 +1454,7 @@ mod tests {
     fn streamers() {
         let db = Db::memory().unwrap();
         assert_eq!(db.streamer("levraidoffy").unwrap(), None);
-        let s = Streamer { login: "levraidoffy".into(), discord_url: Some("https://discord.gg/abc".into()), notes: None };
+        let s = Streamer { login: "levraidoffy".into(), discord_url: Some("https://discord.gg/abc".into()), notes: None, ignored_commands: vec![] };
         db.save_streamer(&s).unwrap();
         db.save_streamer(&Streamer { notes: Some("Tirage à 22 h".into()), ..s.clone() }).unwrap();
         let back = db.streamer("levraidoffy").unwrap().unwrap();

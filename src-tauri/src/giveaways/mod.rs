@@ -254,6 +254,7 @@ impl Monitor {
     }
 
     fn reload(&mut self) {
+        self.detector.set_params(detect::DetectParams::from_settings(&self.app.db.settings()));
         self.channels = self.app.db.giveaway_channels().unwrap_or_default();
         self.games = self.app.db.giveaway_games().unwrap_or_default();
         self.gql = None;
@@ -493,6 +494,17 @@ impl Monitor {
         let Some((command, evidence)) = self.detector.push(channel, &user_l, text, &ignored) else { return };
         // Même commande déjà ouverte sur la chaîne : pas de doublon
         if open.iter().any(|g| g.command.as_deref() == Some(command.as_str())) {
+            return;
+        }
+        // Giveaway saisi sans commande (pas encore connue) : la commande détectée le complète
+        let waiting = open.iter().find(|g| matches!(g.kind.as_str(), "command" | "ticket") && g.command.as_deref().unwrap_or("").is_empty());
+        if let Some(g) = waiting {
+            if self.app.db.set_giveaway_command_if_unknown(g.id, &command).unwrap_or(false) {
+                self.app.log("giveaways", EventKind::Giveaway, format!("Commande trouvée pour le giveaway de {channel} : {command}"));
+                self.app.notify(Alert::Giveaway, &format!("Commande trouvée sur {channel}"), &format!("Le giveaway attend {command}"));
+                self.publish();
+                schedule_auto_participation(self.app.clone(), g.id);
+            }
             return;
         }
         let id = match self.app.db.insert_giveaway(&NewGiveaway {
@@ -837,9 +849,6 @@ pub fn validate_input(mut g: GiveawayInput) -> Result<GiveawayInput, String> {
     if g.command.as_ref().is_some_and(|c| c.chars().count() > 50) {
         return Err("Commande trop longue (50 caractères au plus)".into());
     }
-    if matches!(g.kind.as_str(), "command" | "ticket") && g.command.is_none() {
-        return Err("Indique la commande à taper dans le chat".into());
-    }
     g.url = g.url.map(|u| u.trim().to_owned()).filter(|u| !u.is_empty());
     if let Some(url) = &g.url {
         if !url.starts_with("https://streamelements.com/") {
@@ -919,9 +928,10 @@ mod tests {
         assert_eq!(t.details.reward_name, None);
         assert_eq!(t.details.draw_at.as_deref(), Some("2026-11-01T21:30:00Z"));
 
+        // Commande pas encore connue : acceptée, la détection la complétera
         let mut c = input("command");
         c.command = None;
-        assert!(validate_input(c).is_err());
+        assert_eq!(validate_input(c).unwrap().command, None);
         let mut se = input("streamelements");
         se.command = None;
         se.url = Some("https://evil.example/x".into());

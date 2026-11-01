@@ -552,9 +552,11 @@ pub fn remove_giveaway_channel(app: AppState, id: i64) -> CmdResult<()> {
 }
 
 #[tauri::command]
-pub fn set_giveaway_excluded(app: AppState, id: i64, excluded: Vec<String>) -> CmdResult<Vec<String>> {
-    let list = crate::giveaways::detect::normalize_excluded(&excluded);
-    app.db.set_giveaway_excluded(id, &list).map_err(db_err)?;
+/// Commandes du chat ignorées par la détection sur la chaîne d'un streamer (fiche du streamer)
+pub fn set_ignored_commands(app: AppState, login: String, commands: Vec<String>) -> CmdResult<Vec<String>> {
+    let login = normalize_login(&login).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    let list = crate::giveaways::detect::normalize_excluded(&commands);
+    app.db.set_ignored_commands(&login, &list).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();
     Ok(list)
@@ -646,7 +648,9 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
         }
     }
     let notes = streamer.notes.map(|n| n.trim().chars().take(2000).collect::<String>()).filter(|n| !n.is_empty());
-    app.db.save_streamer(&crate::db::Streamer { login, discord_url, notes }).map_err(db_err)?;
+    let ignored_commands = crate::giveaways::detect::normalize_excluded(&streamer.ignored_commands);
+    app.db.save_streamer(&crate::db::Streamer { login, discord_url, notes, ignored_commands }).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();
     Ok(())
 }

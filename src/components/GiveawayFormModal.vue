@@ -9,6 +9,7 @@ import { useOpenExternal } from '../utils/external'
 import { boxArt, channelUrl, formatNumber } from '../utils/format'
 import { GIVEAWAY_KIND_ITEMS } from '../utils/giveaways'
 import type { GiveawayInput, GiveawayView } from '../types'
+import IgnoredCommandsEditor from './IgnoredCommandsEditor.vue'
 
 // Création (giveaway = null) ou modification d'une fiche de giveaway
 // channel : chaîne pré-remplie pour un nouveau giveaway
@@ -17,7 +18,7 @@ const open = defineModel<boolean>('open', { required: true })
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
-const { gifts } = useGiftCatalog()
+const { gifts, groups } = useGiftCatalog()
 const openExternal = useOpenExternal()
 
 type TriState = 'yes' | 'no' | 'unknown'
@@ -86,13 +87,35 @@ const liveGameId = computed(() => {
   const login = form.value.channel.trim().toLowerCase()
   return snapshot.value?.giveaways.channels.find(c => c.login === login)?.live?.gameId ?? null
 })
-const giftList = computed(() => {
+// Cadeaux par catégorie (celle du live d'abord, sans catégorie à la fin) puis par groupe
+// (sans groupe à la fin) ; dans un groupe, cochés et suggérés d'abord
+const giftSections = computed(() => {
   const q = giftSearch.value.trim().toLowerCase()
-  const rank = (id: number, gameId: string | null) =>
-    (form.value.giftIds.includes(id) ? 4 : 0) + (suggested.value.has(id) ? 2 : 0) + (liveGameId.value && gameId === liveGameId.value ? 1 : 0)
-  return gifts.value
+  const list = gifts.value
     .filter(g => !q || g.title.toLowerCase().includes(q) || g.keywords.some(k => k.includes(q)) || (g.gameName ?? '').toLowerCase().includes(q))
-    .sort((a, b) => rank(b.id, b.gameId) - rank(a.id, a.gameId) || a.title.localeCompare(b.title))
+  const rank = (id: number) => (form.value.giftIds.includes(id) ? 2 : 0) + (suggested.value.has(id) ? 1 : 0)
+  const byCategory = new Map<string, typeof list>()
+  for (const g of list) {
+    const key = g.gameId ?? ''
+    byCategory.set(key, [...(byCategory.get(key) ?? []), g])
+  }
+  return [...byCategory].map(([key, items]) => {
+    const byGroup = new Map<number | null, typeof list>()
+    for (const g of items) {
+      const group = groups.value.some(x => x.id === g.groupId) ? g.groupId : null
+      byGroup.set(group, [...(byGroup.get(group) ?? []), g])
+    }
+    return {
+      id: key || null,
+      name: key ? (items[0]?.gameName ?? key) : 'Sans catégorie',
+      live: !!key && key === liveGameId.value,
+      groups: [...byGroup].map(([id, members]) => ({
+        id,
+        name: groups.value.find(x => x.id === id)?.name ?? 'Sans groupe',
+        gifts: [...members].sort((a, b) => rank(b.id) - rank(a.id) || a.title.localeCompare(b.title))
+      })).sort((a, b) => (a.id === null ? 1 : 0) - (b.id === null ? 1 : 0) || a.name.localeCompare(b.name))
+    }
+  }).sort((a, b) => Number(b.live) - Number(a.live) || (a.id === null ? 1 : 0) - (b.id === null ? 1 : 0) || a.name.localeCompare(b.name))
 })
 function toggleGift(id: number) {
   const ids = form.value.giftIds
@@ -112,7 +135,8 @@ watch(open, (isOpen) => {
   suggestion.value = null
   streamerDiscord.value = ''
   streamerNotes.value = ''
-  streamerLoaded.value = { discord: '', notes: '' }
+  streamerIgnored.value = []
+  streamerLoaded.value = { discord: '', notes: '', ignored: '' }
   // Modification : fiche de la chaîne chargée tout de suite
   if (props.giveaway) void inspect(props.giveaway.channel)
   const g = props.giveaway
@@ -142,14 +166,16 @@ interface ChannelSuggestion {
   streamelements: { url: string, title: string, description: string, command: string | null, cost: number, maxTickets: number | null } | null
   detectedCommand: string | null
   profile: ChannelProfile | null
-  streamer: { login: string, discordUrl: string | null, notes: string | null } | null
+  streamer: { login: string, discordUrl: string | null, notes: string | null, ignoredCommands: string[] } | null
 }
 
 // --- Informations propres au streamer (mémorisées, retrouvées à chaque giveaway) ---
 const streamerDiscord = ref('')
 const streamerNotes = ref('')
+// Commandes du chat ignorées par la détection sur sa chaîne
+const streamerIgnored = ref<string[]>([])
 // Valeurs chargées, pour n'enregistrer que si elles changent
-const streamerLoaded = ref({ discord: '', notes: '' })
+const streamerLoaded = ref({ discord: '', notes: '', ignored: '' })
 const inspecting = ref(false)
 let inspectTimer: ReturnType<typeof setTimeout> | null = null
 let inspectSeq = 0
@@ -171,9 +197,10 @@ async function inspect(login: string) {
     if (seq !== inspectSeq) return
     suggestion.value = found
     // Fiche du streamer : ce qu'on a noté, sinon le lien Discord trouvé sur sa chaîne
-    streamerLoaded.value = { discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '' }
+    streamerLoaded.value = { discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '', ignored: (found.streamer?.ignoredCommands ?? []).join() }
     streamerDiscord.value = found.streamer?.discordUrl ?? found.profile?.discord ?? ''
     streamerNotes.value = found.streamer?.notes ?? ''
+    streamerIgnored.value = [...(found.streamer?.ignoredCommands ?? [])]
     // En modification, la fiche de la chaîne suffit : on ne remplace pas ce qui a été saisi
     if (props.giveaway) return
     const f = form.value
@@ -213,7 +240,7 @@ const sections = computed(() => {
   const conditions = [f.follow, f.presence, f.discord].filter(v => v !== 'unknown').length
   return [
     { key: 'channel' as const, label: 'Chaîne', icon: 'i-lucide-tv', summary: f.channel.trim() || 'à choisir', missing: !f.channel.trim() },
-    { key: 'giveaway' as const, label: 'Giveaway', icon: 'i-lucide-gift', summary: GIVEAWAY_KIND_ITEMS.find(k => k.value === f.kind)?.label ?? '', missing: (f.kind === 'command' || f.kind === 'ticket') && !f.command.trim() },
+    { key: 'giveaway' as const, label: 'Giveaway', icon: 'i-lucide-gift', summary: (f.kind === 'command' || f.kind === 'ticket') && !f.command.trim() ? 'commande à détecter' : GIVEAWAY_KIND_ITEMS.find(k => k.value === f.kind)?.label ?? '', missing: false },
     { key: 'gifts' as const, label: 'Cadeaux', icon: 'i-lucide-package', summary: f.giftIds.length ? `${f.giftIds.length} choisi(s)` : 'aucun', missing: false },
     { key: 'conditions' as const, label: 'Conditions', icon: 'i-lucide-list-checks', summary: conditions ? `${conditions} renseignée(s)` : 'inconnues', missing: false }
   ]
@@ -250,8 +277,10 @@ async function save() {
     if (props.giveaway) await invoke('update_giveaway', { id: props.giveaway.id, input })
     else await invoke('create_giveaway', { input })
     // Fiche du streamer : enregistrée si elle a changé (ou si le Discord vient d'être trouvé)
-    if (streamerDiscord.value !== streamerLoaded.value.discord || streamerNotes.value !== streamerLoaded.value.notes) {
-      await invoke('save_streamer', { streamer: { login: f.channel, discordUrl: streamerDiscord.value || null, notes: streamerNotes.value || null } })
+    if (streamerDiscord.value !== streamerLoaded.value.discord || streamerNotes.value !== streamerLoaded.value.notes || streamerIgnored.value.join() !== streamerLoaded.value.ignored) {
+      await invoke('save_streamer', {
+        streamer: { login: f.channel, discordUrl: streamerDiscord.value || null, notes: streamerNotes.value || null, ignoredCommands: streamerIgnored.value }
+      })
     }
     toast.add({ title: props.giveaway ? 'Giveaway modifié' : 'Giveaway ajouté', color: 'success', icon: 'i-lucide-check' })
     open.value = false
@@ -334,6 +363,9 @@ async function save() {
                   <UButton v-if="streamerDiscord.startsWith('https://')" icon="i-lucide-external-link" color="neutral" variant="soft" aria-label="Ouvrir le Discord" @click="openExternal(streamerDiscord)" />
                 </div>
               </UFormField>
+              <UFormField label="Commandes ignorées" help="Commandes de son chat qui ne déclenchent jamais d'alerte de giveaway (!points, !discord…)">
+                <IgnoredCommandsEditor id="gw-streamer-ignored" v-model="streamerIgnored" />
+              </UFormField>
               <UFormField label="Notes sur le streamer">
                 <UTextarea id="gw-streamer-notes" v-model="streamerNotes" :rows="3" autoresize placeholder="Habitudes de tirage, règles, horaires…" class="w-full" />
               </UFormField>
@@ -359,7 +391,11 @@ async function save() {
               </div>
             </UFormField>
 
-            <UFormField v-if="form.kind === 'command' || form.kind === 'ticket' || form.kind === 'streamelements'" label="Commande à taper">
+            <UFormField
+              v-if="form.kind === 'command' || form.kind === 'ticket' || form.kind === 'streamelements'"
+              label="Commande à taper"
+              :help="form.kind !== 'streamelements' && !form.command.trim() ? 'Pas encore connue ? Laisse vide : elle sera remplie dès que la détection la repère dans le chat.' : undefined"
+            >
               <UInput id="gw-command" v-model="form.command" placeholder="!coffre" class="w-full font-mono" />
             </UFormField>
 
@@ -424,24 +460,40 @@ async function save() {
               <UInput id="gw-gift-search" v-model="giftSearch" icon="i-lucide-search" placeholder="Rechercher" size="sm" class="w-48" />
               <UButton label="Nouveau cadeau" icon="i-lucide-plus" size="sm" color="neutral" variant="soft" @click="giftFormOpen = true" />
             </div>
-            <div v-if="gifts.length" class="grid grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-2 max-h-[380px] overflow-y-auto p-0.5">
-              <button
-                v-for="g in giftList"
-                :key="g.id"
-                type="button"
-                class="relative flex items-center gap-2 border rounded-md p-1.5 text-left text-sm transition-colors"
-                :class="form.giftIds.includes(g.id) ? 'border-primary bg-primary/10' : 'border-default hover:border-primary/50'"
-                :aria-pressed="form.giftIds.includes(g.id)"
-                @click="toggleGift(g.id)"
-              >
-                <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="size-10 rounded object-contain bg-elevated shrink-0">
-                <span v-else class="size-10 rounded bg-elevated shrink-0 flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
-                <span class="flex flex-col min-w-0">
-                  <span class="leading-tight line-clamp-2">{{ g.title }}</span>
-                  <span v-if="g.gameName" class="text-xs text-muted truncate">{{ g.gameName }}</span>
-                </span>
-                <UIcon v-if="suggested.has(g.id)" name="i-lucide-sparkles" class="absolute top-1 right-1 size-3.5 text-primary" title="Suggéré : le titre du cadeau ou un mot-clé apparaît dans le titre, la description, le message épinglé ou le giveaway StreamElements de la chaîne" />
-              </button>
+            <div v-if="gifts.length" class="flex flex-col gap-3 max-h-[380px] overflow-y-auto p-0.5">
+              <section v-for="cat in giftSections" :key="cat.id ?? ''" class="flex flex-col gap-1.5">
+                <div class="flex items-center gap-1.5 text-sm font-semibold sticky top-0 bg-default z-10 py-0.5">
+                  <img v-if="cat.id" :src="boxArt(null, cat.id)" alt="" class="w-4 h-5 rounded-sm object-cover">
+                  <UIcon v-else name="i-lucide-package" class="size-4 text-muted" />
+                  {{ cat.name }}
+                  <UBadge v-if="cat.live" label="en live" color="success" variant="subtle" size="sm" />
+                </div>
+                <div v-for="grp in cat.groups" :key="grp.id ?? 'none'" class="flex flex-col gap-1 pl-2">
+                  <div class="flex items-center gap-1 text-xs text-muted">
+                    <UIcon :name="grp.id === null ? 'i-lucide-folder-x' : 'i-lucide-folder'" class="size-3.5" />{{ grp.name }}
+                  </div>
+                  <div class="grid grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-2">
+                    <button
+                      v-for="g in grp.gifts"
+                      :key="g.id"
+                      type="button"
+                      class="relative flex items-center gap-2 border rounded-md p-1.5 text-left text-sm transition-colors"
+                      :class="form.giftIds.includes(g.id) ? 'border-primary bg-primary/10' : 'border-default hover:border-primary/50'"
+                      :aria-pressed="form.giftIds.includes(g.id)"
+                      @click="toggleGift(g.id)"
+                    >
+                      <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="size-10 rounded object-contain bg-elevated shrink-0">
+                      <span v-else class="size-10 rounded bg-elevated shrink-0 flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                      <span class="flex flex-col min-w-0">
+                        <span class="leading-tight line-clamp-2">{{ g.title }}</span>
+                        <span v-if="g.gameName" class="text-xs text-muted truncate">{{ g.gameName }}</span>
+                      </span>
+                      <UIcon v-if="suggested.has(g.id)" name="i-lucide-sparkles" class="absolute top-1 right-1 size-3.5 text-primary" title="Suggéré : le titre du cadeau ou un mot-clé apparaît dans le titre, la description, le message épinglé ou le giveaway StreamElements de la chaîne" />
+                    </button>
+                  </div>
+                </div>
+              </section>
+              <p v-if="giftSections.length === 0" class="text-sm text-muted">Aucun cadeau ne correspond.</p>
             </div>
             <p v-else class="text-sm text-muted">Catalogue vide : ajoute un cadeau avec « Nouveau cadeau ».</p>
           </div>
