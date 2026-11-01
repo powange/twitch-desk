@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from './useSnapshot'
 import type { Gift, GiftCatalog } from '../types'
@@ -12,8 +12,18 @@ async function refresh() {
   catalog.value = await invoke<GiftCatalog>('get_gift_catalog')
 }
 
+let watching = false
+
 export function useGiftCatalog() {
   if (!catalog.value && !loading) loading = refresh().finally(() => { loading = null })
+  // Cadeaux reçus d'un serveur de synchronisation : catalogue relu
+  if (!watching) {
+    watching = true
+    const { snapshot } = useSnapshot()
+    watch(() => snapshot.value?.sync.revision, (now, before) => {
+      if (before !== undefined && now !== before) void refresh()
+    })
+  }
   const gifts = computed(() => catalog.value?.gifts ?? [])
   const groups = computed(() => catalog.value?.groups ?? [])
   const byId = computed(() => new Map(gifts.value.map(g => [g.id, g])))

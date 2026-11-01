@@ -182,6 +182,21 @@ const MIGRATIONS: &[&str] = &[r#"
     ALTER TABLE gift_groups ADD COLUMN game_name TEXT;
     UPDATE gift_groups SET game_name = (SELECT game_name FROM gifts WHERE gifts.game_id = gift_groups.game_id AND game_name IS NOT NULL LIMIT 1)
         WHERE game_id IS NOT NULL;
+"#, r#"
+    -- Synchronisation : identifiant partagé entre les applications, dernier état envoyé ou reçu
+    ALTER TABLE gift_groups ADD COLUMN sync_id TEXT;
+    ALTER TABLE gifts ADD COLUMN sync_id TEXT;
+    ALTER TABLE giveaways ADD COLUMN sync_id TEXT;
+    CREATE UNIQUE INDEX gift_groups_sync ON gift_groups (sync_id);
+    CREATE UNIQUE INDEX gifts_sync ON gifts (sync_id);
+    CREATE UNIQUE INDEX giveaways_sync ON giveaways (sync_id);
+    CREATE TABLE sync_state (
+        collection TEXT NOT NULL,
+        id TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        PRIMARY KEY (collection, id)
+    );
+    CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 "#];
 
 /// Types de giveaway
@@ -484,7 +499,7 @@ impl Db {
         Ok(Self(Mutex::new(conn)))
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.0.lock().unwrap()
     }
 

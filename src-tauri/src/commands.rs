@@ -231,6 +231,7 @@ pub fn get_settings(app: AppState) -> Settings {
 pub fn save_settings(app: AppState, settings: Settings) -> CmdResult<()> {
     app.db.save_settings(&settings).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(())
 }
 
@@ -335,6 +336,7 @@ pub async fn add_giveaway_channel(app: AppState<'_>, login: String) -> CmdResult
         .ok_or_else(|| format!("La chaîne « {login} » n'existe pas"))?;
     app.db.add_giveaway_channel(&login, &channel_id).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(login)
 }
 
@@ -352,6 +354,7 @@ pub fn import_giveaway_channels(app: AppState) -> CmdResult<usize> {
         }
     }
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(added)
 }
 
@@ -381,6 +384,7 @@ pub async fn add_giveaway_game(app: AppState<'_>, input: String) -> CmdResult<St
         .ok_or_else(|| format!("Catégorie « {slug} » introuvable sur Twitch"))?;
     app.db.add_giveaway_game(&game.id, &game.name, &slug, game.box_art.as_deref()).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(game.name)
 }
 
@@ -388,6 +392,7 @@ pub async fn add_giveaway_game(app: AppState<'_>, input: String) -> CmdResult<St
 pub fn remove_giveaway_game(app: AppState, id: i64) -> CmdResult<()> {
     app.db.remove_giveaway_game(id).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(())
 }
 
@@ -395,6 +400,7 @@ pub fn remove_giveaway_game(app: AppState, id: i64) -> CmdResult<()> {
 pub fn remove_giveaway_channel(app: AppState, id: i64) -> CmdResult<()> {
     app.db.remove_giveaway_channel(id).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(())
 }
 
@@ -403,6 +409,7 @@ pub fn set_giveaway_excluded(app: AppState, id: i64, excluded: Vec<String>) -> C
     let list = crate::giveaways::detect::normalize_excluded(&excluded);
     app.db.set_giveaway_excluded(id, &list).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(list)
 }
 
@@ -492,7 +499,9 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
         }
     }
     let notes = streamer.notes.map(|n| n.trim().chars().take(2000).collect::<String>()).filter(|n| !n.is_empty());
-    app.db.save_streamer(&crate::db::Streamer { login, discord_url, notes }).map_err(db_err)
+    app.db.save_streamer(&crate::db::Streamer { login, discord_url, notes }).map_err(db_err)?;
+    app.sync.poke();
+    Ok(())
 }
 
 #[tauri::command]
@@ -503,6 +512,7 @@ pub async fn create_giveaway(app: AppState<'_>, input: crate::db::GiveawayInput)
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let id = app.db.insert_manual_giveaway(&input, &at).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     add_giveaway_channel_to_lists(&app, &input).await;
     Ok(id)
 }
@@ -514,6 +524,7 @@ pub async fn update_giveaway(app: AppState<'_>, id: i64, input: crate::db::Givea
     input.gift_ids = known_gifts(&app, &input.gift_ids);
     app.db.update_giveaway(id, &input).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     add_giveaway_channel_to_lists(&app, &input).await;
     Ok(())
 }
@@ -580,6 +591,7 @@ pub fn save_gift(app: AppState, mut gift: crate::db::Gift) -> CmdResult<i64> {
     }
     let id = app.db.save_gift(&gift).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(id)
 }
 
@@ -587,6 +599,7 @@ pub fn save_gift(app: AppState, mut gift: crate::db::Gift) -> CmdResult<i64> {
 pub fn delete_gift(app: AppState, id: i64) -> CmdResult<()> {
     app.db.delete_gift(id).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(())
 }
 
@@ -607,6 +620,7 @@ pub fn save_gift_group(
         return Err("Nom trop long (60 caractères au plus)".into());
     }
     let taken = || format!("Le groupe « {name} » existe déjà dans cette catégorie");
+    app.sync.poke();
     if id > 0 {
         return if app.db.rename_gift_group(id, name).map_err(db_err)? { Ok(id) } else { Err(taken()) };
     }
@@ -617,7 +631,9 @@ pub fn save_gift_group(
 
 #[tauri::command]
 pub fn delete_gift_group(app: AppState, id: i64) -> CmdResult<()> {
-    app.db.delete_gift_group(id).map_err(db_err)
+    app.db.delete_gift_group(id).map_err(db_err)?;
+    app.sync.poke();
+    Ok(())
 }
 
 #[tauri::command]
@@ -630,6 +646,7 @@ pub fn set_prize(app: AppState, id: i64, received: bool, note: Option<String>) -
     let note = note.map(|n| n.trim().chars().take(500).collect::<String>()).filter(|n| !n.is_empty());
     app.db.set_prize(id, received, note.as_deref()).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(())
 }
 
@@ -768,6 +785,7 @@ pub fn import_gifts(app: AppState, path: String) -> CmdResult<GiftImportResult> 
         }
     }
     app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
     Ok(result)
 }
 
@@ -785,11 +803,13 @@ pub fn dismiss_giveaway(app: AppState, id: i64) {
 #[tauri::command]
 pub fn close_giveaway(app: AppState, id: i64) {
     app.giveaways.send(MonitorCmd::Close(id));
+    app.sync.poke();
 }
 
 #[tauri::command]
 pub fn delete_giveaway(app: AppState, id: i64) {
     app.giveaways.send(MonitorCmd::Delete(id));
+    app.sync.poke();
 }
 
 #[tauri::command]

@@ -1,0 +1,31 @@
+# Pile Portainer : Stacks → Add stack → Repository
+#   Repository URL : https://github.com/powange/twitch-desk
+#   Compose path   : server/docker-compose.yml
+#   Environment variables : SYNC_CODE (obligatoire), et au besoin les autres ci-dessous
+services:
+  twitch-desk-sync:
+    image: ghcr.io/powange/twitch-desk-sync:latest
+    # Ou construire l'image depuis le dépôt (dossier server/) au lieu de la télécharger :
+    # build: .
+    container_name: twitch-desk-sync
+    restart: unless-stopped
+    environment:
+      # Code à communiquer aux utilisateurs (8 caractères au moins)
+      SYNC_CODE: ${SYNC_CODE:?Définis SYNC_CODE dans les variables d'environnement de la pile}
+      # Données mises en commun : groups, gifts, giveaways, channels, streamers
+      SYNC_COLLECTIONS: ${SYNC_COLLECTIONS:-groups,gifts,giveaways,channels,streamers}
+      # Durée de conservation de l'historique des modifications, en jours
+      SYNC_HISTORY_DAYS: ${SYNC_HISTORY_DAYS:-90}
+    volumes:
+      - twitch-desk-sync:/data
+    ports:
+      - "${SYNC_HOST_PORT:-8787}:8787"
+
+volumes:
+  twitch-desk-sync:
+
+# Réseau du proxy HTTPS : le proxy joint le serveur par twitch-desk-sync:8787
+networks:
+  default:
+    external: true
+    name: proxy-network

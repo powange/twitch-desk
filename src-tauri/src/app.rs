@@ -137,6 +137,7 @@ pub struct Snapshot {
     pub scanner: crate::scanner::ScannerView,
     /// Chaînes surveillées en live : giveaway StreamElements actif, description, message épinglé
     pub insights: HashMap<String, crate::insights::ChannelInsight>,
+    pub sync: crate::sync::SyncView,
 }
 
 struct MinerHandle {
@@ -161,6 +162,7 @@ pub struct App {
     pub point_priority: RwLock<std::collections::HashSet<String>>,
     pub scanner: Mutex<crate::scanner::ScannerState>,
     pub insights: Mutex<crate::insights::InsightsState>,
+    pub sync: crate::sync::SyncHandle,
     languages: RwLock<HashMap<String, String>>,
 }
 
@@ -182,6 +184,7 @@ impl App {
             point_priority: RwLock::new(std::collections::HashSet::new()),
             scanner: Mutex::new(crate::scanner::ScannerState::default()),
             insights: Mutex::new(crate::insights::InsightsState::default()),
+            sync: crate::sync::SyncHandle::default(),
             languages: RwLock::new(HashMap::new()),
         })
     }
@@ -303,6 +306,7 @@ impl App {
             languages: self.languages.read().unwrap().clone(),
             scanner: self.scanner.lock().unwrap().view(),
             insights: self.insights.lock().unwrap().view(),
+            sync: self.sync.view(),
         }
     }
 

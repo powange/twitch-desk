@@ -8,6 +8,7 @@ mod miner;
 mod scanner;
 mod secrets;
 mod streamelements;
+mod sync;
 mod tray;
 mod twitch;
 
@@ -110,6 +111,7 @@ pub fn run() {
             state.spawn_languages();
             scanner::spawn(state.clone());
             insights::spawn(state.clone());
+            sync::spawn(state.clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -174,6 +176,10 @@ pub fn run() {
             scanner::scan_streams,
             scanner::scanner_ignore,
             scanner::scanner_refilter,
+            sync::get_sync_config,
+            sync::save_sync_config,
+            sync::test_sync,
+            sync::sync_now,
             commands::export_gifts,
             commands::import_gifts,
             commands::update_giveaway,

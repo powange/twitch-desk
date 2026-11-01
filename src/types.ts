@@ -79,6 +79,21 @@ export interface Snapshot {
   scanner: ScannerView
   // Chaînes surveillées en live : giveaway StreamElements actif, description, message épinglé
   insights: Record<string, ChannelInsight>
+  sync: SyncView
+}
+
+export interface SyncView {
+  enabled: boolean
+  url: string
+  status: 'off' | 'syncing' | 'ok' | 'error'
+  lastSync: string | null
+  error: string | null
+  // Collections partagées par le serveur
+  collections: string[]
+  sent: number
+  received: number
+  // Augmente à chaque modification reçue
+  revision: number
 }
 
 export interface ChannelInsight {

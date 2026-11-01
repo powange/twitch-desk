@@ -7,6 +7,7 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { useColorMode } from '@vueuse/core'
 import { useUpdater } from '../composables/useUpdater'
 import { useSnapshot } from '../composables/useSnapshot'
+import SyncSettings from '../components/SyncSettings.vue'
 import type { Settings } from '../types'
 
 const toast = useToast()
@@ -136,6 +137,11 @@ async function checkUpdates() {
           </div>
         </div>
       </div>
+    </section>
+
+    <section class="flex flex-col gap-2">
+      <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">Synchronisation</h2>
+      <SyncSettings />
     </section>
 
     <section v-if="paths" class="flex flex-col gap-2">
