@@ -400,7 +400,7 @@ fn fold(text: &str) -> String {
 }
 
 /// `term` présent au début d'un mot de `text` (mots séparés par n'importe quels espaces)
-fn starts_word(text: &str, term: &str) -> bool {
+pub(crate) fn starts_word(text: &str, term: &str) -> bool {
     let words: Vec<&str> = term.split_whitespace().collect();
     let Some(first) = words.first() else { return false };
     let mut from = 0;
@@ -746,13 +746,32 @@ impl Default for Settings {
     }
 }
 
+/// Heure du tirage absente, illisible ou passée : le giveaway peut être clos automatiquement
+/// (`draw_at` en RFC 3339, lu par SQLite)
+const DRAW_NOT_AHEAD: &str = "COALESCE(julianday(draw_at) > julianday('now'), 0) = 0";
+
 pub struct Db(Mutex<Connection>);
 
 type DbResult<T> = rusqlite::Result<T>;
 
 impl Db {
     pub fn open(path: &Path) -> DbResult<Self> {
+        let existed = path.exists();
         let conn = Connection::open(path)?;
+        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        // Mise à jour du schéma : copie de la base d'avant (WAL compris), au cas où
+        let version: usize = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if existed && version > 0 && version < MIGRATIONS.len() {
+            let backup = path.with_file_name(format!(
+                "{}.bak-v{version}",
+                path.file_name().and_then(|n| n.to_str()).unwrap_or("twitch-desk.db")
+            ));
+            let _ = std::fs::remove_file(&backup);
+            match conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()]) {
+                Ok(_) => tracing::info!("base sauvegardée avant mise à jour du schéma : {}", backup.display()),
+                Err(e) => tracing::warn!("sauvegarde de la base avant mise à jour du schéma : {e}"),
+            }
+        }
         Self::init(conn)
     }
 
@@ -761,18 +780,34 @@ impl Db {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> DbResult<Self> {
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+    fn init(mut conn: Connection) -> DbResult<Self> {
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
         let version: usize = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(version) {
-            conn.execute_batch(sql)?;
-            conn.execute_batch(&format!("PRAGMA user_version = {}", i + 1))?;
+            // Chaque migration et son numéro dans une transaction : tout ou rien. PRAGMA
+            // foreign_keys est sans effet dans une transaction : appliqué autour
+            let fk_off = sql.contains("PRAGMA foreign_keys = OFF;");
+            let body = sql.replace("PRAGMA foreign_keys = OFF;", "").replace("PRAGMA foreign_keys = ON;", "");
+            if fk_off {
+                conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+            }
+            let result = (|| {
+                let tx = conn.transaction()?;
+                tx.execute_batch(&body)?;
+                tx.pragma_update(None, "user_version", i + 1)?;
+                tx.commit()
+            })();
+            if fk_off {
+                conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+            }
+            result?;
         }
         Ok(Self(Mutex::new(conn)))
     }
 
     pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.0.lock().unwrap()
+        // Verrou empoisonné (panique d'un autre fil) : la connexion reste utilisable
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     // --- Comptes ---
@@ -1125,9 +1160,12 @@ impl Db {
         Ok(())
     }
 
-    /// Clôt les giveaways ouverts d'une chaîne ; renvoie le nombre clos
+    /// Clôt les giveaways ouverts d'une chaîne (sauf tirage annoncé plus tard) ; renvoie le nombre clos
     pub fn close_channel_giveaways(&self, channel: &str) -> DbResult<usize> {
-        self.conn().execute("UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND channel = ?1", [channel])
+        self.conn().execute(
+            &format!("UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND channel = ?1 AND {DRAW_NOT_AHEAD}"),
+            [channel],
+        )
     }
 
     pub fn insert_giveaway(&self, g: &NewGiveaway) -> DbResult<i64> {
@@ -1141,16 +1179,44 @@ impl Db {
 
     /// Giveaways récents (ouverts d'abord), avec leurs participations
     pub fn giveaways(&self, limit: usize) -> DbResult<Vec<GiveawayRow>> {
+        self.select_giveaways("ORDER BY status = 'open' DESC, detected_at DESC LIMIT ?1", [limit as i64])
+    }
+
+    /// Giveaways ouverts (d'une chaîne, ou de toutes), les plus récents d'abord
+    pub fn open_giveaways(&self, channel: Option<&str>) -> DbResult<Vec<GiveawayRow>> {
+        match channel {
+            Some(c) => self.select_giveaways("WHERE status = 'open' AND channel = ?1 ORDER BY detected_at DESC", [c]),
+            None => self.select_giveaways("WHERE status = 'open' ORDER BY detected_at DESC", []),
+        }
+    }
+
+    /// Dernier giveaway d'une chaîne ayant ce lien (ouvert ou clos)
+    pub fn giveaway_by_url(&self, channel: &str, url: &str) -> DbResult<Option<GiveawayRow>> {
+        Ok(self
+            .select_giveaways("WHERE channel = ?1 AND url = ?2 COLLATE NOCASE ORDER BY detected_at DESC LIMIT 1", [channel, url])?
+            .pop())
+    }
+
+    /// Rouvre un giveaway (lien StreamElements reposté) : redétecté maintenant, pour ne pas
+    /// être clos aussitôt par l'ancienneté
+    pub fn reopen_giveaway(&self, id: i64, at: &str) -> DbResult<()> {
+        self.conn().execute("UPDATE giveaways SET status = 'open', detected_at = ?2 WHERE id = ?1", params![id, at])?;
+        Ok(())
+    }
+
+    /// Giveaways choisis par `filter` (WHERE / ORDER BY / LIMIT), avec participations et cadeaux
+    /// lus en deux requêtes groupées
+    fn select_giveaways<P: rusqlite::Params>(&self, filter: &str, params: P) -> DbResult<Vec<GiveawayRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, channel, kind, command, url, evidence, detected_at, status, handled, winner, winner_chance, drawn_at,
                     ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                     require_follow, require_presence, require_discord, notes, manual, reminded,
                     prize_received, prize_note, require_greeting, min_chat_minutes, follow_min_days
-             FROM giveaways ORDER BY status = 'open' DESC, detected_at DESC LIMIT ?1",
-        )?;
+             FROM giveaways {filter}"
+        ))?;
         let mut rows: Vec<GiveawayRow> = stmt
-            .query_map([limit as i64], |r| {
+            .query_map(params, |r| {
                 Ok(GiveawayRow {
                     id: r.get(0)?,
                     channel: r.get(1)?,
@@ -1187,13 +1253,27 @@ impl Db {
                 })
             })?
             .collect::<DbResult<_>>()?;
-        let mut stmt = conn.prepare("SELECT account_id, at, auto FROM giveaway_entries WHERE giveaway_id = ?1 ORDER BY at")?;
-        let mut gifts = conn.prepare("SELECT gift_id FROM giveaway_gifts WHERE giveaway_id = ?1 ORDER BY gift_id")?;
+        if rows.is_empty() {
+            return Ok(rows);
+        }
+        // Identifiants entiers : liste insérée telle quelle dans la requête
+        let ids = rows.iter().map(|g| g.id.to_string()).collect::<Vec<_>>().join(",");
+        let mut entries: HashMap<i64, Vec<GiveawayEntry>> = HashMap::new();
+        let mut stmt =
+            conn.prepare(&format!("SELECT giveaway_id, account_id, at, auto FROM giveaway_entries WHERE giveaway_id IN ({ids}) ORDER BY at"))?;
+        for e in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, GiveawayEntry { account_id: r.get(1)?, at: r.get(2)?, auto: r.get(3)? })))? {
+            let (id, e) = e?;
+            entries.entry(id).or_default().push(e);
+        }
+        let mut gifts: HashMap<i64, Vec<i64>> = HashMap::new();
+        let mut stmt = conn.prepare(&format!("SELECT giveaway_id, gift_id FROM giveaway_gifts WHERE giveaway_id IN ({ids}) ORDER BY gift_id"))?;
+        for g in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+            let (id, gift) = g?;
+            gifts.entry(id).or_default().push(gift);
+        }
         for g in &mut rows {
-            g.entries = stmt
-                .query_map([g.id], |r| Ok(GiveawayEntry { account_id: r.get(0)?, at: r.get(1)?, auto: r.get(2)? }))?
-                .collect::<DbResult<_>>()?;
-            g.gift_ids = gifts.query_map([g.id], |r| r.get(0))?.collect::<DbResult<_>>()?;
+            g.entries = entries.remove(&g.id).unwrap_or_default();
+            g.gift_ids = gifts.remove(&g.id).unwrap_or_default();
         }
         Ok(rows)
     }
@@ -1263,11 +1343,15 @@ impl Db {
 
     /// Giveaways gagnés par un de nos comptes (pseudos en minuscules), les plus récents d'abord
     pub fn won_giveaways(&self, logins: &[String]) -> DbResult<Vec<GiveawayRow>> {
-        Ok(self
-            .giveaways(5000)?
-            .into_iter()
-            .filter(|g| g.winner.as_deref().is_some_and(|w| logins.iter().any(|l| l.eq_ignore_ascii_case(w))))
-            .collect())
+        if logins.is_empty() {
+            return Ok(vec![]);
+        }
+        let marks = vec!["?"; logins.len()].join(",");
+        let lower: Vec<String> = logins.iter().map(|l| l.to_lowercase()).collect();
+        self.select_giveaways(
+            &format!("WHERE winner IS NOT NULL AND lower(winner) IN ({marks}) ORDER BY status = 'open' DESC, detected_at DESC"),
+            rusqlite::params_from_iter(lower),
+        )
     }
 
     // --- Streamers ---
@@ -1467,7 +1551,7 @@ impl Db {
     }
 
     pub fn giveaway(&self, id: i64) -> DbResult<Option<GiveawayRow>> {
-        Ok(self.giveaways(500)?.into_iter().find(|g| g.id == id))
+        Ok(self.select_giveaways("WHERE id = ?1", [id])?.pop())
     }
 
     pub fn add_giveaway_entry(&self, giveaway_id: i64, account_id: i64, at: &str, auto: bool) -> DbResult<()> {
@@ -1498,9 +1582,12 @@ impl Db {
         Ok(())
     }
 
-    /// Clôt les giveaways ouverts détectés avant `before` (date RFC 3339)
+    /// Clôt les giveaways ouverts détectés avant `before` (date RFC 3339), sauf tirage annoncé plus tard
     pub fn close_giveaways_before(&self, before: &str) -> DbResult<usize> {
-        self.conn().execute("UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND detected_at < ?1", [before])
+        self.conn().execute(
+            &format!("UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND detected_at < ?1 AND {DRAW_NOT_AHEAD}"),
+            [before],
+        )
     }
 
     pub fn delete_giveaway(&self, id: i64) -> DbResult<()> {
@@ -1765,11 +1852,28 @@ impl Db {
     }
 
     pub fn settings(&self) -> Settings {
-        self.conn()
-            .query_row("SELECT value FROM settings WHERE key = 'app'", [], |r| r.get::<_, String>(0))
-            .ok()
-            .and_then(|v| serde_json::from_str(&v).ok())
-            .unwrap_or_default()
+        let conn = self.conn();
+        let Some(value) = conn.query_row("SELECT value FROM settings WHERE key = 'app'", [], |r| r.get::<_, String>(0)).ok() else {
+            return Settings::default();
+        };
+        match serde_json::from_str(&value) {
+            Ok(settings) => settings,
+            Err(e) => {
+                // Réglages illisibles : valeurs par défaut, mais l'original est gardé de côté
+                // (« app.bak ») au lieu d'être écrasé au prochain enregistrement ; signalé une fois
+                let saved = conn
+                    .execute(
+                        "INSERT INTO settings (key, value) VALUES ('app.bak', ?1)
+                         ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE value <> excluded.value",
+                        [&value],
+                    )
+                    .unwrap_or(0);
+                if saved > 0 {
+                    tracing::error!("réglages illisibles, valeurs par défaut (original gardé sous « app.bak ») : {e}");
+                }
+                Settings::default()
+            }
+        }
     }
 
     pub fn save_settings(&self, settings: &Settings) -> DbResult<()> {
@@ -1918,6 +2022,56 @@ mod tests {
         assert_eq!(row.prize_note.as_deref(), Some("XXXX-YYYY"));
         db.delete_gift(gift).unwrap();
         assert!(db.giveaway(manual).unwrap().unwrap().gift_ids.is_empty());
+    }
+
+    #[test]
+    fn giveaway_queries_and_draw_ahead() {
+        let db = Db::memory().unwrap();
+        let a = db.upsert_account("33", "powange", "dev").unwrap();
+        let new = |channel: &str, url: Option<&str>| NewGiveaway {
+            channel: channel.into(),
+            kind: if url.is_some() { "streamelements" } else { "command" }.into(),
+            command: url.is_none().then(|| "!join".into()),
+            url: url.map(Into::into),
+            evidence: None,
+            detected_at: "2026-10-01T10:00:00Z".into(),
+        };
+        let past = db.insert_giveaway(&new("lunarsea", None)).unwrap();
+        let ahead = db.insert_giveaway(&new("lunarsea", None)).unwrap();
+        let other = db.insert_giveaway(&new("kraken_tv", Some("https://streamelements.com/k/giveaway/abc1"))).unwrap();
+        db.add_giveaway_entry(past, a, "2026-10-01T10:01:00Z", false).unwrap();
+        let mut input = GiveawayInput {
+            channel: "lunarsea".into(),
+            kind: "command".into(),
+            command: Some("!join".into()),
+            url: None,
+            gift_ids: vec![],
+            details: GiveawayDetails { draw_at: Some("2099-01-01T20:00:00Z".into()), ..Default::default() },
+        };
+        db.update_giveaway(ahead, &input).unwrap();
+        input.details.draw_at = Some("2020-01-01T20:00:00Z".into());
+        db.update_giveaway(past, &input).unwrap();
+
+        assert_eq!(db.open_giveaways(Some("lunarsea")).unwrap().len(), 2);
+        assert_eq!(db.open_giveaways(None).unwrap().len(), 3);
+        assert_eq!(db.giveaway(past).unwrap().unwrap().entries.len(), 1);
+        assert!(db.giveaway(ahead).unwrap().unwrap().entries.is_empty());
+
+        // Fin du live et ancienneté : le tirage annoncé plus tard reste ouvert
+        assert_eq!(db.close_channel_giveaways("lunarsea").unwrap(), 1);
+        assert!(!db.giveaway(past).unwrap().unwrap().open);
+        assert!(db.giveaway(ahead).unwrap().unwrap().open);
+        assert_eq!(db.close_giveaways_before("2026-11-01T00:00:00Z").unwrap(), 1);
+        assert!(db.giveaway(ahead).unwrap().unwrap().open && !db.giveaway(other).unwrap().unwrap().open);
+
+        // Lien StreamElements retrouvé même clos, puis rouvert
+        let found = db.giveaway_by_url("kraken_tv", "https://streamelements.com/K/giveaway/ABC1").unwrap().unwrap();
+        assert_eq!(found.id, other);
+        assert!(db.giveaway_by_url("lunarsea", "https://streamelements.com/k/giveaway/abc1").unwrap().is_none());
+        db.reopen_giveaway(other, "2026-11-01T10:00:00Z").unwrap();
+        let row = db.giveaway(other).unwrap().unwrap();
+        assert!(row.open && row.detected_at == "2026-11-01T10:00:00Z");
+        assert!(db.won_giveaways(&[]).unwrap().is_empty());
     }
 
     #[test]
@@ -2097,5 +2251,38 @@ mod tests {
         assert!(db.settings().close_to_tray);
         db.save_settings(&Settings { close_to_tray: false, ..Settings::default() }).unwrap();
         assert!(!db.settings().close_to_tray);
+        // Réglages illisibles : valeurs par défaut, original gardé de côté
+        db.conn().execute("UPDATE settings SET value = '{abîmé' WHERE key = 'app'", []).unwrap();
+        assert!(db.settings().close_to_tray);
+        let bak: String = db.conn().query_row("SELECT value FROM settings WHERE key = 'app.bak'", [], |r| r.get(0)).unwrap();
+        assert_eq!(bak, "{abîmé");
+    }
+
+    #[test]
+    fn migrations_are_transactional_and_backed_up() {
+        let dir = std::env::temp_dir().join(format!("twitch-desk-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("twitch-desk.db");
+        drop(Db::open(&path).unwrap());
+        // Base d'une version antérieure : sauvegardée avant la reprise des migrations
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len() - 1)).unwrap();
+        // Dernière migration rejouée : elle échoue si elle ajoute une colonne déjà là ; la base
+        // reste alors à la version d'avant, sinon elle passe à la dernière
+        drop(conn);
+        let reopened = Db::open(&path);
+        assert!(dir.join(format!("twitch-desk.db.bak-v{}", MIGRATIONS.len() - 1)).exists());
+        let conn = Connection::open(&path).unwrap();
+        let version: usize = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        match reopened {
+            Ok(_) => assert_eq!(version, MIGRATIONS.len()),
+            Err(_) => assert_eq!(version, MIGRATIONS.len() - 1),
+        }
+        // Clés étrangères toujours actives après les migrations
+        let db = Db::memory().unwrap();
+        let fk: i64 = db.conn().query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk, 1);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

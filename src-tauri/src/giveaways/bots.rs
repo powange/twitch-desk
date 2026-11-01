@@ -71,7 +71,14 @@ pub fn set_extra_bots(names: &[String]) {
 /// Bot du chat : connu, pseudo en « …bot », ou ajouté dans les réglages
 pub fn is_bot_like(user: &str) -> bool {
     let user = user.to_lowercase();
-    is_chat_bot(&user) || user.ends_with("bot") || user == "streamlabs" || EXTRA_BOTS.read().unwrap().contains(&user)
+    is_trusted_bot(&user) || user.ends_with("bot")
+}
+
+/// Bot identifié par son pseudo exact (connu, ou ajouté dans les réglages) : un spectateur ne
+/// peut pas le prendre. Un pseudo en « …bot » seul n'en est pas un (« viewerbot » est libre)
+pub fn is_trusted_bot(user: &str) -> bool {
+    let user = user.to_lowercase();
+    is_chat_bot(&user) || user == "streamlabs" || EXTRA_BOTS.read().unwrap().contains(&user)
 }
 
 /// Formulations ajoutées par l'utilisateur (Giveaways → Réglages), compilées
@@ -187,8 +194,10 @@ fn ticket_purchase(message: &str) -> Option<BotEvent> {
     (count > 0).then(|| BotEvent::TicketPurchase { pseudo: c[1].to_owned(), count })
 }
 
-/// Événements reconnus dans le message d'un bot connu (vide sinon)
-pub fn parse_bot_message(user: &str, message: &str) -> Vec<BotEvent> {
+/// Événements reconnus dans le message d'un bot connu (vide sinon). `privileged` : l'auteur
+/// a le badge modérateur ou est le streamer ; exigé pour les annonces de gagnant d'un pseudo
+/// en « …bot » qui n'est ni un bot connu ni un bot ajouté dans les réglages
+pub fn parse_bot_message(user: &str, message: &str, privileged: bool) -> Vec<BotEvent> {
     let bot = user.to_lowercase();
     let events = match bot.as_str() {
         "streamelements" => vec![
@@ -203,13 +212,15 @@ pub fn parse_bot_message(user: &str, message: &str) -> Vec<BotEvent> {
         _ => vec![],
     };
     let mut events: Vec<BotEvent> = events.into_iter().flatten().collect();
+    // Pseudo en « …bot » sans badge : un spectateur a pu le choisir, ses annonces sont ignorées
+    let trusted = is_trusted_bot(&bot) || (is_bot_like(&bot) && privileged);
     // Autre bot (moobot, sery_bot…) : formulations générales ; les bots connus gardent leurs
     // formats, et un spectateur n'est jamais pris pour un bot
-    if !is_chat_bot(&bot) && is_bot_like(&bot) && !events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) {
+    if trusted && !is_chat_bot(&bot) && !events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) {
         events.extend(generic_winner(&bot, message));
     }
     // Formulations personnalisées : pour tous les bots, connus compris
-    if is_bot_like(&bot) && !events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) {
+    if trusted && !events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) {
         events.extend(custom_winner(&bot, message));
     }
     events
@@ -250,19 +261,19 @@ mod tests {
     #[test]
     fn generic_winner_announcements() {
         assert_eq!(
-            parse_bot_message("Sery_Bot", "🎉 Félicitations @julsr8 ! Vous avez gagné le giveaway ! 🎉"),
+            parse_bot_message("Sery_Bot", "🎉 Félicitations @julsr8 ! Vous avez gagné le giveaway ! 🎉", true),
             vec![win("sery_bot", "julsr8", None)]
         );
-        assert_eq!(parse_bot_message("moobot", "Congrats @Bob_42, you won the raffle!"), vec![win("moobot", "Bob_42", None)]);
-        assert_eq!(parse_bot_message("fossabot", "Félicitations à tous, tu as gagné quoi ?"), vec![]);
+        assert_eq!(parse_bot_message("moobot", "Congrats @Bob_42, you won the raffle!", true), vec![win("moobot", "Bob_42", None)]);
+        assert_eq!(parse_bot_message("fossabot", "Félicitations à tous, tu as gagné quoi ?", true), vec![]);
         assert_eq!(
-            parse_bot_message("moobot", "🎉🎉🎉 zalmomo a remporté le giveaway, bravo ! 🎉🎉🎉"),
+            parse_bot_message("moobot", "🎉🎉🎉 zalmomo a remporté le giveaway, bravo ! 🎉🎉🎉", true),
             vec![win("moobot", "zalmomo", None)]
         );
-        assert_eq!(parse_bot_message("moobot", "Personne a gagné le tirage"), vec![]);
+        assert_eq!(parse_bot_message("moobot", "Personne a gagné le tirage", true), vec![]);
         // Annonce réelle de MwettonBot sur seaofthieves_france
         assert_eq!(
-            parse_bot_message("MwettonBot", "🎉🎉🎉 zalmomo a remporté le giveaway, bravo ! 🎉🎉🎉"),
+            parse_bot_message("MwettonBot", "🎉🎉🎉 zalmomo a remporté le giveaway, bravo ! 🎉🎉🎉", true),
             vec![win("mwettonbot", "zalmomo", None)]
         );
         assert_eq!(moderator_winner("lunarsea", "Bob_42 wins the raffle!"), Some(win("lunarsea", "Bob_42", None)));
@@ -279,85 +290,103 @@ mod tests {
     #[test]
     fn streamelements_winners() {
         assert_eq!(
-            parse_bot_message("StreamElements", "@Pseudo_42 won the giveaway with 3.94% chance to win"),
+            parse_bot_message("StreamElements", "@Pseudo_42 won the giveaway with 3.94% chance to win", false),
             vec![win("streamelements", "Pseudo_42", Some("3.94%"))]
         );
-        assert_eq!(parse_bot_message("streamelements", "pseudo won the giveaway!"), vec![win("streamelements", "pseudo", None)]);
+        assert_eq!(parse_bot_message("streamelements", "pseudo won the giveaway!", false), vec![win("streamelements", "pseudo", None)]);
         assert_eq!(
-            parse_bot_message("streamelements", "@foo has won the giveaway with 100% chance to win PogChamp"),
+            parse_bot_message("streamelements", "@foo has won the giveaway with 100% chance to win PogChamp", false),
             vec![win("streamelements", "foo", Some("100%"))]
         );
         assert_eq!(
-            parse_bot_message("streamelements", "@Gagnant a gagné le concours avec une chance de 0.57%"),
+            parse_bot_message("streamelements", "@Gagnant a gagné le concours avec une chance de 0.57%", false),
             vec![win("streamelements", "Gagnant", Some("0.57%"))]
         );
-        assert_eq!(parse_bot_message("streamelements", "gagnant a gagné le concours"), vec![win("streamelements", "gagnant", None)]);
+        assert_eq!(parse_bot_message("streamelements", "gagnant a gagné le concours", false), vec![win("streamelements", "gagnant", None)]);
     }
 
     #[test]
     fn no_winner() {
         for m in ["Nobody won the giveaway", "No one won the giveaway", "Personne a gagné le concours", "@viewer, you won the giveaway!"] {
-            assert!(parse_bot_message("streamelements", m).is_empty(), "{m}");
+            assert!(parse_bot_message("streamelements", m, false).is_empty(), "{m}");
         }
-        assert!(parse_bot_message("streamelements", &format!("{} won the giveaway", "a".repeat(26))).is_empty());
-        assert!(parse_bot_message("nightbot", "Congratulations, nobody! You won the giveaway!").is_empty());
+        assert!(parse_bot_message("streamelements", &format!("{} won the giveaway", "a".repeat(26)), false).is_empty());
+        assert!(parse_bot_message("nightbot", "Congratulations, nobody! You won the giveaway!", false).is_empty());
     }
 
     #[test]
     fn streamelements_url_and_tickets() {
         assert_eq!(
-            parse_bot_message("streamelements", "Join the giveaway here: https://streamelements.com/some_channel/giveaway/65f1a2b3c4d5e6f7a8b9c0d1 !"),
+            parse_bot_message("streamelements", "Join the giveaway here: https://streamelements.com/some_channel/giveaway/65f1a2b3c4d5e6f7a8b9c0d1 !", false),
             vec![BotEvent::StreamElementsUrl("https://streamelements.com/some_channel/giveaway/65f1a2b3c4d5e6f7a8b9c0d1".into())]
         );
         assert_eq!(
-            parse_bot_message("streamelements", "@Viewer got 5 tickets! (5/10)"),
+            parse_bot_message("streamelements", "@Viewer got 5 tickets! (5/10)", false),
             vec![BotEvent::TicketInfo { pseudo: "Viewer".into(), current: 5, max: 10 }]
         );
         assert_eq!(
-            parse_bot_message("streamelements", "viewer got 1 ticket(s)! (1/1)"),
+            parse_bot_message("streamelements", "viewer got 1 ticket(s)! (1/1)", false),
             vec![BotEvent::TicketInfo { pseudo: "viewer".into(), current: 1, max: 1 }]
         );
         assert_eq!(
-            parse_bot_message("streamelements", "@Viewer, you successfully bought 3 tickets!"),
+            parse_bot_message("streamelements", "@Viewer, you successfully bought 3 tickets!", false),
             vec![BotEvent::TicketPurchase { pseudo: "Viewer".into(), count: 3 }]
         );
-        assert!(parse_bot_message("streamelements", "Follow the channel to get notified!").is_empty());
+        assert!(parse_bot_message("streamelements", "Follow the channel to get notified!", false).is_empty());
     }
 
     #[test]
     fn wizebot_and_nightbot() {
         assert_eq!(
-            parse_bot_message("WizeBot", "Le tirage au sort tombe sur le/les viewers Pseudo [SUB]."),
+            parse_bot_message("WizeBot", "Le tirage au sort tombe sur le/les viewers Pseudo [SUB].", false),
             vec![win("wizebot", "Pseudo", None)]
         );
-        assert_eq!(parse_bot_message("wizebot", "Le tirage au sort tombe sur le viewer @pseudo !"), vec![win("wizebot", "pseudo", None)]);
-        assert!(parse_bot_message("wizebot", "@foo won the giveaway").is_empty());
+        assert_eq!(parse_bot_message("wizebot", "Le tirage au sort tombe sur le viewer @pseudo !", false), vec![win("wizebot", "pseudo", None)]);
+        assert!(parse_bot_message("wizebot", "@foo won the giveaway", false).is_empty());
         assert_eq!(
-            parse_bot_message("Nightbot", "Congratulations, nickname1334! You won the giveaway!"),
+            parse_bot_message("Nightbot", "Congratulations, nickname1334! You won the giveaway!", false),
             vec![win("nightbot", "nickname1334", None)]
         );
-        assert_eq!(parse_bot_message("nightbot", "Congratulations @Foo, you won the giveaway"), vec![win("nightbot", "Foo", None)]);
+        assert_eq!(parse_bot_message("nightbot", "Congratulations @Foo, you won the giveaway", false), vec![win("nightbot", "Foo", None)]);
     }
 
     #[test]
     fn phuzzybot() {
         assert_eq!(
-            parse_bot_message("PhuzzyBot", "@pseudo, successfully bought 4 tickets!"),
+            parse_bot_message("PhuzzyBot", "@pseudo, successfully bought 4 tickets!", false),
             vec![BotEvent::TicketPurchase { pseudo: "pseudo".into(), count: 4 }]
         );
         assert_eq!(
-            parse_bot_message("phuzzybot", "@Pseudo, you successfully bought 1 ticket!"),
+            parse_bot_message("phuzzybot", "@Pseudo, you successfully bought 1 ticket!", false),
             vec![BotEvent::TicketPurchase { pseudo: "Pseudo".into(), count: 1 }]
         );
-        assert!(parse_bot_message("phuzzybot", "@pseudo, successfully bought 0 tickets!").is_empty());
-        assert!(parse_bot_message("phuzzybot", "@foo won the giveaway").is_empty());
-        assert!(parse_bot_message("phuzzybot", "@foo got 2 tickets! (2/5)").is_empty());
+        assert!(parse_bot_message("phuzzybot", "@pseudo, successfully bought 0 tickets!", false).is_empty());
+        assert!(parse_bot_message("phuzzybot", "@foo won the giveaway", false).is_empty());
+        assert!(parse_bot_message("phuzzybot", "@foo got 2 tickets! (2/5)", false).is_empty());
+    }
+
+    #[test]
+    fn bot_like_needs_badge() {
+        // Pseudo en « …bot » sans badge : annonce ignorée (tout spectateur peut s'appeler ainsi)
+        assert!(parse_bot_message("viewerbot", "Congrats @viewerbot, you won the raffle!", false).is_empty());
+        assert_eq!(
+            parse_bot_message("viewerbot", "Congrats @Bob_42, you won the raffle!", true),
+            vec![win("viewerbot", "Bob_42", None)]
+        );
+        // Bot ajouté dans les réglages : cru sans badge
+        set_extra_bots(&["@MyGiveawayBot".into()]);
+        assert_eq!(
+            parse_bot_message("mygiveawaybot", "Congrats @Bob_42, you won the raffle!", false),
+            vec![win("mygiveawaybot", "Bob_42", None)]
+        );
+        set_extra_bots(&[]);
+        assert!(is_trusted_bot("Nightbot") && !is_trusted_bot("sery_bot") && is_bot_like("sery_bot"));
     }
 
     #[test]
     fn impostors_ignored() {
-        assert!(parse_bot_message("viewer123", "@viewer123 won the giveaway with 99% chance to win").is_empty());
-        assert!(parse_bot_message("viewer123", "https://streamelements.com/x/giveaway/abc123").is_empty());
-        assert!(parse_bot_message("streamelements_fan", "@foo won the giveaway").is_empty());
+        assert!(parse_bot_message("viewer123", "@viewer123 won the giveaway with 99% chance to win", false).is_empty());
+        assert!(parse_bot_message("viewer123", "https://streamelements.com/x/giveaway/abc123", false).is_empty());
+        assert!(parse_bot_message("streamelements_fan", "@foo won the giveaway", false).is_empty());
     }
 }

@@ -783,11 +783,16 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
         let page: ChangesPage =
             request(app.http.get(format!("{}/api/v1/changes", cfg.url)).query(&[("since", cursor)]), &cfg.code).await?;
         {
-            let conn = app.db.conn();
+            let guard = app.db.conn();
+            // Page appliquée d'un bloc (curseur compris) : interrompue, elle sera relue en entier
+            let conn = guard.unchecked_transaction().map_err(db_err)?;
+            // Collections de la page seulement : rien à relire pour une page vide
+            let present: HashSet<&str> =
+                page.changes.iter().filter_map(|ch| enabled.iter().copied().find(|c| *c == ch.collection)).collect();
             // État local au moment de la page : une modification locale pas encore envoyée l'emporte
             let mut local: HashMap<&str, HashMap<String, String>> = HashMap::new();
             let mut states: HashMap<&str, HashMap<String, String>> = HashMap::new();
-            for c in &enabled {
+            for c in &present {
                 local.insert(c, export(&conn, c, &enabled).map_err(db_err)?.into_iter().map(|(id, v)| (id, hash(&v))).collect());
                 states.insert(c, state(&conn, c).map_err(db_err)?);
             }
@@ -803,6 +808,11 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
                 let mine = local[collection].get(&change.id);
                 if known.is_some() && mine.is_some() && mine != known {
                     tracing::info!("synchronisation : {collection}/{} modifié ici, version reçue laissée de côté", change.id);
+                    continue;
+                }
+                // Supprimé ici, pas encore envoyé : la suppression l'emporte sur la modification reçue
+                if known.is_some() && mine.is_none() && remote.is_some() && !exists(&conn, collection, &change.id).map_err(db_err)? {
+                    tracing::info!("synchronisation : {collection}/{} supprimé ici, version reçue laissée de côté", change.id);
                     continue;
                 }
                 let pending = match data {
@@ -831,6 +841,7 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
             if deferred.is_empty() {
                 set_meta(&conn, "cursor", &cursor.to_string()).map_err(db_err)?;
             }
+            conn.commit().map_err(db_err)?;
         }
         if !page.more {
             break;

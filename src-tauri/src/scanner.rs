@@ -23,6 +23,8 @@ const MAX_NOTIFICATIONS: usize = 3;
 const MAX_PROFILES: usize = 40;
 /// Giveaways StreamElements vérifiés par scan
 const MAX_SE_CHECKS: usize = 20;
+/// Streams retenus gardés dans la vue (les plus regardés)
+const MAX_MATCHES: usize = 500;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,15 +105,13 @@ fn words(text: &str) -> Vec<String> {
     folded.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_owned).collect()
 }
 
-/// Mots-clés présents au début d'un mot du titre (« key » trouve « keys », pas « monkey »)
+/// Mots-clés présents au début d'un mot du titre (« key » trouve « keys », pas « monkey ») ;
+/// mot-clé de plusieurs mots : mots qui se suivent (« free key » trouve « FREE-KEYS »)
 pub fn matching_keywords(title: &str, keywords: &[String]) -> Vec<String> {
-    let title_words = words(title);
+    let title = words(title).join(" ");
     keywords
         .iter()
-        .filter(|k| {
-            let k = words(k).join(" ");
-            !k.is_empty() && title_words.iter().any(|w| w.starts_with(&k))
-        })
+        .filter(|k| crate::db::starts_word(&title, &words(k).join(" ")))
         .cloned()
         .collect()
 }
@@ -209,7 +209,8 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
     }
     let scanned = streams.iter().filter(|s| !settings.scanner_games_off.contains(&s.game_id)).count();
     let monitored: HashSet<String> = app.db.giveaway_channels().unwrap_or_default().into_iter().map(|c| c.login).collect();
-    let found = filter_streams(streams, &settings);
+    let mut found = filter_streams(streams, &settings);
+    found.truncate(MAX_MATCHES);
 
     // Type du giveaway : giveaway ouvert connu de la chaîne, sinon StreamElements actif
     let open = app.db.giveaways(200).unwrap_or_default();
@@ -385,6 +386,11 @@ mod tests {
         assert_eq!(matching_keywords("3 keys tonight", &k), vec!["key"]);
         assert!(matching_keywords("monkey business", &k).is_empty());
         assert_eq!(matching_keywords("DROPS activés", &k), vec!["drop"]);
+        // Mots-clés de plusieurs mots : mots qui se suivent
+        let k: Vec<String> = ["free key", "clé steam"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(matching_keywords("FREE-KEYS tonight", &k), vec!["free key"]);
+        assert_eq!(matching_keywords("Une CLE  Steam à gagner", &k), vec!["clé steam"]);
+        assert!(matching_keywords("free stuff, key later", &k).is_empty());
     }
 
     #[test]

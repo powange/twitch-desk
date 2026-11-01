@@ -254,7 +254,10 @@ impl App {
         let (tx, rx) = mpsc::channel(32);
         let id = account.id;
         let task = tauri::async_runtime::spawn(miner::run(self.clone(), account, rx));
-        self.miners.lock().unwrap().insert(id, MinerHandle { commands: tx, task });
+        // Démarrages simultanés (connexion et relance) : un seul superviseur par compte
+        if let Some(previous) = self.miners.lock().unwrap().insert(id, MinerHandle { commands: tx, task }) {
+            previous.task.abort();
+        }
     }
 
     pub fn stop_miner(&self, account_id: i64) {
