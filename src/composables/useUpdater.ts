@@ -44,7 +44,6 @@ async function checkNow(): Promise<boolean> {
   try {
     available.value = await check()
   } catch (e) {
-    void invoke('save_window_state', { updating: false }).catch(() => {})
     error.value = friendlyUpdateError(e)
   } finally {
     checking.value = false
@@ -74,6 +73,8 @@ async function install() {
     })
     await relaunch()
   } catch (e) {
+    // Installation ratée : l'application ne sera pas relancée par l'installateur
+    void invoke('save_window_state', { updating: false }).catch(() => {})
     error.value = friendlyUpdateError(e)
     installing.value = false
   }

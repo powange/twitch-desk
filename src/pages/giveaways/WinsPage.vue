@@ -15,7 +15,11 @@ const toast = useToast()
 
 const wins = ref<GiveawayView[]>([])
 async function load() {
-  wins.value = await invoke<GiveawayView[]>('get_wins')
+  try {
+    wins.value = await invoke<GiveawayView[]>('get_wins')
+  } catch (e) {
+    toast.add({ title: 'Gains non chargés', description: String(e), color: 'error' })
+  }
 }
 onMounted(load)
 // Un tirage gagné ou un lot modifié arrive par l'état : on relit la liste
@@ -27,13 +31,24 @@ function noteOf(w: GiveawayView) {
   return notes[w.id] ?? w.prizeNote ?? ''
 }
 
-async function setPrize(w: GiveawayView, received: boolean, note = noteOf(w)) {
+async function setPrize(w: GiveawayView, received: boolean, note = noteOf(w)): Promise<boolean> {
   try {
     await invoke('set_prize', { id: w.id, received, note: note || null })
-    await load()
   } catch (e) {
     toast.add({ title: 'Lot non enregistré', description: String(e), color: 'error' })
+    return false
   }
+  await load()
+  return true
+}
+// Note du lot : enregistrée une seule fois (Entrée puis sortie du champ) et seulement si elle a changé
+async function saveNote(w: GiveawayView) {
+  const note = noteOf(w).trim()
+  if (note === (w.prizeNote ?? '').trim()) return
+  // Note gardée comme « enregistrée » tout de suite : la sortie du champ qui suit Entrée ne renvoie rien
+  const previous = w.prizeNote
+  w.prizeNote = note || null
+  if (!(await setPrize(w, w.prizeReceived, note))) w.prizeNote = previous
 }
 
 function formatDate(iso: string | null) {
@@ -93,8 +108,8 @@ function formatDate(iso: string | null) {
                 class="w-64 font-mono"
                 placeholder="—"
                 @update:model-value="v => notes[w.id] = String(v)"
-                @blur="setPrize(w, w.prizeReceived, noteOf(w))"
-                @keydown.enter="setPrize(w, w.prizeReceived, noteOf(w))"
+                @blur="saveNote(w)"
+                @keydown.enter="saveNote(w)"
               />
             </td>
           </tr>

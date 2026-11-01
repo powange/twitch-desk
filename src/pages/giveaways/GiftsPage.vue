@@ -8,6 +8,7 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialo
 import { boxArt } from '../../utils/format'
 import type { Gift } from '../../types'
 import SolidIcon from '../../components/SolidIcon.vue'
+import { useAction } from '../../composables/useAction'
 
 const { gifts, groups, usage, refresh } = useGiftCatalog()
 const toast = useToast()
@@ -123,12 +124,15 @@ function openForm(g: Gift | null) {
   formOpen.value = true
 }
 
+const { run, busy } = useAction()
 const toRemove = ref<Gift | null>(null)
 async function confirmRemove() {
-  if (!toRemove.value) return
-  await invoke('delete_gift', { id: toRemove.value.id })
-  toRemove.value = null
-  await refresh()
+  const gift = toRemove.value
+  if (!gift) return
+  if (await run('remove', 'Cadeau non supprimé', () => invoke('delete_gift', { id: gift.id }))) {
+    toRemove.value = null
+    await refresh().catch(() => {})
+  }
 }
 </script>
 
@@ -233,7 +237,7 @@ async function confirmRemove() {
       <template #footer>
         <div class="flex justify-end gap-2 w-full">
           <UButton label="Annuler" color="neutral" variant="ghost" @click="toRemove = null" />
-          <UButton label="Supprimer" color="error" @click="confirmRemove" />
+          <UButton label="Supprimer" color="error" :loading="busy('remove')" @click="confirmRemove" />
         </div>
       </template>
     </UModal>

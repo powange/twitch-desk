@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
@@ -8,8 +8,9 @@ import { LANGUAGES } from '../../utils/languages'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
-import type { ScanMatch, Settings } from '../../types'
+import type { Gift, ScanMatch } from '../../types'
 import SolidIcon from '../../components/SolidIcon.vue'
+import { useSettings } from '../../composables/useSettings'
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
@@ -20,9 +21,12 @@ const { gifts } = useGiftCatalog()
 
 // Cadeaux du catalogue repérés : titre du live, description de la chaîne, message épinglé,
 // et titre et description du giveaway StreamElements actif
-function giftsOf(m: ScanMatch) {
-  return suggestGifts(gifts.value, [m.title, m.description, m.pinnedMessage, m.giveawayText].filter(Boolean).join('\n'))
-}
+// Calculés une fois par mise à jour pour chaque stream (affichage et tri)
+const giftsByMatch = computed(() => new Map((scanner.value?.matches ?? []).map(m => [
+  m,
+  suggestGifts(gifts.value, [m.title, m.description, m.pinnedMessage, m.giveawayText].filter(Boolean).join('\n'))
+])))
+const giftsOf = (m: ScanMatch): Gift[] => giftsByMatch.value.get(m) ?? []
 const games = computed(() => snapshot.value?.giveaways.games ?? [])
 const showIgnored = ref(false)
 // Tri par colonne (le titre n'en a pas) : spectateurs décroissants par défaut
@@ -75,26 +79,16 @@ let clock: ReturnType<typeof setInterval> | null = null
 onMounted(() => { clock = setInterval(() => { now.value = Date.now() }, 30_000) })
 onBeforeUnmount(() => { if (clock) clearInterval(clock) })
 
-// --- Réglages ---
-const settings = ref<Settings | null>(null)
-onMounted(async () => {
-  settings.value = await invoke<Settings>('get_settings')
+// --- Réglages (partagés, enregistrés peu après chaque modification) ---
+const { settings, afterSave } = useSettings()
+onMounted(() => {
   // Premier passage sur la page : un scan tout de suite
   if (!scanner.value?.scannedAt && games.value.length) void scanNow()
 })
-// Chaque filtre changé est enregistré, puis les résultats sont refaits sur les streams déjà relevés
-let refilterTimer: ReturnType<typeof setTimeout> | null = null
-watch(settings, async (value, old) => {
-  if (!value || !old) return
-  try {
-    await invoke('save_settings', { settings: value })
-  } catch (e) {
-    toast.add({ title: 'Réglage non enregistré', description: String(e), color: 'error' })
-    return
-  }
-  if (refilterTimer) clearTimeout(refilterTimer)
-  refilterTimer = setTimeout(() => { void invoke('scanner_refilter') }, 300)
-}, { deep: true })
+// Chaque filtre enregistré : les résultats sont refaits sur les streams déjà relevés
+const refilter = () => { void invoke('scanner_refilter').catch(() => {}) }
+afterSave.add(refilter)
+onBeforeUnmount(() => afterSave.delete(refilter))
 
 function gameOn(gameId: string) {
   return !settings.value?.scannerGamesOff.includes(gameId)
@@ -156,7 +150,11 @@ async function monitor(m: ScanMatch) {
 }
 
 async function ignore(m: ScanMatch, value: boolean) {
-  await invoke('scanner_ignore', { login: m.login, ignore: value })
+  try {
+    await invoke('scanner_ignore', { login: m.login, ignore: value })
+  } catch (e) {
+    toast.add({ title: value ? 'Chaîne non ignorée' : 'Chaîne non rétablie', description: String(e), color: 'error' })
+  }
 }
 
 // Titre découpé pour surligner les mots-clés trouvés (début de mot, sans tenir compte de la casse)

@@ -42,8 +42,20 @@ const PAGE = 200
 
 const commandItems = computed(() => commands.value.map(([c, n]) => ({ label: `${c} (${n})`, value: c })))
 
+// Chaque lecture porte un numéro : seule la plus récente est affichée (une réponse lente
+// d'anciens filtres n'écrase pas la liste)
+let loadSeq = 0
+// Filtres de la dernière lecture demandée
+let requestedKey = ''
+const filterKey = () => JSON.stringify([props.channel, kinds.value, selectedCommands.value, author.value.trim()])
+
 async function load(append = false) {
   if (!props.channel) return
+  const key = filterKey()
+  // Filtres changés depuis la dernière lecture : « plus anciens » repart du début
+  if (append && key !== requestedKey) append = false
+  requestedKey = key
+  const seq = ++loadSeq
   loading.value = true
   try {
     const before = append ? entries.value.at(-1)?.id ?? null : null
@@ -54,13 +66,18 @@ async function load(append = false) {
       author: author.value.trim() || null,
       beforeId: before
     })
+    if (seq !== loadSeq) return
     entries.value = append ? [...entries.value, ...page] : page
     more.value = page.length === PAGE
   } catch (e) {
-    toast.add({ title: 'Journal illisible', description: String(e), color: 'error' })
+    if (seq === loadSeq) toast.add({ title: 'Journal illisible', description: String(e), color: 'error' })
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
+}
+// Filtre modifié : relu seulement s'il diffère de la dernière lecture demandée
+function reloadIfChanged() {
+  if (open.value && filterKey() !== requestedKey) void load()
 }
 
 async function refresh() {
@@ -77,13 +94,19 @@ async function refresh() {
 
 watch(open, (isOpen) => {
   if (!isOpen) return
+  if (authorTimer) clearTimeout(authorTimer)
+  // Réponses d'une ouverture précédente ignorées
+  loadSeq++
   kinds.value = []
   selectedCommands.value = []
   author.value = ''
   entries.value = []
+  more.value = false
+  // Filtres remis à zéro : leurs observateurs ne relancent pas de lecture, refresh() en fait une seule
+  requestedKey = filterKey()
   void refresh()
 })
-watch([kinds, selectedCommands], () => { if (open.value) void load() }, { deep: true })
+watch([kinds, selectedCommands], reloadIfChanged, { deep: true })
 // Clic sur une commande du tableau : ajoutée au filtre, ou retirée
 function toggleCommand(c: string) {
   selectedCommands.value = selectedCommands.value.includes(c) ? selectedCommands.value.filter(x => x !== c) : [...selectedCommands.value, c]
@@ -92,7 +115,7 @@ function toggleCommand(c: string) {
 let authorTimer: ReturnType<typeof setTimeout> | null = null
 watch(author, () => {
   if (authorTimer) clearTimeout(authorTimer)
-  authorTimer = setTimeout(() => { if (open.value) void load() }, 300)
+  authorTimer = setTimeout(reloadIfChanged, 300)
 })
 
 // Gagnant non détecté : désigné à la main (giveaway ouvert de la chaîne, sinon le plus récent)

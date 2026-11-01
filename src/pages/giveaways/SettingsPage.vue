@@ -1,35 +1,43 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useSettings } from '../../composables/useSettings'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { CUSTOM_SOUND, DEFAULT_SOUND, SOUND_ALERTS, SOUND_PRESETS, forgetCustomSound, playSoundAlert } from '../../composables/useSoundAlerts'
 import type { SoundAlertKind } from '../../composables/useSoundAlerts'
 import { LANGUAGES } from '../../utils/languages'
-import type { Settings } from '../../types'
 
 const { accounts } = useSnapshot()
 const toast = useToast()
 
-const settings = ref<Settings | null>(null)
-onMounted(async () => { settings.value = await invoke<Settings>('get_settings') })
-watch(settings, async (value, old) => {
-  if (!value || !old) return
-  try {
-    await invoke('save_settings', { settings: value })
-  } catch (e) {
-    toast.add({ title: 'Réglage non enregistré', description: String(e), color: 'error' })
-  }
-}, { deep: true })
+// Réglages partagés : enregistrés peu après la dernière modification (un curseur n'envoie
+// qu'un enregistrement une fois lâché)
+const { settings } = useSettings()
 
 const autoAccountItems = computed(() => accounts.value.map(a => ({ label: a.login, value: a.id })))
 const autoAccountsModel = computed({
   get: () => settings.value?.autoAccounts.length ? settings.value.autoAccounts : accounts.value.map(a => a.id),
   set: (ids: number[]) => {
     if (!settings.value) return
+    // Aucun compte coché : la liste vide voudrait dire « tous », la sélection est gardée
+    if (ids.length === 0) {
+      toast.add({ title: 'Garde au moins un compte, ou désactive la participation automatique', color: 'warning' })
+      return
+    }
     // Tous cochés : liste vide (= tous, y compris les comptes ajoutés plus tard)
     settings.value.autoAccounts = ids.length === accounts.value.length ? [] : ids
   }
+})
+
+// Délai avant participation : le minimum ne dépasse jamais le maximum
+watch(() => settings.value?.autoDelayMin, (min) => {
+  const s = settings.value
+  if (s && min != null && s.autoDelayMax != null && min > s.autoDelayMax) s.autoDelayMax = min
+})
+watch(() => settings.value?.autoDelayMax, (max) => {
+  const s = settings.value
+  if (s && max != null && s.autoDelayMin != null && max < s.autoDelayMin) s.autoDelayMin = max
 })
 
 // Son de chaque alerte : sons prédéfinis, ou fichier de l'ordinateur
@@ -91,9 +99,10 @@ function resetDetection() {
 
 // Phrases de bonjour : une par ligne, par langue (texte gardé tel quel pendant la saisie)
 const greetingText = ref<Record<string, string>>({})
+// Réglages (re)chargés : textes repris (l'objet n'est remplacé qu'au chargement)
 watch(settings, (s, old) => {
-  if (s && !old) greetingText.value = Object.fromEntries(Object.entries(s.greetings).map(([l, p]) => [l, p.join('\n')]))
-})
+  if (s && s !== old) greetingText.value = Object.fromEntries(Object.entries(s.greetings).map(([l, p]) => [l, p.join('\n')]))
+}, { immediate: true })
 const greetingLangs = computed(() => Object.keys(greetingText.value).sort((a, b) => langName(a).localeCompare(langName(b))))
 const langName = (code: string) => LANGUAGES[code]?.name ?? code.toUpperCase()
 const addableLangs = computed(() => Object.entries(LANGUAGES)
@@ -115,6 +124,11 @@ function removeGreetingLang(lang: string) {
   greetingText.value = rest
   const { [lang]: __, ...kept } = settings.value.greetings
   settings.value.greetings = kept
+  // Langue par défaut retirée : la première langue restante la remplace
+  if (settings.value.greetingDefaultLang === lang) {
+    const next = greetingLangs.value[0]
+    if (next) settings.value.greetingDefaultLang = next
+  }
 }
 
 // Sous-menu : section affichée, retenue d'une visite à l'autre

@@ -127,32 +127,45 @@ const giftSections = computed(() => {
     }
   }).sort((a, b) => Number(b.live) - Number(a.live) || (a.id === null ? 1 : 0) - (b.id === null ? 1 : 0) || a.name.localeCompare(b.name))
 })
+// Cadeaux cochés ou décochés à la main : les suggestions ne les remplacent plus
+const giftsTouched = ref(false)
 function toggleGift(id: number) {
+  giftsTouched.value = true
   const ids = form.value.giftIds
   form.value.giftIds = ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]
 }
-// À la création, les cadeaux suggérés sont cochés tant qu'on n'a rien choisi
+// À la création, les cadeaux suggérés sont cochés tant qu'on n'a rien choisi à la main
 watch(suggested, (ids) => {
-  if (!props.giveaway && open.value && form.value.giftIds.length === 0 && ids.size) form.value.giftIds = [...ids]
+  if (!props.giveaway && createdId.value === null && open.value && !giftsTouched.value && ids.size) form.value.giftIds = [...ids]
 })
 const giftFormOpen = ref(false)
 function onGiftCreated(id: number) {
+  giftsTouched.value = true
   if (!form.value.giftIds.includes(id)) form.value.giftIds = [...form.value.giftIds, id]
 }
 
+// Giveaway créé par ce formulaire (un nouvel essai après une erreur le modifie au lieu d'en créer un autre)
+const createdId = ref<number | null>(null)
+const editId = computed(() => props.giveaway?.id ?? createdId.value)
+
 watch(open, (isOpen) => {
   if (!isOpen) return
+  if (inspectTimer) clearTimeout(inspectTimer)
+  inspectSeq++
+  inspecting.value = false
   suggestion.value = null
+  createdId.value = null
+  giftsTouched.value = false
   streamerDiscord.value = ''
   streamerNotes.value = ''
   streamerIgnored.value = []
   streamerLoaded.value = { discord: '', notes: '', ignored: '' }
-  // Modification ou fiche du streamer : fiche de la chaîne chargée tout de suite
-  if (props.giveaway) void inspect(props.giveaway.channel)
-  else if (props.streamerOnly && props.channel) void inspect(props.channel)
   const g = props.giveaway
+  const channel = g?.channel ?? props.channel ?? ''
+  // La chaîne remplie ici ne relance pas l'inspection retardée : elle est faite tout de suite, une fois
+  skipChannel = channel
   form.value = {
-    channel: g?.channel ?? props.channel ?? '',
+    channel,
     kind: g?.kind ?? 'command',
     command: g?.command ?? '',
     url: g?.url ?? '',
@@ -172,6 +185,9 @@ watch(open, (isOpen) => {
     giftIds: [...(g?.giftIds ?? [])]
   }
   giftSearch.value = ''
+  // Chaîne connue (modification, fiche du streamer, chaîne pré-remplie) : fiche chargée tout de suite,
+  // même si c'est la même chaîne qu'à la dernière ouverture
+  if (channel.trim()) void inspect(channel)
 })
 
 const channelItems = computed(() => (snapshot.value?.giveaways.channels ?? []).map(c => c.login))
@@ -206,9 +222,13 @@ const streamerLoaded = ref({ discord: '', notes: '', ignored: '' })
 const inspecting = ref(false)
 let inspectTimer: ReturnType<typeof setTimeout> | null = null
 let inspectSeq = 0
+// Chaîne mise par l'ouverture du formulaire (déjà inspectée)
+let skipChannel: string | null = null
 
 watch(() => form.value.channel, (login) => {
-  if (!open.value) return
+  const skip = skipChannel
+  skipChannel = null
+  if (!open.value || login === skip) return
   if (inspectTimer) clearTimeout(inspectTimer)
   suggestion.value = null
   if (!login.trim()) return
@@ -218,28 +238,34 @@ watch(() => form.value.channel, (login) => {
 async function inspect(login: string) {
   const seq = ++inspectSeq
   inspecting.value = true
+  // Valeurs au départ de la requête : ce que l'utilisateur modifie pendant ce temps n'est pas écrasé
+  const f = form.value
+  const before = {
+    discord: streamerDiscord.value, notes: streamerNotes.value, ignored: streamerIgnored.value.join(),
+    follow: f.follow, followDays: f.followDays, presence: f.presence, discordCond: f.discord, greeting: f.greeting,
+    chatTime: f.chatTime, chatMinutes: f.chatMinutes
+  }
   try {
     const found = await invoke<ChannelSuggestion>('inspect_giveaway_channel', { login })
-    // Une saisie plus récente a pris le relais
-    if (seq !== inspectSeq) return
+    // Une saisie plus récente (ou une réouverture) a pris le relais
+    if (seq !== inspectSeq || form.value !== f) return
     suggestion.value = found
     // Fiche du streamer : ce qu'on a noté, sinon le lien Discord trouvé sur sa chaîne
     streamerLoaded.value = { discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '', ignored: (found.streamer?.ignoredCommands ?? []).join() }
-    streamerDiscord.value = found.streamer?.discordUrl ?? found.profile?.discord ?? ''
-    streamerNotes.value = found.streamer?.notes ?? ''
-    streamerIgnored.value = [...(found.streamer?.ignoredCommands ?? [])]
-    const f = form.value
+    if (streamerDiscord.value === before.discord) streamerDiscord.value = found.streamer?.discordUrl ?? found.profile?.discord ?? ''
+    if (streamerNotes.value === before.notes) streamerNotes.value = found.streamer?.notes ?? ''
+    if (streamerIgnored.value.join() === before.ignored) streamerIgnored.value = [...(found.streamer?.ignoredCommands ?? [])]
     const st = found.streamer
     // Fiche du streamer : ses conditions habituelles ; nouveau giveaway : elles pré-remplissent
-    // celles encore inconnues
+    // celles encore inconnues (jamais celles changées pendant le chargement)
     if (st && (props.streamerOnly || !props.giveaway)) {
       const only = props.streamerOnly
-      if (only || f.follow === 'unknown') f.follow = toTri(st.requireFollow)
-      if ((only || !f.followDays) && st.followMinDays) f.followDays = st.followMinDays
-      if (only || f.presence === 'unknown') f.presence = toTri(st.requirePresence)
-      if (only || f.discord === 'unknown') f.discord = toTri(st.requireDiscord)
-      if (only || f.greeting === 'unknown') f.greeting = toTri(st.requireGreeting)
-      if ((only || f.chatTime === 'unknown') && st.minChatMinutes !== null) {
+      if (f.follow === before.follow && (only || f.follow === 'unknown')) f.follow = toTri(st.requireFollow)
+      if (f.followDays === before.followDays && (only || !f.followDays) && st.followMinDays) f.followDays = st.followMinDays
+      if (f.presence === before.presence && (only || f.presence === 'unknown')) f.presence = toTri(st.requirePresence)
+      if (f.discord === before.discordCond && (only || f.discord === 'unknown')) f.discord = toTri(st.requireDiscord)
+      if (f.greeting === before.greeting && (only || f.greeting === 'unknown')) f.greeting = toTri(st.requireGreeting)
+      if (f.chatTime === before.chatTime && f.chatMinutes === before.chatMinutes && (only || f.chatTime === 'unknown') && st.minChatMinutes !== null) {
         f.chatTime = st.minChatMinutes > 0 ? 'yes' : 'no'
         f.chatMinutes = st.minChatMinutes > 0 ? st.minChatMinutes : null
       }
@@ -298,15 +324,41 @@ function sectionForError(message: string): Section | null {
   return null
 }
 
+// Lien Discord : vide ou https://… (même règle que le cœur), vérifié avant tout enregistrement
+function discordError(): string | null {
+  const url = streamerDiscord.value.trim()
+  if (!url) return null
+  if (!url.startsWith('https://') || url.length > 300 || /\s/.test(url)) return 'Le lien Discord doit commencer par https:// (sans espace).'
+  return null
+}
+
+// Fiche du streamer relue juste avant l'enregistrement : on ne remplace que ce que le formulaire modifie
+async function currentStreamer(login: string): Promise<Record<string, unknown> | null> {
+  const key = login.trim().toLowerCase()
+  const list = await invoke<{ login: string }[]>('get_streamers')
+  return list.find(s => s.login === key) ?? null
+}
+
 // Fiche du streamer : Discord, notes, commandes ignorées et conditions habituelles
 async function saveStreamer() {
   const f = form.value
+  const invalid = discordError()
+  if (invalid) {
+    toast.add({ title: 'Lien Discord invalide', description: invalid, color: 'error' })
+    section.value = 'channel'
+    return
+  }
+  // Fiche pas encore chargée : l'enregistrer effacerait ce qu'elle contient
+  if (!suggestion.value) {
+    toast.add({ title: 'Fiche pas encore chargée', description: 'Attends la fin du chargement de la chaîne, puis réessaie.', color: 'warning' })
+    return
+  }
   saving.value = true
   try {
     await invoke('save_streamer', {
       streamer: {
         login: f.channel,
-        discordUrl: streamerDiscord.value || null,
+        discordUrl: streamerDiscord.value.trim() || null,
         notes: streamerNotes.value || null,
         ignoredCommands: streamerIgnored.value,
         requireFollow: fromTri(f.follow),
@@ -349,23 +401,42 @@ async function save() {
     notes: f.notes || null,
     giftIds: f.giftIds
   }
+  // Fiche du streamer à enregistrer si elle a changé (ou si le Discord vient d'être trouvé) ;
+  // jamais si elle n'a pas été chargée (elle serait effacée)
+  const streamerChanged = !!suggestion.value && (streamerDiscord.value !== streamerLoaded.value.discord || streamerNotes.value !== streamerLoaded.value.notes || streamerIgnored.value.join() !== streamerLoaded.value.ignored)
+  const invalid = streamerChanged ? discordError() : null
+  if (invalid) {
+    toast.add({ title: 'Lien Discord invalide', description: invalid, color: 'error' })
+    section.value = 'channel'
+    return
+  }
+  const wasEdit = editId.value !== null
   saving.value = true
   try {
-    if (props.giveaway) await invoke('update_giveaway', { id: props.giveaway.id, input })
-    else await invoke('create_giveaway', { input })
-    // Fiche du streamer : enregistrée si elle a changé (ou si le Discord vient d'être trouvé)
-    if (streamerDiscord.value !== streamerLoaded.value.discord || streamerNotes.value !== streamerLoaded.value.notes || streamerIgnored.value.join() !== streamerLoaded.value.ignored) {
-      // Conditions habituelles de la fiche reprises telles quelles (sinon elles seraient effacées)
-      await invoke('save_streamer', {
-        streamer: { ...(suggestion.value?.streamer ?? {}), login: f.channel, discordUrl: streamerDiscord.value || null, notes: streamerNotes.value || null, ignoredCommands: streamerIgnored.value }
-      })
-    }
-    toast.add({ title: props.giveaway ? 'Giveaway modifié' : 'Giveaway ajouté', color: 'success', icon: 'i-lucide-check' })
-    open.value = false
+    const id = editId.value
+    if (id !== null) await invoke('update_giveaway', { id, input })
+    // Créé une seule fois : un nouvel essai modifie ce giveaway
+    else createdId.value = await invoke<number>('create_giveaway', { input })
   } catch (e) {
     toast.add({ title: 'Giveaway non enregistré', description: String(e), color: 'error' })
     const target = sectionForError(String(e))
     if (target) section.value = target
+    saving.value = false
+    return
+  }
+  try {
+    if (streamerChanged) {
+      // Conditions habituelles de la fiche (relue) reprises telles quelles, sinon elles seraient effacées
+      const existing = await currentStreamer(f.channel)
+      await invoke('save_streamer', {
+        streamer: { ...(existing ?? {}), login: f.channel, discordUrl: streamerDiscord.value.trim() || null, notes: streamerNotes.value || null, ignoredCommands: streamerIgnored.value }
+      })
+    }
+    toast.add({ title: wasEdit ? 'Giveaway modifié' : 'Giveaway ajouté', color: 'success', icon: 'i-lucide-check' })
+    open.value = false
+  } catch (e) {
+    toast.add({ title: 'Giveaway enregistré, mais pas la fiche du streamer', description: String(e), color: 'error' })
+    section.value = 'channel'
   } finally {
     saving.value = false
   }
@@ -627,7 +698,7 @@ async function save() {
     <template #footer>
       <div class="flex justify-end gap-2 w-full">
         <UButton label="Annuler" color="neutral" variant="ghost" @click="open = false" />
-        <UButton type="submit" form="giveaway-form" :label="giveaway || streamerOnly ? 'Enregistrer' : 'Ajouter'" :loading="saving" />
+        <UButton type="submit" form="giveaway-form" :label="editId !== null || streamerOnly ? 'Enregistrer' : 'Ajouter'" :loading="saving" />
       </div>
     </template>
   </UModal>

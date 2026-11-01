@@ -10,7 +10,7 @@ import ChannelFlag from '../components/ChannelFlag.vue'
 import AccountPicker from '../components/AccountPicker.vue'
 
 const openExternal = useOpenExternal()
-const { accounts, account, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove } = useChannelList('se')
+const { accounts, account, channels, newLogin, adding, addChannel, setOptions, optionsOf, toRemove, removing, confirmRemove } = useChannelList('se')
 
 // Filtre par streamer (choix multiple) ; « ?channels=a,b » le préremplit (lien depuis les alertes)
 const route = useRoute()
@@ -312,7 +312,7 @@ function affordable(channel: ChannelView): number | null {
               </td>
               <td class="px-1.5 py-2">
                 <div class="flex justify-center">
-                  <USwitch :model-value="channel.chatPresence" :aria-label="`Présence dans le chat de ${channel.login}`" @update:model-value="v => setOptions(channel, { chatPresence: v })" />
+                  <USwitch :model-value="optionsOf(channel).chatPresence" :aria-label="`Présence dans le chat de ${channel.login}`" @update:model-value="v => setOptions(channel, { chatPresence: v })" />
                 </div>
               </td>
               <td class="px-1.5 py-2 text-right">
@@ -356,7 +356,7 @@ function affordable(channel: ChannelView): number | null {
       <template #footer>
         <div class="flex justify-end gap-2 w-full">
           <UButton label="Annuler" color="neutral" variant="ghost" @click="toRemove = null" />
-          <UButton label="Retirer" color="error" @click="confirmRemove" />
+          <UButton label="Retirer" color="error" :loading="removing" @click="confirmRemove" />
         </div>
       </template>
     </UModal>

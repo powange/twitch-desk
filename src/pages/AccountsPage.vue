@@ -1,49 +1,22 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useOpenExternal } from '../utils/external'
 import { useSnapshot } from '../composables/useSnapshot'
+import { useLogin } from '../composables/useLogin'
+import { useAction } from '../composables/useAction'
 import { ACCOUNT_STATUS } from '../utils/format'
-import type { AccountView, DeviceCode, LoginEvent, SeLoginEvent } from '../types'
+import type { AccountView, SeLoginEvent } from '../types'
 
 const { accounts } = useSnapshot()
 const toast = useToast()
 const openExternal = useOpenExternal()
+const { run, busy } = useAction()
 
-const code = ref<DeviceCode | null>(null)
-const starting = ref(false)
-const remaining = ref(0)
-let countdown: ReturnType<typeof setInterval> | null = null
-let unlisten: UnlistenFn | null = null
-let unlistenSe: UnlistenFn | null = null
+// Connexion en cours (code Twitch, fenêtres StreamElements) : gardée en changeant de page
+const { code, starting, remaining, seConnecting, connect, cancel: cancelLogin, connectSe, seLoginToast } = useLogin()
 
-function stopCountdown() {
-  if (countdown) clearInterval(countdown)
-  countdown = null
-}
-
-async function connect() {
-  starting.value = true
-  try {
-    code.value = await invoke<DeviceCode>('start_login')
-    remaining.value = code.value.expires_in
-    stopCountdown()
-    countdown = setInterval(() => {
-      remaining.value = Math.max(0, remaining.value - 1)
-    }, 1000)
-  } catch (e) {
-    toast.add({ title: 'Connexion impossible', description: String(e), color: 'error' })
-  } finally {
-    starting.value = false
-  }
-}
-
-async function cancel() {
-  await invoke('cancel_login')
-  code.value = null
-  stopCountdown()
-}
+const cancel = () => run('cancel', 'Annulation impossible', cancelLogin)
 
 async function copyCode() {
   if (!code.value) return
@@ -64,49 +37,22 @@ function formatRemaining(s: number) {
 }
 
 // --- Compte StreamElements ---
-// Comptes dont la fenêtre de connexion StreamElements est ouverte
-const seConnecting = ref<Set<number>>(new Set())
-
-async function connectSe(account: AccountView) {
-  try {
-    await invoke('connect_streamelements', { accountId: account.id })
-    seConnecting.value = new Set(seConnecting.value).add(account.id)
-  } catch (e) {
-    toast.add({ title: 'Connexion StreamElements impossible', description: String(e), color: 'error' })
-  }
-}
-
-function seDone(accountId: number) {
-  const next = new Set(seConnecting.value)
-  next.delete(accountId)
-  seConnecting.value = next
-}
-
-function seLoginToast(ev: SeLoginEvent) {
-  const login = accounts.value.find(a => a.id === ev.accountId)?.login ?? ''
-  if (ev.status === 'done') toast.add({ title: `StreamElements connecté pour ${login}`, color: 'success', icon: 'i-lucide-check' })
-  if (ev.status === 'wrongAccount') toast.add({ title: 'Mauvais compte', description: `Tu t'es connecté à StreamElements avec ${ev.username}, pas avec ${login}. Recommence avec le bon compte Twitch.`, color: 'warning' })
-  if (ev.status === 'error') toast.add({ title: 'Connexion StreamElements échouée', description: ev.message, color: 'error' })
-}
-
-async function disconnectSe(account: AccountView) {
-  await invoke('disconnect_streamelements', { accountId: account.id })
-}
+const disconnectSe = (account: AccountView) =>
+  run(`se-${account.id}`, 'Déconnexion StreamElements impossible', () => invoke('disconnect_streamelements', { accountId: account.id }))
 
 // Secours : jeton d'accès personnel collé à la main
 const tokenFor = ref<AccountView | null>(null)
 const tokenValue = ref('')
 const savingToken = ref(false)
+// Fenêtre fermée (Annuler, Échap, enregistrement) : le jeton collé n'est pas gardé
+watch(tokenFor, (account) => { if (!account) tokenValue.value = '' })
 async function saveToken() {
   if (!tokenFor.value) return
   savingToken.value = true
   try {
     const ev = await invoke<SeLoginEvent>('set_streamelements_token', { accountId: tokenFor.value.id, token: tokenValue.value })
     seLoginToast(ev)
-    if (ev.status === 'done') {
-      tokenFor.value = null
-      tokenValue.value = ''
-    }
+    if (ev.status === 'done') tokenFor.value = null
   } catch (e) {
     toast.add({ title: 'Jeton non enregistré', description: String(e), color: 'error' })
   } finally {
@@ -114,37 +60,18 @@ async function saveToken() {
   }
 }
 
-onMounted(async () => {
-  unlistenSe = await listen<SeLoginEvent>('se-login', (e) => {
-    seDone(e.payload.accountId)
-    seLoginToast(e.payload)
-  })
-  unlisten = await listen<LoginEvent>('login', (e) => {
-    code.value = null
-    stopCountdown()
-    const ev = e.payload
-    if (ev.status === 'done') toast.add({ title: `${ev.login} connecté`, color: 'success', icon: 'i-lucide-check' })
-    if (ev.status === 'expired') toast.add({ title: 'Le code a expiré', description: 'Relance la connexion.', color: 'warning' })
-    if (ev.status === 'denied') toast.add({ title: 'Connexion refusée sur Twitch', color: 'warning' })
-    if (ev.status === 'error') toast.add({ title: 'Connexion échouée', description: ev.message, color: 'error' })
-  })
-})
-
-onBeforeUnmount(() => {
-  unlisten?.()
-  unlistenSe?.()
-  stopCountdown()
-})
-
-async function setPoints(account: AccountView, enabled: boolean) {
-  await invoke('set_points_enabled', { id: account.id, enabled })
-}
+const setPoints = (account: AccountView, enabled: boolean) =>
+  run(`points-${account.id}`, 'Points de chaîne non modifiés', () => invoke('set_points_enabled', { id: account.id, enabled }))
+const setDrops = (account: AccountView, enabled: boolean) =>
+  run(`drops-${account.id}`, 'Drops non modifiés', () => invoke('set_drops_enabled', { id: account.id, enabled }))
+const restart = (account: AccountView) =>
+  run(`restart-${account.id}`, 'Redémarrage du compte impossible', () => invoke('restart_account', { id: account.id }))
 
 const toRemove = ref<AccountView | null>(null)
 async function confirmRemove() {
-  if (!toRemove.value) return
-  await invoke('remove_account', { id: toRemove.value.id })
-  toRemove.value = null
+  const account = toRemove.value
+  if (!account) return
+  if (await run('remove', 'Compte non retiré', () => invoke('remove_account', { id: account.id }))) toRemove.value = null
 }
 </script>
 
@@ -169,7 +96,7 @@ async function confirmRemove() {
       <div class="flex flex-col gap-2">
         <UButton icon="i-lucide-external-link" label="Ouvrir Twitch" @click="openExternal(activationUrl())" />
         <UButton icon="i-lucide-copy" label="Copier le code" color="neutral" variant="soft" @click="copyCode" />
-        <UButton label="Annuler" color="neutral" variant="ghost" @click="cancel" />
+        <UButton label="Annuler" color="neutral" variant="ghost" :loading="busy('cancel')" @click="cancel" />
       </div>
     </div>
 
@@ -219,7 +146,7 @@ async function confirmRemove() {
                 </template>
                 <template v-else-if="account.seAccount === 'connected'">
                   <UBadge color="success" variant="subtle" label="Connecté" />
-                  <UButton label="Déconnecter" size="xs" color="neutral" variant="ghost" @click="disconnectSe(account)" />
+                  <UButton label="Déconnecter" size="xs" color="neutral" variant="ghost" :loading="busy(`se-${account.id}`)" @click="disconnectSe(account)" />
                 </template>
                 <template v-else>
                   <UBadge v-if="account.seAccount === 'expired'" color="error" variant="subtle" label="Jeton expiré" />
@@ -230,18 +157,18 @@ async function confirmRemove() {
             </td>
             <td class="px-3 py-2.5 text-center">
               <div class="flex justify-center">
-                <USwitch :model-value="account.pointsEnabled" :aria-label="`Points pour ${account.login}`" @update:model-value="v => setPoints(account, v)" />
+                <USwitch :model-value="account.pointsEnabled" :loading="busy(`points-${account.id}`)" :aria-label="`Points pour ${account.login}`" @update:model-value="v => setPoints(account, v)" />
               </div>
             </td>
             <td class="px-3 py-2.5 text-center">
               <div class="flex justify-center">
-                <USwitch :model-value="account.drops.enabled" :aria-label="`Drops pour ${account.login}`" @update:model-value="v => invoke('set_drops_enabled', { id: account.id, enabled: v })" />
+                <USwitch :model-value="account.drops.enabled" :loading="busy(`drops-${account.id}`)" :aria-label="`Drops pour ${account.login}`" @update:model-value="v => setDrops(account, v)" />
               </div>
             </td>
             <td class="px-3 py-2.5">
               <div class="flex justify-end gap-1">
                 <UButton v-if="account.status === 'expired'" label="Reconnecter" size="xs" @click="connect" />
-                <UButton v-if="account.status === 'error'" label="Réessayer" size="xs" color="neutral" variant="soft" @click="invoke('restart_account', { id: account.id })" />
+                <UButton v-if="account.status === 'error'" label="Réessayer" size="xs" color="neutral" variant="soft" :loading="busy(`restart-${account.id}`)" @click="restart(account)" />
                 <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Retirer le compte" @click="toRemove = account" />
               </div>
             </td>
@@ -284,7 +211,7 @@ async function confirmRemove() {
       <template #footer>
         <div class="flex justify-end gap-2 w-full">
           <UButton label="Annuler" color="neutral" variant="ghost" @click="toRemove = null" />
-          <UButton label="Retirer" color="error" @click="confirmRemove" />
+          <UButton label="Retirer" color="error" :loading="busy('remove')" @click="confirmRemove" />
         </div>
       </template>
     </UModal>

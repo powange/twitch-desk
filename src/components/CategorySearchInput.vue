@@ -16,12 +16,23 @@ const open = ref(false)
 const highlighted = ref(-1)
 let timer: ReturnType<typeof setTimeout> | null = null
 let seq = 0
+// Texte mis par un choix dans la liste : pas de nouvelle recherche
+let picked: string | null = null
+
+// Recherche en attente ou en cours abandonnée (sa réponse n'ouvrira pas la liste)
+function invalidate() {
+  if (timer) clearTimeout(timer)
+  timer = null
+  seq++
+}
 
 watch(text, (value) => {
-  if (timer) clearTimeout(timer)
+  invalidate()
   const q = value.trim()
-  // Adresse collée : pas de recherche
-  if (q.length < 2 || q.includes('twitch.tv')) {
+  const fromPick = picked !== null && value === picked
+  picked = null
+  // Adresse collée, champ vidé ou choix fait : pas de recherche
+  if (fromPick || q.length < 2 || q.includes('twitch.tv')) {
     hits.value = []
     open.value = false
     return
@@ -41,8 +52,10 @@ watch(text, (value) => {
 })
 
 function pick(hit: CategoryHit) {
+  invalidate()
   open.value = false
   hits.value = []
+  picked = hit.name
   text.value = hit.name
   emit('submit', `https://www.twitch.tv/directory/category/${hit.slug}`)
 }
@@ -60,6 +73,7 @@ function onKey(e: KeyboardEvent) {
     const hit = open.value ? hits.value[highlighted.value] : undefined
     if (hit) pick(hit)
     else if (text.value.trim()) {
+      invalidate()
       open.value = false
       emit('submit', text.value)
     }

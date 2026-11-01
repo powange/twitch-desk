@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSelectedAccount } from './useSelectedAccount'
 import type { ChannelList, ChannelView } from '../types'
@@ -30,21 +30,69 @@ export function useChannelList(list: ChannelList) {
     }
   }
 
-  async function setOptions(channel: ChannelView, patch: Partial<Pick<ChannelView, 'enabled' | 'autoClaim' | 'chatPresence'>>) {
-    await invoke('set_channel_options', {
-      id: channel.id,
-      enabled: patch.enabled ?? channel.enabled,
-      autoClaim: patch.autoClaim ?? channel.autoClaim,
-      chatPresence: patch.chatPresence ?? channel.chatPresence
-    })
+  // Options d'une chaîne : les changements pas encore visibles dans l'état du cœur sont gardés
+  // ici (sinon deux clics rapprochés s'annulaient, le second relisant l'ancien état), et les
+  // envois d'une même chaîne partent l'un après l'autre avec l'état local le plus récent
+  type Options = Pick<ChannelView, 'enabled' | 'autoClaim' | 'chatPresence'>
+  const overrides = reactive(new Map<number, Partial<Options>>())
+  const queues = new Map<number, Promise<void>>()
+  const inFlight = new Map<number, number>()
+  const findChannel = (id: number) => account.value?.channels.find(c => c.id === id)
+  function optionsOf(channel: ChannelView): Options {
+    const o = overrides.get(channel.id)
+    return {
+      enabled: o?.enabled ?? channel.enabled,
+      autoClaim: o?.autoClaim ?? channel.autoClaim,
+      chatPresence: o?.chatPresence ?? channel.chatPresence
+    }
+  }
+  // Changement local retiré dès que le cœur le reflète (et que plus rien n'est en cours d'envoi)
+  function prune(id: number) {
+    if (inFlight.get(id)) return
+    const o = overrides.get(id)
+    const c = findChannel(id)
+    if (!o) return
+    if (!c || (Object.keys(o) as (keyof Options)[]).every(k => o[k] === c[k])) overrides.delete(id)
+  }
+  watch(() => account.value?.channels, () => { for (const id of [...overrides.keys()]) prune(id) })
+
+  function setOptions(channel: ChannelView, patch: Partial<Options>) {
+    const id = channel.id
+    overrides.set(id, { ...overrides.get(id), ...patch })
+    inFlight.set(id, (inFlight.get(id) ?? 0) + 1)
+    const send = async () => {
+      const c = findChannel(id) ?? channel
+      try {
+        await invoke('set_channel_options', { id, ...optionsOf(c) })
+      } catch (e) {
+        // Retour à l'état du cœur
+        overrides.delete(id)
+        toast.add({ title: 'Option non enregistrée', description: String(e), color: 'error' })
+      } finally {
+        inFlight.set(id, (inFlight.get(id) ?? 1) - 1)
+        prune(id)
+      }
+    }
+    const next = (queues.get(id) ?? Promise.resolve()).then(send)
+    queues.set(id, next)
+    return next
   }
 
   const toRemove = ref<ChannelView | null>(null)
+  const removing = ref(false)
   async function confirmRemove() {
-    if (!toRemove.value) return
-    await invoke('remove_channel', { id: toRemove.value.id, list })
-    toRemove.value = null
+    const c = toRemove.value
+    if (!c || removing.value) return
+    removing.value = true
+    try {
+      await invoke('remove_channel', { id: c.id, list })
+      toRemove.value = null
+    } catch (e) {
+      toast.add({ title: 'Chaîne non retirée', description: String(e), color: 'error' })
+    } finally {
+      removing.value = false
+    }
   }
 
-  return { accounts, accountId, account, accountItems, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove }
+  return { accounts, accountId, account, accountItems, channels, newLogin, adding, addChannel, setOptions, optionsOf, toRemove, removing, confirmRemove }
 }

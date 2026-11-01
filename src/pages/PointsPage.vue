@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useChannelList } from '../composables/useChannelList'
+import { useDragReorder } from '../composables/useDragReorder'
 import { useOpenExternal } from '../utils/external'
 import { CHANNEL_STATE, formatNumber } from '../utils/format'
 import type { ChannelView } from '../types'
@@ -10,7 +11,7 @@ import AccountPicker from '../components/AccountPicker.vue'
 import PointsChannelSettings from '../components/PointsChannelSettings.vue'
 
 const openExternal = useOpenExternal()
-const { accounts, account, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove } = useChannelList('points')
+const { accounts, account, channels, newLogin, adding, addChannel, setOptions, optionsOf, toRemove, removing, confirmRemove } = useChannelList('points')
 
 // Réglages d'une chaîne (solde maximum…) : la vue à jour est relue par son identifiant
 const settingsId = ref<number | null>(null)
@@ -22,79 +23,12 @@ function openSettings(channel: ChannelView) {
 }
 
 // L'ordre ne concerne que cette liste : c'est lui qui décide des 2 chaînes regardées.
-// Glisser-déposer par la poignée : la ligne n'est déplaçable que pendant qu'on la tient,
-// pour ne pas gêner les interrupteurs et la sélection de texte.
-const grabbed = ref<number | null>(null)
-const dragging = ref<number | null>(null)
-// Ordre affiché pendant le glisser (aperçu), null hors glisser
-const preview = ref<number[] | null>(null)
-// Ordre déposé, affiché tel quel jusqu'à ce que le cœur renvoie le même : sans ça,
-// la ligne revenait à sa place le temps que l'état soit rafraîchi
-const pending = ref<number[] | null>(null)
-let pendingTimer: ReturnType<typeof setTimeout> | null = null
-
-const ordered = computed(() => {
-  const order = preview.value ?? pending.value
-  if (!order) return channels.value
-  const byId = new Map(channels.value.map(c => [c.id, c]))
-  const list = order.map(id => byId.get(id)).filter((c): c is ChannelView => !!c)
-  // Chaîne ajoutée entre-temps : à la fin
-  return [...list, ...channels.value.filter(c => !order.includes(c.id))]
-})
-
-watch(channels, (list) => {
-  if (pending.value && list.map(c => c.id).join() === pending.value.join()) clearPending()
-})
-
-function clearPending() {
-  pending.value = null
-  if (pendingTimer) clearTimeout(pendingTimer)
-  pendingTimer = null
-}
-
-function onDragStart(event: DragEvent, channel: ChannelView) {
-  dragging.value = channel.id
-  preview.value = channels.value.map(c => c.id)
-  event.dataTransfer?.setData('text/plain', channel.login)
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
-}
-
-function onDragOver(event: DragEvent, target: ChannelView) {
-  if (dragging.value === null || !preview.value) return
-  event.preventDefault()
-  if (target.id === dragging.value) return
-  const ids = [...preview.value]
-  const from = ids.indexOf(dragging.value)
-  const to = ids.indexOf(target.id)
-  ids.splice(from, 1)
-  ids.splice(to, 0, dragging.value)
-  preview.value = ids
-}
-
-async function onDrop(event: DragEvent) {
-  event.preventDefault()
-  const ids = preview.value
-  const changed = ids && ids.some((id, i) => id !== channels.value[i]?.id)
-  if (changed) {
-    pending.value = ids
-    // Filet de sécurité : si le cœur ne confirme pas, on revient à son état
-    pendingTimer = setTimeout(clearPending, 5000)
-  }
-  endDrag()
-  if (changed && account.value) {
-    try {
-      await invoke('reorder_channels', { accountId: account.value.id, ids })
-    } catch {
-      clearPending()
-    }
-  }
-}
-
-function endDrag() {
-  dragging.value = null
-  grabbed.value = null
-  preview.value = null
-}
+// Glisser-déposer par la poignée, ou Alt+flèches sur la poignée
+const { grabbed, dragging, ordered, onDragStart, onDragOver, onDrop, endDrag, onHandleKeydown } = useDragReorder(
+  () => channels.value,
+  ids => account.value ? invoke('reorder_channels', { accountId: account.value.id, ids }) : Promise.resolve(),
+  'Ordre non enregistré'
+)
 </script>
 
 <template>
@@ -118,7 +52,7 @@ function endDrag() {
         color="info"
         variant="subtle"
         title="Twitch ne compte le temps de visionnage que sur 2 chaînes à la fois par compte."
-        description="L'application regarde les 2 premières chaînes en live de la liste. Change l'ordre en faisant glisser une ligne par sa poignée."
+        description="L'application regarde les 2 premières chaînes en live de la liste. Change l'ordre en faisant glisser une ligne par sa poignée (ou Alt+flèches sur la poignée)."
       />
 
       <UAlert
@@ -157,21 +91,24 @@ function endDrag() {
               class="border-t border-default transition-colors"
               :class="dragging === channel.id ? 'bg-primary/10 opacity-70' : ''"
               :draggable="grabbed === channel.id"
-              @dragstart="onDragStart($event, channel)"
+              @dragstart="onDragStart($event, channel, channel.login)"
               @dragover="onDragOver($event, channel)"
               @drop="onDrop"
               @dragend="endDrag"
             >
               <td class="px-3 py-2">
-                <div
-                  class="flex items-center gap-1.5 cursor-grab active:cursor-grabbing select-none"
-                  title="Glisser pour changer l'ordre"
+                <button
+                  type="button"
+                  class="flex items-center gap-1.5 cursor-grab active:cursor-grabbing select-none rounded focus-visible:outline-2 focus-visible:outline-primary"
+                  title="Glisser pour changer l'ordre (ou Alt+flèche haut/bas)"
+                  :aria-label="`Position ${i + 1} : ${channel.login}. Alt+flèche haut ou bas pour déplacer`"
                   @mousedown="grabbed = channel.id"
                   @mouseup="grabbed = null"
+                  @keydown="onHandleKeydown($event, channel)"
                 >
                   <UIcon name="i-lucide-grip-vertical" class="size-4 text-muted" />
-                  <span class="w-5 text-muted">{{ i + 1 }}</span>
-                </div>
+                  <span class="w-5 text-muted text-left">{{ i + 1 }}</span>
+                </button>
               </td>
               <td class="px-3 py-2 min-w-0">
                 <div class="flex items-center gap-1.5">
@@ -204,12 +141,12 @@ function endDrag() {
               </td>
               <td class="px-3 py-2 text-center">
                 <div class="flex justify-center">
-                  <USwitch :model-value="channel.enabled" :aria-label="`Récolter sur ${channel.login}`" @update:model-value="v => setOptions(channel, { enabled: v })" />
+                  <USwitch :model-value="optionsOf(channel).enabled" :aria-label="`Récolter sur ${channel.login}`" @update:model-value="v => setOptions(channel, { enabled: v })" />
                 </div>
               </td>
               <td class="px-3 py-2 text-center">
                 <div class="flex justify-center">
-                  <USwitch :model-value="channel.autoClaim" :aria-label="`Bonus auto sur ${channel.login}`" @update:model-value="v => setOptions(channel, { autoClaim: v })" />
+                  <USwitch :model-value="optionsOf(channel).autoClaim" :aria-label="`Bonus auto sur ${channel.login}`" @update:model-value="v => setOptions(channel, { autoClaim: v })" />
                 </div>
               </td>
               <td class="px-3 py-2 text-right">
@@ -240,7 +177,7 @@ function endDrag() {
       <template #footer>
         <div class="flex justify-end gap-2 w-full">
           <UButton label="Annuler" color="neutral" variant="ghost" @click="toRemove = null" />
-          <UButton label="Retirer" color="error" @click="confirmRemove" />
+          <UButton label="Retirer" color="error" :loading="removing" @click="confirmRemove" />
         </div>
       </template>
     </UModal>

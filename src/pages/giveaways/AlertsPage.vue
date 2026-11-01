@@ -17,6 +17,7 @@ import SolidIcon from '../../components/SolidIcon.vue'
 import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
 import ConditionCells from '../../components/conditions/ConditionCells.vue'
 import { useConditionActions } from '../../composables/useConditionActions'
+import { useAction } from '../../composables/useAction'
 
 const { snapshot, accounts } = useSnapshot()
 const toast = useToast()
@@ -25,11 +26,24 @@ const watchStream = useWatchStream()
 
 const view = computed(() => snapshot.value?.giveaways)
 const giveaways = computed(() => view.value?.giveaways ?? [])
-// Live en cours d'une chaîne surveillée (catégorie, spectateurs)
-const liveOf = (channel: string) => view.value?.channels.find(c => c.login === channel)?.live ?? null
+// Live en cours d'une chaîne surveillée (catégorie, spectateurs), indexé une fois par mise à jour
+const liveByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, c.live])))
+const liveOf = (channel: string) => liveByLogin.value.get(channel) ?? null
 
-// Conditions : follow, bonjour, Discord (giveaways ouverts ou clos)
-const cond = useConditionActions(() => giveaways.value)
+// Conditions : follow, bonjour, Discord (giveaways ouverts seulement : rien à faire sur un giveaway clos)
+const cond = useConditionActions(() => giveaways.value.filter(g => g.open))
+
+// Ignorer, Vu, Clore, Supprimer : erreur affichée, bouton occupé pendant l'action
+const { run, busy } = useAction()
+const dismiss = (g: GiveawayView) => run(`dismiss-${g.id}`, 'Alerte non ignorée', () => invoke('dismiss_giveaway', { id: g.id }))
+const dismissMention = (id: number) => run(`mention-${id}`, 'Mention non marquée comme vue', () => invoke('dismiss_mention', { id }))
+const closeGiveaway = (g: GiveawayView) => run(`close-${g.id}`, 'Giveaway non clos', () => invoke('close_giveaway', { id: g.id }))
+const toDelete = ref<GiveawayView | null>(null)
+async function confirmDelete() {
+  const g = toDelete.value
+  if (!g) return
+  if (await run('delete', 'Giveaway non supprimé', () => invoke('delete_giveaway', { id: g.id }))) toDelete.value = null
+}
 
 // Journal du chat d'une chaîne
 const logChannel = ref<string | null>(null)
@@ -175,7 +189,7 @@ function share(g: GiveawayView) {
               type="button"
               class="inline-flex items-center gap-0.5 text-warning hover:text-pink-500 disabled:opacity-50"
               :disabled="cond.following === g.channel"
-              :aria-label="`Suivre ${g.channel}`"
+              :aria-label="`${cond.followLabel(g)}. Suivre ${g.channel}`"
               @click="cond.followChannel(g.channel)"
             >
               <UIcon :name="cond.following === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="cond.following === g.channel ? 'animate-spin' : ''" />
@@ -183,8 +197,11 @@ function share(g: GiveawayView) {
             </button>
             <span
               v-else
-              class="inline-flex items-center gap-0.5"
+              class="inline-flex items-center gap-0.5 rounded focus-visible:outline-2 focus-visible:outline-primary"
               :class="cond.followOk(g) ? 'text-success' : cond.tooRecent(g).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'"
+              tabindex="0"
+              role="img"
+              :aria-label="cond.followLabel(g)"
             >
               <SolidIcon v-if="cond.followOk(g)" name="heart" class="size-4" />
               <UIcon v-else name="i-lucide-heart" class="size-4" />
@@ -194,7 +211,7 @@ function share(g: GiveawayView) {
           <GiveawayConditions :details="{ ...g, requireFollow: g.requireFollow ? null : g.requireFollow }" :kind="g.kind" />
           <span v-if="g.drawAt" class="text-sm text-muted inline-flex items-center gap-1"><UIcon name="i-lucide-clock" class="size-4" />Tirage {{ formatDrawAt(g.drawAt) }}</span>
           <UTooltip v-if="g.evidence" :text="evidenceText(g)">
-            <span class="text-sm text-muted underline decoration-dotted cursor-help">{{ share(g) }} % du chat</span>
+            <span class="text-sm text-muted underline decoration-dotted cursor-help rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" :aria-label="evidenceText(g)">{{ share(g) }} % du chat</span>
           </UTooltip>
           <span class="text-xs text-muted ml-auto">{{ timeAgo(g.detectedAt, now) }}</span>
         </div>
@@ -228,7 +245,7 @@ function share(g: GiveawayView) {
           </template>
           <UButton label="Regarder" icon="i-lucide-tv" size="sm" color="neutral" variant="soft" title="Ajouter le stream à la fenêtre multi-stream" @click="watchStream(g.channel)" />
           <UButton label="Modifier" icon="i-lucide-pencil" size="sm" color="neutral" variant="ghost" @click="openForm(g)" />
-          <UButton label="Ignorer" size="sm" color="neutral" variant="ghost" @click="invoke('dismiss_giveaway', { id: g.id })" />
+          <UButton label="Ignorer" size="sm" color="neutral" variant="ghost" :loading="busy(`dismiss-${g.id}`)" @click="dismiss(g)" />
         </div>
       </div>
 
@@ -239,7 +256,7 @@ function share(g: GiveawayView) {
           <div class="text-sm text-muted break-words">« {{ m.message }} »</div>
         </div>
         <span class="text-xs text-muted">{{ timeAgo(m.at, now) }}</span>
-        <UButton label="Vu" size="xs" color="neutral" variant="soft" @click="invoke('dismiss_mention', { id: m.id })" />
+        <UButton label="Vu" size="xs" color="neutral" variant="soft" :loading="busy(`mention-${m.id}`)" @click="dismissMention(m.id)" />
       </div>
     </section>
 
@@ -374,8 +391,8 @@ function share(g: GiveawayView) {
                   />
                   <UButton icon="i-lucide-scroll-text" size="xs" color="neutral" variant="ghost" :aria-label="`Journal du chat de ${g.channel}`" title="Journal du chat" @click="openLog(g.channel)" />
                   <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
-                  <UButton v-if="g.open" label="Clore" size="xs" color="neutral" variant="ghost" @click="invoke('close_giveaway', { id: g.id })" />
-                  <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" aria-label="Supprimer" @click="invoke('delete_giveaway', { id: g.id })" />
+                  <UButton v-if="g.open" label="Clore" size="xs" color="neutral" variant="ghost" :loading="busy(`close-${g.id}`)" @click="closeGiveaway(g)" />
+                  <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" aria-label="Supprimer" @click="toDelete = g" />
                 </div>
               </td>
             </tr>
@@ -389,5 +406,17 @@ function share(g: GiveawayView) {
 
     <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" />
     <ChatLogModal v-model:open="logOpen" :channel="logChannel" />
+
+    <UModal :open="toDelete !== null" title="Supprimer le giveaway ?" @update:open="v => { if (!v) toDelete = null }">
+      <template #body>
+        <p>Le giveaway de {{ toDelete?.channel }} sera retiré de l'historique. Cette action est définitive.</p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Annuler" color="neutral" variant="ghost" @click="toDelete = null" />
+          <UButton label="Supprimer" color="error" :loading="busy('delete')" @click="confirmDelete" />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>
