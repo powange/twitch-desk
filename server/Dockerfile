@@ -1,6 +1,17 @@
 # Serveur de synchronisation de Twitch Desk
-FROM rust:1-bookworm AS build
+# cargo-chef : les dépendances sont compilées dans une couche à part, gardée en cache tant
+# qu'elles ne changent pas (un changement de version du serveur ne les recompile pas)
+FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
 WORKDIR /src
+
+FROM chef AS plan
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS build
+COPY --from=plan /src/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release --locked
