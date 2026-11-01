@@ -38,6 +38,8 @@ pub enum ChannelState {
     Waiting,
     Offline,
     Disabled,
+    /// Solde voulu atteint : plus regardée
+    BalanceReached,
     Unknown,
 }
 
@@ -67,6 +69,7 @@ pub struct ChannelView {
     pub se_my_tickets: Option<i64>,
     /// Relevé choisi (None : automatique) et relevé appliqué, en minutes
     pub se_refresh: Option<i64>,
+    pub max_balance: Option<i64>,
     pub se_poll_minutes: u64,
     /// None : pas encore vérifié ; false : la chaîne n'utilise pas StreamElements
     pub se_enabled: Option<bool>,
@@ -100,7 +103,7 @@ pub enum SeAccount {
     Expired,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EventKind {
     Bonus,
@@ -197,6 +200,7 @@ pub struct App {
 
 impl App {
     pub fn new(handle: AppHandle, db: Db, secrets: Secrets, data_dir: PathBuf) -> Arc<Self> {
+        let events = db.recent_events(MAX_EVENTS).unwrap_or_default();
         Arc::new(Self {
             db,
             secrets,
@@ -205,7 +209,8 @@ impl App {
             handle,
             miners: Mutex::new(HashMap::new()),
             views: RwLock::new(HashMap::new()),
-            events: Mutex::new(VecDeque::new()),
+            // Fil d'événements gardé d'un lancement (et d'une mise à jour) à l'autre
+            events: Mutex::new(events.into()),
             paused: AtomicBool::new(false),
             dirty: Notify::new(),
             login_task: Mutex::new(None),
@@ -293,6 +298,9 @@ impl App {
             message: message.into(),
         };
         tracing::info!("[{}] {}", event.account, event.message);
+        if let Err(e) = self.db.add_event(&event, MAX_EVENTS) {
+            tracing::warn!("fil d'événements : {e}");
+        }
         let mut events = self.events.lock().unwrap();
         events.push_front(event);
         events.truncate(MAX_EVENTS);

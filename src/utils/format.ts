@@ -18,6 +18,7 @@ export const CHANNEL_STATE: Record<ChannelState, { label: string, color: Color, 
   waiting: { label: 'En attente', color: 'warning', hint: 'En live, mais 2 chaînes plus haut dans la liste sont déjà regardées' },
   offline: { label: 'Hors ligne', color: 'neutral' },
   disabled: { label: 'Désactivée', color: 'neutral' },
+  balanceReached: { label: 'Solde atteint', color: 'info', hint: 'Solde maximum atteint : la place revient à la chaîne suivante' },
   unknown: { label: 'Vérification…', color: 'neutral' }
 }
 

@@ -203,6 +203,19 @@ pub fn set_channel_options(
     Ok(())
 }
 
+/// Solde de points de chaîne à atteindre (None : pas de limite)
+#[tauri::command]
+pub fn set_max_balance(app: AppState, id: i64, max: Option<i64>) -> CmdResult<()> {
+    if max.is_some_and(|m| !(1..=2_000_000_000).contains(&m)) {
+        return Err("Solde maximum invalide".into());
+    }
+    app.db.set_max_balance(id, max).map_err(db_err)?;
+    if let Some(account) = app.db.channel_account(id).map_err(db_err)? {
+        app.send(account, MinerCommand::Reload);
+    }
+    Ok(())
+}
+
 /// Relevé du solde StreamElements d'une chaîne, en minutes (None : automatique)
 #[tauri::command]
 pub fn set_se_refresh(app: AppState, id: i64, minutes: Option<i64>) -> CmdResult<()> {
@@ -248,6 +261,95 @@ pub fn get_paths(app: AppState) -> Paths {
         data: app.data_dir.display().to_string(),
         logs: app.data_dir.join("logs").display().to_string(),
     }
+}
+
+// --- Journaux ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogFile {
+    name: String,
+    size: u64,
+    modified: Option<String>,
+}
+
+/// Fichier du dossier des journaux, d'après son seul nom (pas de chemin)
+fn log_path(app: &App, name: &str) -> CmdResult<std::path::PathBuf> {
+    let valid = name.starts_with("twitch-desk") && name.ends_with(".log") && !name.contains(['/', '\\']) && !name.contains("..");
+    if !valid {
+        return Err("Journal inconnu".into());
+    }
+    let path = app.data_dir.join("logs").join(name);
+    if !path.is_file() {
+        return Err("Ce journal n'existe plus".into());
+    }
+    Ok(path)
+}
+
+/// Journaux des derniers jours, le plus récent d'abord
+#[tauri::command]
+pub fn list_logs(app: AppState) -> CmdResult<Vec<LogFile>> {
+    let dir = app.data_dir.join("logs");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(vec![]),
+    };
+    let mut files: Vec<LogFile> = entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let meta = e.metadata().ok().filter(|m| m.is_file())?;
+            (name.starts_with("twitch-desk") && name.ends_with(".log")).then(|| LogFile {
+                name,
+                size: meta.len(),
+                modified: meta
+                    .modified()
+                    .ok()
+                    .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            })
+        })
+        .collect();
+    files.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(files)
+}
+
+/// Fin d'un journal (2 Mo au plus) ; `truncated` : le début n'est pas inclus
+#[derive(Serialize)]
+pub struct LogContent {
+    text: String,
+    truncated: bool,
+}
+
+const LOG_TAIL: u64 = 2 * 1024 * 1024;
+
+#[tauri::command]
+pub fn read_log(app: AppState, name: String) -> CmdResult<LogContent> {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = log_path(&app, &name)?;
+    let mut file = std::fs::File::open(&path).map_err(|e| format!("lecture du journal : {e}"))?;
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let truncated = len > LOG_TAIL;
+    if truncated {
+        file.seek(SeekFrom::Start(len - LOG_TAIL)).map_err(|e| format!("lecture du journal : {e}"))?;
+    }
+    let mut bytes = vec![];
+    file.read_to_end(&mut bytes).map_err(|e| format!("lecture du journal : {e}"))?;
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    // Première ligne coupée par la lecture partielle : retirée
+    if truncated {
+        if let Some(i) = text.find('\n') {
+            text.drain(..=i);
+        }
+    }
+    Ok(LogContent { text, truncated })
+}
+
+/// Copie un journal dans le fichier choisi
+#[tauri::command]
+pub fn export_log(app: AppState, name: String, path: String) -> CmdResult<()> {
+    let source = log_path(&app, &name)?;
+    std::fs::copy(source, &path).map_err(|e| format!("copie du journal : {e}"))?;
+    Ok(())
 }
 
 // --- Drops ---

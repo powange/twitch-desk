@@ -6,6 +6,8 @@ Chaque application envoie ses modifications et récupère celles des autres tout
 
 Ce qui reste propre à chacun : comptes Twitch, participations, gains et lots reçus, points, drops, réglages.
 
+Dans l'application, chacun choisit parmi les données proposées par le serveur celles qu'il synchronise (Paramètres → Synchronisation). Les chaînes surveillées sont décochées par défaut : chacun garde sa liste tant qu'il ne coche pas la case.
+
 ## Installation (Portainer)
 
 Stacks → Add stack → **Repository** :

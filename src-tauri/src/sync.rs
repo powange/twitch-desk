@@ -41,7 +41,9 @@ pub struct SyncView {
     pub status: String,
     pub last_sync: Option<String>,
     pub error: Option<String>,
-    /// Collections synchronisées par le serveur
+    /// Collections proposées par le serveur
+    pub server_collections: Vec<String>,
+    /// Collections synchronisées : celles du serveur que l'utilisateur n'a pas décochées
     pub collections: Vec<String>,
     /// Depuis le démarrage : modifications envoyées et reçues
     pub sent: u64,
@@ -116,6 +118,13 @@ fn set_meta(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
         params![key, value],
     )?;
     Ok(())
+}
+
+/// Collections décochées par l'utilisateur (celles que le serveur ajoutera plus tard sont cochées).
+/// Tant qu'il n'a rien choisi, les chaînes surveillées ne sont pas partagées : chacun garde
+/// sa liste, sauf s'il coche la case
+fn skipped(conn: &Connection) -> Vec<String> {
+    meta(conn, "skipped").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| vec!["channels".to_owned()])
 }
 
 fn config(app: &App) -> Option<Config> {
@@ -605,6 +614,7 @@ async fn server_info(http: &reqwest::Client, url: &str, code: &str) -> Result<Se
 }
 
 struct Outcome {
+    server_collections: Vec<String>,
     collections: Vec<String>,
     sent: u64,
     received: u64,
@@ -612,7 +622,9 @@ struct Outcome {
 
 async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
     let info = server_info(&app.http, &cfg.url, &cfg.code).await?;
-    let enabled: Vec<&str> = COLLECTIONS.iter().copied().filter(|c| info.collections.iter().any(|x| x == c)).collect();
+    let skipped = skipped(&app.db.conn());
+    let offered: Vec<&str> = COLLECTIONS.iter().copied().filter(|c| info.collections.iter().any(|x| x == c)).collect();
+    let enabled: Vec<&str> = offered.iter().copied().filter(|c| !skipped.iter().any(|s| s == c)).collect();
 
     let mut cursor: i64;
     {
@@ -625,6 +637,14 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
             cursor = 0;
             set_meta(&conn, "server", &cfg.url).map_err(db_err)?;
             set_meta(&conn, "cursor", "0").map_err(db_err)?;
+        }
+        // Collections synchronisées changées : les modifications d'une collection ignorée
+        // jusque-là ont été sautées, tout est relu (les documents déjà à jour sont ignorés)
+        let scope = enabled.join(",");
+        if meta(&conn, "scope").as_deref() != Some(scope.as_str()) {
+            cursor = 0;
+            set_meta(&conn, "cursor", "0").map_err(db_err)?;
+            set_meta(&conn, "scope", &scope).map_err(db_err)?;
         }
     }
 
@@ -736,7 +756,12 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
     if !touched.is_empty() {
         app.giveaways.send(MonitorCmd::Reload);
     }
-    Ok(Outcome { collections: enabled.iter().map(|c| c.to_string()).collect(), sent, received })
+    Ok(Outcome {
+        server_collections: offered.iter().map(|c| c.to_string()).collect(),
+        collections: enabled.iter().map(|c| c.to_string()).collect(),
+        sent,
+        received,
+    })
 }
 
 pub fn spawn(app: Arc<App>) {
@@ -770,6 +795,7 @@ pub fn spawn(app: Arc<App>) {
                     Ok(o) => {
                         v.status = "ok".into();
                         v.error = None;
+                        v.server_collections = o.server_collections;
                         v.collections = o.collections;
                         v.last_sync = Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
                         v.sent += o.sent;
@@ -844,6 +870,21 @@ pub async fn test_sync(app: State<'_, Arc<App>>, url: String, code: Option<Strin
         None => app.secrets.load_raw(CODE_KEY).filter(|c| !c.is_empty()).ok_or("Indique le code du serveur")?,
     };
     server_info(&app.http, &url, &code).await
+}
+
+/// Collections à ne pas synchroniser sur ce poste
+#[tauri::command]
+pub fn set_sync_skipped(app: State<'_, Arc<App>>, skipped: Vec<String>) -> Result<(), String> {
+    let list: Vec<&str> = COLLECTIONS.iter().copied().filter(|c| skipped.iter().any(|s| s == c)).collect();
+    set_meta(&app.db.conn(), "skipped", &serde_json::to_string(&list).expect("liste sérialisable")).map_err(db_err)?;
+    // Affiché tout de suite, sans attendre le prochain passage
+    {
+        let mut v = app.sync.view.lock().unwrap();
+        v.collections = v.server_collections.iter().filter(|c| !list.contains(&c.as_str())).cloned().collect();
+    }
+    app.touch();
+    app.sync.poke();
+    Ok(())
 }
 
 #[tauri::command]
@@ -987,6 +1028,14 @@ mod tests {
         assert!(without[0].1.get("group").is_none());
         apply(&b.conn(), "gifts", &gift_id, Some(&without[0].1)).unwrap();
         assert!(b.gifts().unwrap()[0].group_id.is_some());
+    }
+
+    #[test]
+    fn channels_are_not_shared_until_chosen() {
+        let db = Db::memory().unwrap();
+        assert_eq!(skipped(&db.conn()), vec!["channels"]);
+        set_meta(&db.conn(), "skipped", "[]").unwrap();
+        assert!(skipped(&db.conn()).is_empty());
     }
 
     #[test]

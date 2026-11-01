@@ -19,7 +19,10 @@ const labelOf = (c: string) => COLLECTION_LABELS[c] ?? c
 
 const url = ref('')
 const code = ref('')
+// enabled : enregistré ; wanted : interrupteur (coché, il affiche l'adresse et le code
+// jusqu'à l'enregistrement)
 const enabled = ref(false)
+const wanted = ref(false)
 const hasCode = ref(false)
 const saving = ref(false)
 const testing = ref(false)
@@ -29,6 +32,7 @@ onMounted(async () => {
   const config = await invoke<{ url: string, enabled: boolean, hasCode: boolean }>('get_sync_config')
   url.value = config.url
   enabled.value = config.enabled
+  wanted.value = config.enabled
   hasCode.value = config.hasCode
 })
 
@@ -40,6 +44,19 @@ const status = computed(() => {
   if (s.status === 'syncing') return { label: 'Synchronisation…', color: 'info' as const }
   return { label: 'Synchronisée', color: 'success' as const }
 })
+
+// Données proposées par le serveur, à cocher ou décocher sur ce poste
+const offered = computed(() => syncView.value?.serverCollections ?? [])
+const syncing = (col: string) => syncView.value?.collections.includes(col) ?? false
+async function setCollection(col: string, on: boolean) {
+  const skipped = offered.value.filter(c => c !== col && !syncing(c))
+  if (!on) skipped.push(col)
+  try {
+    await invoke('set_sync_skipped', { skipped })
+  } catch (e) {
+    toast.add({ title: 'Choix non enregistré', description: String(e), color: 'error' })
+  }
+}
 
 async function test() {
   testing.value = true
@@ -53,11 +70,23 @@ async function test() {
   }
 }
 
-async function save(value = enabled.value) {
+// Décoché : coupé tout de suite (adresse et code gardés) ; coché : activé tout de suite si
+// l'adresse et le code sont déjà connus, sinon après « Enregistrer »
+async function toggle(value: boolean) {
+  wanted.value = value
+  if (!value) {
+    if (enabled.value) await save(false)
+  } else if (url.value.trim() && hasCode.value) {
+    await save(true)
+  }
+}
+
+async function save(value = wanted.value) {
   saving.value = true
   try {
     await invoke('save_sync_config', { url: url.value, code: code.value || null, enabled: value })
     enabled.value = value
+    wanted.value = value
     if (code.value) hasCode.value = true
     code.value = ''
     toast.add({ title: value ? 'Synchronisation activée' : 'Synchronisation enregistrée', color: 'success', icon: 'i-lucide-check' })
@@ -76,9 +105,9 @@ async function save(value = enabled.value) {
         <div class="font-medium">Mettre des données en commun</div>
         <div class="text-sm text-muted">Ce que les autres ajoutent arrive chez toi, et inversement. Le serveur choisit ce qui est partagé.</div>
       </div>
-      <USwitch :model-value="enabled" :loading="saving" aria-label="Synchronisation" @update:model-value="v => save(v)" />
+      <USwitch :model-value="wanted" :loading="saving" aria-label="Synchronisation" @update:model-value="toggle" />
     </div>
-    <div class="flex flex-col gap-3 px-4 py-3">
+    <div v-if="wanted" class="flex flex-col gap-3 px-4 py-3">
       <UFormField label="Adresse du serveur">
         <UInput id="sync-url" v-model="url" placeholder="https://sync.exemple.fr" class="w-full" autocomplete="off" />
       </UFormField>
@@ -98,7 +127,7 @@ async function save(value = enabled.value) {
         :description="`Partagé : ${tested.collections.map(col => labelOf(col)).join(', ') || 'rien'}`"
       />
     </div>
-    <div v-if="syncView && syncView.status !== 'off'" class="flex flex-col gap-2 px-4 py-3">
+    <div v-if="wanted && syncView && syncView.status !== 'off'" class="flex flex-col gap-2 px-4 py-3">
       <div class="flex items-center gap-2">
         <UBadge :label="status.label" :color="status.color" variant="subtle" />
         <span v-if="syncView.lastSync" class="text-sm text-muted">Dernière synchronisation {{ timeAgo(syncView.lastSync) }}</span>
@@ -106,9 +135,18 @@ async function save(value = enabled.value) {
         <UButton label="Synchroniser maintenant" icon="i-lucide-refresh-cw" size="sm" color="neutral" variant="soft" :loading="syncView.status === 'syncing'" @click="invoke('sync_now')" />
       </div>
       <p v-if="syncView.error" class="text-sm text-error">{{ syncView.error }}</p>
-      <div v-if="syncView.collections.length" class="flex items-center gap-1.5 flex-wrap text-sm">
-        <span class="text-muted">Partagé :</span>
-        <UBadge v-for="col in syncView.collections" :key="col" :label="labelOf(col)" color="neutral" variant="subtle" />
+      <div v-if="offered.length" class="flex flex-col gap-2 pt-1">
+        <div class="text-sm font-medium">Données synchronisées</div>
+        <div class="text-xs text-muted">Celles que propose le serveur. Une donnée décochée reste sur ce poste sans être envoyée ni reçue.</div>
+        <div class="flex flex-col gap-1.5">
+          <UCheckbox
+            v-for="col in offered"
+            :key="col"
+            :model-value="syncing(col)"
+            :label="labelOf(col)"
+            @update:model-value="v => setCollection(col, v === true)"
+          />
+        </div>
       </div>
       <div class="text-xs text-muted">Depuis le démarrage : {{ syncView.sent }} modification(s) envoyée(s), {{ syncView.received }} reçue(s).</div>
     </div>

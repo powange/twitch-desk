@@ -1,7 +1,7 @@
 // Miroir des structures envoyées par le cœur Rust (src-tauri/src/app.rs, db.rs)
 
 export type AccountStatus = 'starting' | 'running' | 'expired' | 'error'
-export type ChannelState = 'watching' | 'waiting' | 'offline' | 'disabled' | 'unknown'
+export type ChannelState = 'watching' | 'waiting' | 'offline' | 'disabled' | 'balanceReached' | 'unknown'
 export type EventKind = 'bonus' | 'gain' | 'live' | 'offline' | 'raid' | 'drop' | 'giveaway' | 'info' | 'error'
 
 export interface StreamInfo {
@@ -38,6 +38,8 @@ export interface ChannelView {
   seMyTickets: number | null
   // Relevé du solde StreamElements : choisi (null : automatique) et appliqué, en minutes
   seRefresh: number | null
+  // Solde de points de chaîne à atteindre (null : pas de limite)
+  maxBalance: number | null
   sePollMinutes: number
   // null : pas encore vérifié ; false : la chaîne n'utilise pas StreamElements
   seEnabled: boolean | null
@@ -88,7 +90,9 @@ export interface SyncView {
   status: 'off' | 'syncing' | 'ok' | 'error'
   lastSync: string | null
   error: string | null
-  // Collections partagées par le serveur
+  // Collections proposées par le serveur
+  serverCollections: string[]
+  // Collections synchronisées (celles du serveur non décochées)
   collections: string[]
   sent: number
   received: number

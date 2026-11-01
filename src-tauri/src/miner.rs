@@ -754,7 +754,7 @@ impl Miner {
                 .map(|i| {
                     let c = &self.channels[*i];
                     let taken = drop_login.as_deref() == Some(c.ch.login.as_str());
-                    (c.ch.farms_points() && !taken, c.live.is_some(), c.cooling(now))
+                    (c.ch.farms_points() && !taken && !c.ch.balance_reached(), c.live.is_some(), c.cooling(now))
                 })
                 .collect();
             select_watched(&candidates, MAX_WATCHED - usize::from(drop_login.is_some()))
@@ -1028,9 +1028,11 @@ impl Miner {
                 se_giveaway: c.se_giveaway.clone(),
                 se_my_tickets: c.se_my_tickets,
                 se_refresh: c.ch.se_refresh,
+                max_balance: c.ch.max_balance,
                 se_poll_minutes: se_poll_every(c).as_secs() / 60,
                 state: match (c.ch.farms_points(), c.live_checked.is_some(), c.live.is_some(), c.watching) {
                     (false, ..) => ChannelState::Disabled,
+                    _ if c.ch.balance_reached() && !c.watching => ChannelState::BalanceReached,
                     (_, _, _, true) => ChannelState::Watching,
                     (_, _, true, false) => ChannelState::Waiting,
                     (_, true, false, _) => ChannelState::Offline,

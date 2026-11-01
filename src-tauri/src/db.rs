@@ -197,6 +197,18 @@ const MIGRATIONS: &[&str] = &[r#"
         PRIMARY KEY (collection, id)
     );
     CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+"#, r#"
+    -- Fil d'événements du tableau de bord, gardé d'un lancement à l'autre
+    CREATE TABLE events (
+        id INTEGER PRIMARY KEY,
+        at TEXT NOT NULL,
+        account TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        message TEXT NOT NULL
+    );
+"#, r#"
+    -- Points de chaîne : solde à atteindre, puis place à la chaîne suivante
+    ALTER TABLE channels ADD COLUMN max_balance INTEGER;
 "#];
 
 /// Types de giveaway
@@ -405,9 +417,16 @@ pub struct Channel {
     pub in_se: bool,
     /// Relevé du solde StreamElements en minutes (None : automatique)
     pub se_refresh: Option<i64>,
+    /// Solde de points de chaîne à atteindre : au-delà, la chaîne n'est plus regardée
+    pub max_balance: Option<i64>,
 }
 
 impl Channel {
+    /// Solde voulu atteint : la place revient à la chaîne suivante
+    pub fn balance_reached(&self) -> bool {
+        self.max_balance.is_some_and(|max| self.balance.is_some_and(|b| b >= max))
+    }
+
     /// Temps de visionnage à simuler (liste Points, récolte activée)
     pub fn farms_points(&self) -> bool {
         self.in_points && self.enabled
@@ -639,7 +658,7 @@ impl Db {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, account_id, login, channel_id, position, enabled, auto_claim, balance,
-                    chat_presence, se_channel_id, se_points, in_points, in_se, se_refresh
+                    chat_presence, se_channel_id, se_points, in_points, in_se, se_refresh, max_balance
              FROM channels WHERE account_id = ?1 ORDER BY position, id",
         )?;
         let rows = stmt.query_map([account_id], |r| {
@@ -658,6 +677,7 @@ impl Db {
                 in_points: r.get(11)?,
                 in_se: r.get(12)?,
                 se_refresh: r.get(13)?,
+                max_balance: r.get(14)?,
             })
         })?;
         rows.collect()
@@ -716,6 +736,11 @@ impl Db {
             "UPDATE channels SET enabled = ?2, auto_claim = ?3, chat_presence = ?4 WHERE id = ?1",
             params![id, enabled, auto_claim, chat_presence],
         )?;
+        Ok(())
+    }
+
+    pub fn set_max_balance(&self, id: i64, max: Option<i64>) -> DbResult<()> {
+        self.conn().execute("UPDATE channels SET max_balance = ?2 WHERE id = ?1", params![id, max])?;
         Ok(())
     }
 
@@ -1169,6 +1194,36 @@ impl Db {
 
     // --- Réglages ---
 
+    // --- Fil d'événements ---
+
+    /// Ajoute un événement et ne garde que les `keep` plus récents
+    pub fn add_event(&self, e: &crate::app::LogEvent, keep: usize) -> DbResult<()> {
+        let kind = serde_json::to_value(e.kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO events (at, account, kind, message) VALUES (?1, ?2, ?3, ?4)",
+            params![e.at, e.account, kind, e.message],
+        )?;
+        conn.execute("DELETE FROM events WHERE id <= ?1 - ?2", params![conn.last_insert_rowid(), keep as i64])?;
+        Ok(())
+    }
+
+    /// Événements les plus récents d'abord
+    pub fn recent_events(&self, limit: usize) -> DbResult<Vec<crate::app::LogEvent>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT at, account, kind, message FROM events ORDER BY id DESC LIMIT ?1")?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            let kind: String = r.get(2)?;
+            Ok(crate::app::LogEvent {
+                at: r.get(0)?,
+                account: r.get(1)?,
+                kind: serde_json::from_value(serde_json::Value::String(kind)).unwrap_or(crate::app::EventKind::Info),
+                message: r.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     pub fn settings(&self) -> Settings {
         self.conn()
             .query_row("SELECT value FROM settings WHERE key = 'app'", [], |r| r.get::<_, String>(0))
@@ -1383,6 +1438,23 @@ mod tests {
 
         db.remove_channel(ch.id, ChannelList::Se).unwrap();
         assert!(db.channels(a).unwrap().is_empty());
+    }
+
+    #[test]
+    fn events_survive_restart_and_are_capped() {
+        let db = Db::memory().unwrap();
+        for i in 0..5 {
+            let e = crate::app::LogEvent {
+                at: format!("2026-11-01T10:0{i}:00Z"),
+                account: "powange".into(),
+                kind: crate::app::EventKind::Gain,
+                message: format!("+{i}"),
+            };
+            db.add_event(&e, 3).unwrap();
+        }
+        let events = db.recent_events(10).unwrap();
+        assert_eq!(events.iter().map(|e| e.message.as_str()).collect::<Vec<_>>(), vec!["+4", "+3", "+2"]);
+        assert!(matches!(events[0].kind, crate::app::EventKind::Gain));
     }
 
     #[test]

@@ -7,9 +7,19 @@ import { CHANNEL_STATE, formatNumber } from '../utils/format'
 import type { ChannelView } from '../types'
 import ChannelFlag from '../components/ChannelFlag.vue'
 import AccountPicker from '../components/AccountPicker.vue'
+import PointsChannelSettings from '../components/PointsChannelSettings.vue'
 
 const openExternal = useOpenExternal()
 const { accounts, account, channels, newLogin, adding, addChannel, setOptions, toRemove, confirmRemove } = useChannelList('points')
+
+// Réglages d'une chaîne (solde maximum…) : la vue à jour est relue par son identifiant
+const settingsId = ref<number | null>(null)
+const settingsOpen = ref(false)
+const settingsChannel = computed(() => channels.value.find(c => c.id === settingsId.value) ?? null)
+function openSettings(channel: ChannelView) {
+  settingsId.value = channel.id
+  settingsOpen.value = true
+}
 
 // L'ordre ne concerne que cette liste : c'est lui qui décide des 2 chaînes regardées.
 // Glisser-déposer par la poignée : la ligne n'est déplaçable que pendant qu'on la tient,
@@ -133,6 +143,7 @@ function endDrag() {
               <th class="text-left px-3 py-2">Chaîne</th>
               <th class="text-left px-3 py-2">État</th>
               <th class="text-right px-3 py-2">Solde</th>
+              <th class="text-right px-3 py-2 whitespace-nowrap">Solde max</th>
               <th class="text-right px-3 py-2">Aujourd'hui</th>
               <th class="text-center px-3 py-2">Récolte</th>
               <th class="text-center px-3 py-2 whitespace-nowrap">Bonus auto</th>
@@ -184,6 +195,10 @@ function endDrag() {
                 </UTooltip>
               </td>
               <td class="px-3 py-2 text-right">{{ formatNumber(channel.balance) }}</td>
+              <td class="px-3 py-2 text-right whitespace-nowrap">
+                <span v-if="channel.maxBalance" :class="channel.state === 'balanceReached' ? 'text-info' : ''">{{ formatNumber(channel.maxBalance) }}</span>
+                <span v-else class="text-muted">—</span>
+              </td>
               <td class="px-3 py-2 text-right" :class="channel.earnedToday > 0 ? 'text-success' : 'text-muted'">
                 {{ channel.earnedToday > 0 ? '+' : '' }}{{ formatNumber(channel.earnedToday) }}
               </td>
@@ -198,16 +213,21 @@ function endDrag() {
                 </div>
               </td>
               <td class="px-3 py-2 text-right">
-                <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Retirer de la liste" @click="toRemove = channel" />
+                <div class="flex justify-end gap-1">
+                  <UButton icon="i-lucide-settings-2" size="xs" variant="ghost" color="neutral" :aria-label="`Réglages de ${channel.login}`" title="Réglages de la chaîne" @click="openSettings(channel)" />
+                  <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Retirer de la liste" @click="toRemove = channel" />
+                </div>
               </td>
             </tr>
             <tr v-if="channels.length === 0">
-              <td colspan="8" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
+              <td colspan="9" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
             </tr>
           </tbody>
         </table>
       </div>
     </template>
+
+    <PointsChannelSettings v-model:open="settingsOpen" :channel="settingsChannel" />
 
     <UModal :open="toRemove !== null" title="Retirer la chaîne ?" @update:open="v => { if (!v) toRemove = null }">
       <template #body>
