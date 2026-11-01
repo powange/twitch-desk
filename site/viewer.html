@@ -67,6 +67,8 @@
     <span class="sep"></span>
     <button id="low-quality" title="Qualité la plus basse sur tous les streams">Qualité minimale</button>
     <button id="auto-quality" title="Qualité automatique sur tous les streams">Qualité auto</button>
+    <span class="sep"></span>
+    <button id="pause-others" title="Quand un stream est mis en avant (★), mettre les autres en pause">Pause des autres à la mise en avant</button>
     <span class="hint" id="hint"></span>
   </div>
   <div id="grid"></div>
@@ -221,11 +223,20 @@
         featured = featured === channel ? null : channel
         refreshStars()
         layout()
+        applyPause()
         saveState()
       })
       close.addEventListener('click', () => removeChannel(channel))
 
       tiles.set(channel, { el, player, star })
+      // Ajouté pendant une mise en avant avec l'option : en pause dès qu'il démarre
+      // (une seule fois : un stream relancé à la main n'est pas remis en pause)
+      let started = false
+      player.addEventListener(Twitch.Player.PLAYING, () => {
+        if (started) return
+        started = true
+        if (pauseOthers && featured !== null && channel !== featured) player.pause()
+      })
     }
 
     function refreshStars() {
@@ -259,7 +270,10 @@
       channels = channels.filter(c => c !== channel)
       chats.delete(channel)
       noVideo.delete(channel)
-      if (featured === channel) featured = null
+      if (featured === channel) {
+        featured = null
+        applyPause()
+      }
       showEmpty()
       layout()
       saveState()
@@ -288,6 +302,25 @@
       for (const p of players()) p.setQuality('auto')
     })
 
+    // --- Pause des autres streams quand l'un est mis en avant (option retenue) ---
+    const PAUSE_KEY = 'viewer-pause-others'
+    let pauseOthers = false
+    try { pauseOthers = localStorage.getItem(PAUSE_KEY) === '1' } catch { /* stockage indisponible */ }
+    const pauseButton = document.getElementById('pause-others')
+    function applyPause() {
+      pauseButton.classList.toggle('on', pauseOthers)
+      for (const [c, t] of tiles) {
+        const paused = pauseOthers && featured !== null && c !== featured
+        if (paused) t.player.pause()
+        else if (t.player.isPaused()) t.player.play()
+      }
+    }
+    pauseButton.addEventListener('click', () => {
+      pauseOthers = !pauseOthers
+      try { localStorage.setItem(PAUSE_KEY, pauseOthers ? '1' : '0') } catch { /* pas grave */ }
+      applyPause()
+    })
+
     // Twitch Desk ajoute un stream sans recharger les autres
     window.twitchDeskAdd = addChannel
 
@@ -295,6 +328,7 @@
     for (const c of channels) createTile(c)
     if (featured && !channels.includes(featured)) featured = null
     refreshStars()
+    pauseButton.classList.toggle('on', pauseOthers)
     showEmpty()
     layout()
     saveState()
