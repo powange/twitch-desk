@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
 import { useWatchStream } from '../../utils/viewer'
-import { channelUrl, timeAgo } from '../../utils/format'
+import { channelUrl, formatNumber, timeAgo } from '../../utils/format'
 import type { GiveawayView, ParticipationResult } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayConditions from '../../components/GiveawayConditions.vue'
@@ -20,6 +20,8 @@ const watchStream = useWatchStream()
 
 const view = computed(() => snapshot.value?.giveaways)
 const giveaways = computed(() => view.value?.giveaways ?? [])
+// Live en cours d'une chaîne surveillée (catégorie, spectateurs)
+const liveOf = (channel: string) => view.value?.channels.find(c => c.login === channel)?.live ?? null
 
 // --- Follow requis : nos comptes suivent-ils la chaîne ? (relu à l'ouverture de la page) ---
 interface FollowState { accountId: number, login: string, follows: boolean | null, followedAt: string | null }
@@ -227,6 +229,10 @@ function share(g: GiveawayView) {
             <ChannelFlag :login="g.channel" class="inline-block align-middle mx-0.5" />
             <button class="hover:underline" @click="openExternal(channelUrl(g.channel))">{{ g.channel }}</button>
           </span>
+          <span v-if="liveOf(g.channel)" class="inline-flex items-center gap-1.5 text-xs text-muted">
+            {{ liveOf(g.channel)?.gameName ?? 'Sans catégorie' }}
+            <span class="inline-flex items-center gap-0.5 text-error"><UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(liveOf(g.channel)?.viewers ?? 0) }}</span>
+          </span>
           <UBadge :label="GIVEAWAY_KIND[g.kind].label" :color="GIVEAWAY_KIND[g.kind].color" variant="subtle" size="sm" />
           <UTooltip v-if="g.command" text="Copier la commande">
             <button type="button" class="font-mono bg-elevated px-1.5 py-0.5 rounded hover:text-primary" @click="copyCommand(g.command)">{{ g.command }}</button>
@@ -366,6 +372,12 @@ function share(g: GiveawayView) {
                 <div class="flex items-center gap-1.5">
                   <ChannelFlag :login="g.channel" />
                   <button class="font-medium hover:underline" @click="openExternal(channelUrl(g.channel))">{{ g.channel }}</button>
+                </div>
+                <div v-if="liveOf(g.channel)" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
+                  <span class="truncate max-w-[220px]" :title="liveOf(g.channel)?.gameName ?? 'Sans catégorie'">{{ liveOf(g.channel)?.gameName ?? 'Sans catégorie' }}</span>
+                  <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(liveOf(g.channel)?.viewers ?? 0)} spectateurs`">
+                    <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(liveOf(g.channel)?.viewers ?? 0) }}
+                  </span>
                 </div>
               </td>
               <td class="px-3 py-2">

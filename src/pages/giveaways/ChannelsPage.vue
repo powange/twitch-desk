@@ -241,8 +241,6 @@ async function confirmRemove() {
           <tr>
             <th class="text-left px-3 py-2">Chaîne</th>
             <th class="text-left px-3 py-2">État</th>
-            <th class="text-left px-3 py-2">Catégorie</th>
-            <th class="text-right px-3 py-2">Spectateurs</th>
             <th class="text-left px-3 py-2">Titre du live</th>
             <th class="text-left px-3 py-2">Giveaway</th>
             <th class="text-left px-3 py-2">Cadeaux</th>
@@ -262,22 +260,17 @@ async function confirmRemove() {
                 <ChannelFlag :login="c.login" />
                 <button class="font-medium hover:underline" @click="openExternal(channelUrl(c.login))">{{ c.login }}</button>
               </div>
+              <div v-if="c.live" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
+                <span class="truncate max-w-[220px]" :title="c.live.gameName ?? 'Sans catégorie'">{{ c.live.gameName ?? 'Sans catégorie' }}</span>
+                <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(c.live.viewers)} spectateurs`">
+                  <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(c.live.viewers) }}
+                </span>
+              </div>
             </td>
             <td class="px-3 py-2">
               <UTooltip :text="status(c).hint" :disabled="!status(c).hint">
                 <UBadge :label="status(c).label" :color="status(c).color" variant="subtle" class="whitespace-nowrap" />
               </UTooltip>
-            </td>
-            <td class="px-3 py-2">
-              <div v-if="c.live" class="flex items-center gap-1.5 whitespace-nowrap">
-                <img v-if="c.live.gameId" :src="boxArt(null, c.live.gameId)" alt="" class="w-4 h-5 rounded-sm object-cover">
-                {{ c.live.gameName ?? 'Sans catégorie' }}
-              </div>
-              <span v-else class="text-muted">—</span>
-            </td>
-            <td class="px-3 py-2 text-right whitespace-nowrap">
-              <span v-if="c.live" class="inline-flex items-center gap-1 text-error"><UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(c.live.viewers) }}</span>
-              <span v-else class="text-muted">—</span>
             </td>
             <td class="px-3 py-2 min-w-64 max-w-md">
               <span v-if="c.live" class="line-clamp-2" :title="c.live.title">{{ c.live.title }}</span>
@@ -354,7 +347,7 @@ async function confirmRemove() {
             </td>
           </tr>
           <tr v-if="channels.length === 0">
-            <td colspan="9" class="px-3 py-8 text-center text-muted">
+            <td colspan="7" class="px-3 py-8 text-center text-muted">
               {{ filtering ? 'Aucune chaîne ne correspond aux filtres.' : 'Aucune chaîne surveillée. Ajoute la première avec le champ ci-dessus.' }}
             </td>
           </tr>
