@@ -107,6 +107,7 @@ pub enum EventKind {
     Offline,
     Raid,
     Drop,
+    Giveaway,
     Info,
     Error,
 }
@@ -128,6 +129,7 @@ pub struct Snapshot {
     pub events: Vec<LogEvent>,
     pub operations_version: u32,
     pub operations_updated: String,
+    pub giveaways: crate::giveaways::GiveawaysView,
 }
 
 struct MinerHandle {
@@ -147,6 +149,7 @@ pub struct App {
     paused: AtomicBool,
     dirty: Notify,
     pub login_task: Mutex<Option<JoinHandle<()>>>,
+    pub giveaways: crate::giveaways::GiveawayHandle,
 }
 
 impl App {
@@ -163,6 +166,7 @@ impl App {
             paused: AtomicBool::new(false),
             dirty: Notify::new(),
             login_task: Mutex::new(None),
+            giveaways: crate::giveaways::GiveawayHandle::default(),
         })
     }
 
@@ -279,6 +283,18 @@ impl App {
             events: self.events.lock().unwrap().iter().cloned().collect(),
             operations_version,
             operations_updated,
+            giveaways: self.giveaways.view(),
+        }
+    }
+
+    /// Notification Windows, si l'utilisateur ne les a pas coupées
+    pub fn notify(&self, title: &str, body: &str) {
+        use tauri_plugin_notification::NotificationExt;
+        if !self.db.settings().notifications {
+            return;
+        }
+        if let Err(e) = self.handle.notification().builder().title(title).body(body).show() {
+            tracing::warn!("notification : {e}");
         }
     }
 

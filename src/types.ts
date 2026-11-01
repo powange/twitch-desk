@@ -2,7 +2,7 @@
 
 export type AccountStatus = 'starting' | 'running' | 'expired' | 'error'
 export type ChannelState = 'watching' | 'waiting' | 'offline' | 'disabled' | 'unknown'
-export type EventKind = 'bonus' | 'gain' | 'live' | 'offline' | 'raid' | 'drop' | 'info' | 'error'
+export type EventKind = 'bonus' | 'gain' | 'live' | 'offline' | 'raid' | 'drop' | 'giveaway' | 'info' | 'error'
 
 export interface StreamInfo {
   broadcastId: string
@@ -71,6 +71,7 @@ export interface Snapshot {
   events: LogEvent[]
   operationsVersion: number
   operationsUpdated: string
+  giveaways: GiveawaysView
 }
 
 export interface DeviceCode {
@@ -91,6 +92,12 @@ export interface Settings {
   closeToTray: boolean
   startMinimized: boolean
   autoUpdate: boolean
+  notifications: boolean
+  autoParticipate: boolean
+  autoDelayMin: number
+  autoDelayMax: number
+  // Comptes qui participent automatiquement (vide : tous)
+  autoAccounts: number[]
 }
 
 export type ChannelList = 'points' | 'se'
@@ -177,4 +184,60 @@ export interface DropsView {
   target: { gameName: string, login: string, viewers: number, title: string } | null
   inventoryAt: string | null
   error: string | null
+}
+
+// --- Giveaways ---
+
+export interface GiveawayEvidence {
+  count: number
+  window: number
+  users: string[]
+}
+
+export interface GiveawayView {
+  id: number
+  channel: string
+  kind: 'command' | 'streamelements'
+  command: string | null
+  url: string | null
+  detectedAt: string
+  open: boolean
+  handled: boolean
+  winner: string | null
+  winnerChance: string | null
+  drawnAt: string | null
+  evidence: GiveawayEvidence | null
+  entriesView: { accountId: number, login: string, at: string, auto: boolean }[]
+  winnerOurs: string | null
+}
+
+export interface MentionView {
+  id: number
+  at: string
+  channel: string
+  account: string
+  author: string
+  message: string
+}
+
+export interface GiveawayChannelView {
+  id: number
+  login: string
+  excluded: string[]
+  // Qui lit ce chat : « anonyme », le pseudo d'un compte, ou null (pas encore rejoint)
+  reader: string | null
+}
+
+export interface GiveawaysView {
+  channels: GiveawayChannelView[]
+  giveaways: GiveawayView[]
+  mentions: MentionView[]
+  anonymousConnected: boolean
+}
+
+export interface ParticipationResult {
+  accountId: number
+  login: string
+  ok: boolean
+  message: string
 }

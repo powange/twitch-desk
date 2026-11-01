@@ -77,6 +77,37 @@ const MIGRATIONS: &[&str] = &[r#"
 "#, r#"
     -- Jaquette de la catégorie Twitch
     ALTER TABLE drop_games ADD COLUMN box_art TEXT;
+"#, r#"
+    -- Giveaways : chaînes surveillées (liste globale), giveaways détectés, participations
+    CREATE TABLE giveaway_channels (
+        id INTEGER PRIMARY KEY,
+        login TEXT NOT NULL UNIQUE,
+        channel_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        excluded TEXT NOT NULL DEFAULT '[]'
+    );
+    CREATE TABLE giveaways (
+        id INTEGER PRIMARY KEY,
+        channel TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        command TEXT,
+        url TEXT,
+        evidence TEXT,
+        detected_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        handled INTEGER NOT NULL DEFAULT 0,
+        winner TEXT,
+        winner_chance TEXT,
+        drawn_at TEXT
+    );
+    CREATE INDEX giveaways_channel ON giveaways (channel, status);
+    CREATE TABLE giveaway_entries (
+        giveaway_id INTEGER NOT NULL REFERENCES giveaways(id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        at TEXT NOT NULL,
+        auto INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (giveaway_id, account_id)
+    );
 "#];
 
 /// Liste d'une chaîne : une page de l'interface
@@ -109,6 +140,55 @@ pub struct Account {
     pub device_id: String,
     pub points_enabled: bool,
     pub drops_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GiveawayChannel {
+    pub id: i64,
+    pub login: String,
+    pub channel_id: String,
+    /// Commandes ignorées par la détection sur cette chaîne
+    pub excluded: Vec<String>,
+}
+
+pub struct NewGiveaway {
+    pub channel: String,
+    /// « command » (détecté dans le chat) ou « streamelements » (lien du bot)
+    pub kind: String,
+    pub command: Option<String>,
+    pub url: Option<String>,
+    pub evidence: Option<String>,
+    pub detected_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GiveawayEntry {
+    pub account_id: i64,
+    pub at: String,
+    pub auto: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GiveawayRow {
+    pub id: i64,
+    pub channel: String,
+    pub kind: String,
+    pub command: Option<String>,
+    pub url: Option<String>,
+    /// Ce qui a déclenché l'alerte (JSON)
+    #[serde(skip)]
+    pub evidence: Option<String>,
+    pub detected_at: String,
+    pub open: bool,
+    /// Participé ou ignoré : sort de la file d'alertes
+    pub handled: bool,
+    pub winner: Option<String>,
+    pub winner_chance: Option<String>,
+    pub drawn_at: Option<String>,
+    pub entries: Vec<GiveawayEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -163,11 +243,29 @@ pub struct Settings {
     pub start_minimized: bool,
     /// Chercher et proposer les mises à jour automatiquement
     pub auto_update: bool,
+    /// Notifications Windows (giveaway détecté, mention, victoire)
+    pub notifications: bool,
+    /// Participation automatique aux giveaways détectés (désactivée par défaut)
+    pub auto_participate: bool,
+    /// Délai aléatoire avant la participation automatique, en secondes
+    pub auto_delay_min: u64,
+    pub auto_delay_max: u64,
+    /// Comptes qui participent automatiquement (vide : tous)
+    pub auto_accounts: Vec<i64>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { close_to_tray: true, start_minimized: false, auto_update: true }
+        Self {
+            close_to_tray: true,
+            start_minimized: false,
+            auto_update: true,
+            notifications: true,
+            auto_participate: false,
+            auto_delay_min: 8,
+            auto_delay_max: 45,
+            auto_accounts: vec![],
+        }
     }
 }
 
@@ -472,6 +570,131 @@ impl Db {
         rows.collect()
     }
 
+    // --- Giveaways ---
+
+    pub fn giveaway_channels(&self) -> DbResult<Vec<GiveawayChannel>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT id, login, channel_id, excluded FROM giveaway_channels ORDER BY position, id")?;
+        let rows = stmt.query_map([], |r| {
+            let excluded: String = r.get(3)?;
+            Ok(GiveawayChannel {
+                id: r.get(0)?,
+                login: r.get(1)?,
+                channel_id: r.get(2)?,
+                excluded: serde_json::from_str(&excluded).unwrap_or_default(),
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn add_giveaway_channel(&self, login: &str, channel_id: &str) -> DbResult<()> {
+        let conn = self.conn();
+        let next: i64 =
+            conn.query_row("SELECT COALESCE(MAX(position), -1) + 1 FROM giveaway_channels", [], |r| r.get(0))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO giveaway_channels (login, channel_id, position) VALUES (?1, ?2, ?3)",
+            params![login, channel_id, next],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_giveaway_channel(&self, id: i64) -> DbResult<()> {
+        self.conn().execute("DELETE FROM giveaway_channels WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn set_giveaway_excluded(&self, id: i64, excluded: &[String]) -> DbResult<()> {
+        let value = serde_json::to_string(excluded).expect("liste sérialisable");
+        self.conn().execute("UPDATE giveaway_channels SET excluded = ?2 WHERE id = ?1", params![id, value])?;
+        Ok(())
+    }
+
+    pub fn insert_giveaway(&self, g: &NewGiveaway) -> DbResult<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO giveaways (channel, kind, command, url, evidence, detected_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![g.channel, g.kind, g.command, g.url, g.evidence, g.detected_at],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Giveaways récents (ouverts d'abord), avec leurs participations
+    pub fn giveaways(&self, limit: usize) -> DbResult<Vec<GiveawayRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, channel, kind, command, url, evidence, detected_at, status, handled, winner, winner_chance, drawn_at
+             FROM giveaways ORDER BY status = 'open' DESC, detected_at DESC LIMIT ?1",
+        )?;
+        let mut rows: Vec<GiveawayRow> = stmt
+            .query_map([limit as i64], |r| {
+                Ok(GiveawayRow {
+                    id: r.get(0)?,
+                    channel: r.get(1)?,
+                    kind: r.get(2)?,
+                    command: r.get(3)?,
+                    url: r.get(4)?,
+                    evidence: r.get(5)?,
+                    detected_at: r.get(6)?,
+                    open: r.get::<_, String>(7)? == "open",
+                    handled: r.get(8)?,
+                    winner: r.get(9)?,
+                    winner_chance: r.get(10)?,
+                    drawn_at: r.get(11)?,
+                    entries: vec![],
+                })
+            })?
+            .collect::<DbResult<_>>()?;
+        let mut stmt = conn.prepare("SELECT account_id, at, auto FROM giveaway_entries WHERE giveaway_id = ?1 ORDER BY at")?;
+        for g in &mut rows {
+            g.entries = stmt
+                .query_map([g.id], |r| Ok(GiveawayEntry { account_id: r.get(0)?, at: r.get(1)?, auto: r.get(2)? }))?
+                .collect::<DbResult<_>>()?;
+        }
+        Ok(rows)
+    }
+
+    pub fn giveaway(&self, id: i64) -> DbResult<Option<GiveawayRow>> {
+        Ok(self.giveaways(500)?.into_iter().find(|g| g.id == id))
+    }
+
+    pub fn add_giveaway_entry(&self, giveaway_id: i64, account_id: i64, at: &str, auto: bool) -> DbResult<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO giveaway_entries (giveaway_id, account_id, at, auto) VALUES (?1, ?2, ?3, ?4)",
+            params![giveaway_id, account_id, at, auto],
+        )?;
+        conn.execute("UPDATE giveaways SET handled = 1 WHERE id = ?1", [giveaway_id])?;
+        Ok(())
+    }
+
+    pub fn set_giveaway_handled(&self, id: i64) -> DbResult<()> {
+        self.conn().execute("UPDATE giveaways SET handled = 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn close_giveaway(&self, id: i64) -> DbResult<()> {
+        self.conn().execute("UPDATE giveaways SET status = 'closed', handled = 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn set_giveaway_winner(&self, id: i64, winner: &str, chance: Option<&str>, at: &str) -> DbResult<()> {
+        self.conn().execute(
+            "UPDATE giveaways SET winner = ?2, winner_chance = ?3, drawn_at = ?4, status = 'closed' WHERE id = ?1",
+            params![id, winner, chance, at],
+        )?;
+        Ok(())
+    }
+
+    /// Clôt les giveaways ouverts détectés avant `before` (date RFC 3339)
+    pub fn close_giveaways_before(&self, before: &str) -> DbResult<usize> {
+        self.conn().execute("UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND detected_at < ?1", [before])
+    }
+
+    pub fn delete_giveaway(&self, id: i64) -> DbResult<()> {
+        self.conn().execute("DELETE FROM giveaways WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     // --- Réglages ---
 
     pub fn settings(&self) -> Settings {
@@ -530,6 +753,41 @@ mod tests {
 
         db.delete_account(a).unwrap();
         assert!(db.channels(a).unwrap().is_empty());
+    }
+
+    #[test]
+    fn giveaways() {
+        let db = Db::memory().unwrap();
+        let a = db.upsert_account("33", "powange", "dev").unwrap();
+        db.add_giveaway_channel("lunarsea", "11").unwrap();
+        db.add_giveaway_channel("lunarsea", "11").unwrap();
+        let ch = db.giveaway_channels().unwrap();
+        assert_eq!(ch.len(), 1);
+        db.set_giveaway_excluded(ch[0].id, &["!points".into()]).unwrap();
+        assert_eq!(db.giveaway_channels().unwrap()[0].excluded, vec!["!points"]);
+
+        let new = |at: &str| NewGiveaway {
+            channel: "lunarsea".into(),
+            kind: "command".into(),
+            command: Some("!coffre".into()),
+            url: None,
+            evidence: None,
+            detected_at: at.into(),
+        };
+        let old = db.insert_giveaway(&new("2026-10-30T10:00:00Z")).unwrap();
+        let g = db.insert_giveaway(&new("2026-11-01T10:00:00Z")).unwrap();
+        db.add_giveaway_entry(g, a, "2026-11-01T10:00:30Z", true).unwrap();
+        db.add_giveaway_entry(g, a, "2026-11-01T10:00:40Z", false).unwrap(); // une seule participation par compte
+        let row = db.giveaway(g).unwrap().unwrap();
+        assert!(row.handled && row.open);
+        assert_eq!(row.entries.len(), 1);
+        assert!(row.entries[0].auto);
+
+        assert_eq!(db.close_giveaways_before("2026-11-01T00:00:00Z").unwrap(), 1);
+        assert!(!db.giveaway(old).unwrap().unwrap().open);
+        db.set_giveaway_winner(g, "powange", Some("3%"), "2026-11-01T11:00:00Z").unwrap();
+        let row = db.giveaway(g).unwrap().unwrap();
+        assert_eq!((row.winner.as_deref(), row.open), (Some("powange"), false));
     }
 
     #[test]

@@ -35,6 +35,16 @@ export const EVENT_KIND: Record<EventKind, { icon: string, color: string }> = {
   offline: { icon: 'i-lucide-moon', color: 'text-muted' },
   raid: { icon: 'i-lucide-swords', color: 'text-warning' },
   drop: { icon: 'i-lucide-package-open', color: 'text-primary' },
+  giveaway: { icon: 'i-lucide-gift', color: 'text-primary' },
   info: { icon: 'i-lucide-info', color: 'text-info' },
   error: { icon: 'i-lucide-triangle-alert', color: 'text-error' }
+}
+
+// « il y a 3 min », « il y a 2 h », sinon la date
+export function timeAgo(iso: string, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000))
+  if (s < 60) return 'à l\'instant'
+  if (s < 3600) return `il y a ${Math.floor(s / 60)} min`
+  if (s < 86400) return `il y a ${Math.floor(s / 3600)} h`
+  return new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }

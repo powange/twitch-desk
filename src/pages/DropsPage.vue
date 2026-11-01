@@ -208,7 +208,8 @@ async function setDropsEnabled(enabled: boolean) {
         <span class="flex-1 min-w-0 truncate">
           <b>{{ drops.target.gameName }}</b> : visionnage de
           <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${drops.target.login}`)">{{ drops.target.login }}</button>
-          <span class="text-muted"> · {{ formatNumber(drops.target.viewers) }} spectateurs · {{ drops.target.title }}</span>
+          <span class="inline-flex items-center gap-0.5 text-error ml-1.5 align-middle" :title="`${formatNumber(drops.target.viewers)} spectateurs`"><UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(drops.target.viewers) }}</span>
+          <span class="text-muted"> · {{ drops.target.title }}</span>
         </span>
       </div>
 

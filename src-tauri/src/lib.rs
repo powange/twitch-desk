@@ -2,6 +2,7 @@ mod app;
 mod commands;
 mod db;
 mod drops;
+mod giveaways;
 mod miner;
 mod secrets;
 mod streamelements;
@@ -70,6 +71,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let log_dir = data_dir.join("logs");
@@ -98,6 +100,7 @@ pub fn run() {
             let starter = state.clone();
             tauri::async_runtime::spawn(async move {
                 refresh_operations(http, cache).await;
+                starter.giveaways.start(starter.clone());
                 starter.start_all();
             });
             state.spawn_emitter();
@@ -142,6 +145,15 @@ pub fn run() {
             commands::set_drop_game_enabled,
             commands::reorder_drop_games,
             commands::refresh_drops,
+            commands::add_giveaway_channel,
+            commands::import_giveaway_channels,
+            commands::remove_giveaway_channel,
+            commands::set_giveaway_excluded,
+            commands::participate_giveaway,
+            commands::dismiss_giveaway,
+            commands::close_giveaway,
+            commands::delete_giveaway,
+            commands::dismiss_mention,
         ])
         .run(tauri::generate_context!())
         .expect("démarrage de Twitch Desk");

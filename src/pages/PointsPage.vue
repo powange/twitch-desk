@@ -162,8 +162,11 @@ function endDrag() {
               </td>
               <td class="px-3 py-2 min-w-0">
                 <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
-                <div v-if="channel.live" class="text-xs text-muted truncate max-w-[320px]">
-                  {{ channel.live.gameName ?? 'Sans catégorie' }} · {{ formatNumber(channel.live.viewers) }} spectateurs
+                <div v-if="channel.live" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
+                  <span class="truncate max-w-[320px]" :title="channel.live.gameName ?? 'Sans catégorie'">{{ channel.live.gameName ?? 'Sans catégorie' }}</span>
+                  <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(channel.live.viewers)} spectateurs`">
+                    <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(channel.live.viewers) }}
+                  </span>
                 </div>
                 <div v-if="channel.error" class="text-xs text-error truncate max-w-[320px]" :title="channel.error">{{ channel.error }}</div>
               </td>

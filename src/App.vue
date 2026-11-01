@@ -8,7 +8,7 @@ import { useUpdater } from './composables/useUpdater'
 import type { Settings } from './types'
 import UpdateBanner from './components/UpdateBanner.vue'
 
-const { accounts, paused } = useSnapshot()
+const { snapshot, accounts, paused } = useSnapshot()
 const updater = useUpdater()
 const version = ref('')
 
@@ -17,9 +17,15 @@ const liveCount = computed(() => accounts.value.flatMap(a => a.channels).filter(
 const watchingCount = computed(() => accounts.value.flatMap(a => a.channels).filter(c => c.state === 'watching').length)
 const inChatCount = computed(() => accounts.value.flatMap(a => a.channels).filter(c => c.inChat).length)
 const dropsCount = computed(() => accounts.value.filter(a => a.drops.target).length)
+// Alertes en attente : giveaways ouverts non traités et mentions
+const alertCount = computed(() => {
+  const g = snapshot.value?.giveaways
+  return g ? g.giveaways.filter(x => x.open && !x.handled).length + g.mentions.length : 0
+})
 
 const items = computed<NavigationMenuItem[]>(() => [
   { label: 'Tableau de bord', icon: 'i-lucide-layout-dashboard', to: '/' },
+  { label: 'Giveaways', icon: 'i-lucide-gift', to: '/giveaways', badge: alertCount.value ? { label: String(alertCount.value), color: 'primary' } : undefined },
   { label: 'Points de chaîne', icon: 'i-lucide-coins', to: '/points', badge: watchingCount.value || undefined },
   { label: 'Drops', icon: 'i-lucide-package-open', to: '/drops', badge: dropsCount.value || undefined },
   { label: 'StreamElements', icon: 'i-lucide-ticket', to: '/streamelements', badge: inChatCount.value || undefined },

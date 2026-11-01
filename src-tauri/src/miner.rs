@@ -469,12 +469,9 @@ impl Miner {
         }
         let Some(tokens) = &self.tokens else { return };
         let (tx, rx) = mpsc::channel(64);
-        let task = chat::run(
-            self.account.login.clone(),
-            tokens.access_token.clone(),
-            self.chat_wanted.subscribe(),
-            tx,
-        );
+        let auth = chat::ChatAuth::Account { login: self.account.login.clone(), token: tokens.access_token.clone() };
+        let tap = Some((self.account.id, self.app.giveaways.tap()));
+        let task = chat::run(auth, self.chat_wanted.subscribe(), tx, tap);
         self.chat_task = Some(tokio::spawn(task));
         self.chat_rx = Some(rx);
     }

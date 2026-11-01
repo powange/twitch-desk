@@ -9,6 +9,7 @@ use tauri::{Emitter, State};
 
 use crate::app::{App, EventKind, Snapshot};
 use crate::db::{ChannelList, Settings};
+use crate::giveaways::MonitorCmd;
 use crate::miner::MinerCommand;
 use crate::secrets::Secrets;
 use crate::streamelements::{self, SeError};
@@ -228,7 +229,9 @@ pub fn get_settings(app: AppState) -> Settings {
 
 #[tauri::command]
 pub fn save_settings(app: AppState, settings: Settings) -> CmdResult<()> {
-    app.db.save_settings(&settings).map_err(db_err)
+    app.db.save_settings(&settings).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -313,6 +316,88 @@ pub fn reorder_drop_games(app: AppState, account_id: i64, ids: Vec<i64>) -> CmdR
     app.db.reorder_drop_games(account_id, &ids).map_err(db_err)?;
     app.send(account_id, MinerCommand::Reload);
     Ok(())
+}
+
+// --- Giveaways ---
+
+/// Ajoute une chaîne à surveiller ; renvoie son login
+#[tauri::command]
+pub async fn add_giveaway_channel(app: AppState<'_>, login: String) -> CmdResult<String> {
+    let login = normalize_login(&login).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    // N'importe quel compte connecté sert à vérifier que la chaîne existe
+    let account = app.db.accounts().map_err(db_err)?.into_iter().next().ok_or("Connecte d'abord un compte Twitch")?;
+    let tokens = app.secrets.load(&account.user_id).ok_or("Reconnecte ton compte Twitch")?;
+    let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id));
+    let channel_id = gql
+        .channel_id(&login)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("La chaîne « {login} » n'existe pas"))?;
+    app.db.add_giveaway_channel(&login, &channel_id).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(login)
+}
+
+/// Ajoute d'un coup les chaînes des listes Points de chaîne et StreamElements ; renvoie le nombre ajouté
+#[tauri::command]
+pub fn import_giveaway_channels(app: AppState) -> CmdResult<usize> {
+    let existing: Vec<String> = app.db.giveaway_channels().map_err(db_err)?.into_iter().map(|c| c.login).collect();
+    let mut added = 0;
+    for account in app.db.accounts().map_err(db_err)? {
+        for ch in app.db.channels(account.id).map_err(db_err)? {
+            if !existing.contains(&ch.login) {
+                app.db.add_giveaway_channel(&ch.login, &ch.channel_id).map_err(db_err)?;
+                added += 1;
+            }
+        }
+    }
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(added)
+}
+
+#[tauri::command]
+pub fn remove_giveaway_channel(app: AppState, id: i64) -> CmdResult<()> {
+    app.db.remove_giveaway_channel(id).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_giveaway_excluded(app: AppState, id: i64, excluded: Vec<String>) -> CmdResult<Vec<String>> {
+    let list = crate::giveaways::detect::normalize_excluded(&excluded);
+    app.db.set_giveaway_excluded(id, &list).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    Ok(list)
+}
+
+#[tauri::command]
+pub async fn participate_giveaway(
+    app: AppState<'_>,
+    giveaway_id: i64,
+    account_ids: Vec<i64>,
+) -> CmdResult<Vec<crate::giveaways::ParticipationResult>> {
+    let app: Arc<App> = app.inner().clone();
+    crate::giveaways::participate(&app, giveaway_id, &account_ids, false).await
+}
+
+#[tauri::command]
+pub fn dismiss_giveaway(app: AppState, id: i64) {
+    app.giveaways.send(MonitorCmd::Dismiss(id));
+}
+
+#[tauri::command]
+pub fn close_giveaway(app: AppState, id: i64) {
+    app.giveaways.send(MonitorCmd::Close(id));
+}
+
+#[tauri::command]
+pub fn delete_giveaway(app: AppState, id: i64) {
+    app.giveaways.send(MonitorCmd::Delete(id));
+}
+
+#[tauri::command]
+pub fn dismiss_mention(app: AppState, id: u64) {
+    app.giveaways.send(MonitorCmd::DismissMention(id));
 }
 
 // --- Compte StreamElements (lecture exacte et achat de nos tickets) ---

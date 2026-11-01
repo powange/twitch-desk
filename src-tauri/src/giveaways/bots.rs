@@ -1,0 +1,203 @@
+//! Lecture des messages des bots de giveaway (StreamElements, WizeBot, Nightbot,
+//! PhuzzyBot). Port de `shared/utils/botMessages.ts` du site Giveaway Twitch,
+//! avec ses cas de test. Module pur : il extrait des événements, l'appelant
+//! décide quoi en faire. Seuls les bots de confiance sont lus : un viewer ne
+//! doit pas pouvoir falsifier un gagnant en imitant le format.
+
+use std::sync::LazyLock;
+
+use regex::Regex;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BotEvent {
+    Winner { bot: String, winner: String, chance: Option<String> },
+    /// « @pseudo got N ticket(s)! (N/MAX) » (StreamElements)
+    TicketInfo { pseudo: String, current: i64, max: i64 },
+    /// « @pseudo, [you] successfully bought N ticket(s)! » (StreamElements, PhuzzyBot)
+    TicketPurchase { pseudo: String, count: i64 },
+    /// Lien du giveaway StreamElements posté par le bot
+    StreamElementsUrl(String),
+}
+
+pub const CHAT_BOTS: &[&str] = &["streamelements", "wizebot", "nightbot", "phuzzybot"];
+
+// Faux « gagnants » : « Nobody won… », « Personne a gagné… », « @x, you won… »
+const NON_WINNER_NAMES: &[&str] = &["nobody", "noone", "no", "personne", "someone", "somebody", "you"];
+// Un login Twitch fait au plus 25 caractères
+const MAX_NAME_LENGTH: usize = 25;
+
+fn re(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("expression valide")
+}
+
+static SE_URL: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)https://streamelements\.com/[^/\s]+/giveaway/[a-f0-9]+"));
+static SE_WIN_EN: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+)\s+(?:has\s+)?won the giveaway(?:\s+with\s+([\d.]+%)\s+chance to win)?"));
+static SE_WIN_FR: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+)\s+a gagné le concours(?:\s+avec une chance de\s+([\d.]+%))?"));
+static NO_ONE: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)\bno\s+one\s+(?:has\s+)?won\b"));
+static SE_TICKETS: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+)\s+got\s+\d+\s+ticket\(?s?\)?.*?\((\d+)/(\d+)\)"));
+static WIZEBOT_WIN: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)tombe sur .*?viewers?\s+@?([A-Za-z0-9_]+)"));
+static NIGHTBOT_WIN: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)congratulations,?\s+@?([A-Za-z0-9_]+).*?won the giveaway"));
+static PURCHASE: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+),?\s+(?:you\s+)?successfully bought\s+(\d+)\s+ticket"));
+
+pub fn is_non_winner_name(name: &str) -> bool {
+    NON_WINNER_NAMES.contains(&name.to_lowercase().as_str())
+}
+
+pub fn is_chat_bot(user: &str) -> bool {
+    CHAT_BOTS.contains(&user.to_lowercase().as_str())
+}
+
+fn winner(bot: &str, name: Option<&str>, chance: Option<&str>) -> Option<BotEvent> {
+    let name = name?;
+    if name.len() > MAX_NAME_LENGTH || is_non_winner_name(name) {
+        return None;
+    }
+    Some(BotEvent::Winner { bot: bot.to_owned(), winner: name.to_owned(), chance: chance.map(str::to_owned) })
+}
+
+fn streamelements_winner(message: &str) -> Option<BotEvent> {
+    if NO_ONE.is_match(message) {
+        return None;
+    }
+    // Une annonce est en anglais OU en français : si l'anglais a reconnu un faux
+    // gagnant (« Nobody won… »), inutile de tenter le français
+    let caps = SE_WIN_EN.captures(message).or_else(|| SE_WIN_FR.captures(message))?;
+    winner("streamelements", caps.get(1).map(|m| m.as_str()), caps.get(2).map(|m| m.as_str()))
+}
+
+fn ticket_info(message: &str) -> Option<BotEvent> {
+    let c = SE_TICKETS.captures(message)?;
+    Some(BotEvent::TicketInfo { pseudo: c[1].to_owned(), current: c[2].parse().ok()?, max: c[3].parse().ok()? })
+}
+
+fn ticket_purchase(message: &str) -> Option<BotEvent> {
+    let c = PURCHASE.captures(message)?;
+    let count: i64 = c[2].parse().ok()?;
+    (count > 0).then(|| BotEvent::TicketPurchase { pseudo: c[1].to_owned(), count })
+}
+
+/// Événements reconnus dans le message d'un bot connu (vide sinon)
+pub fn parse_bot_message(user: &str, message: &str) -> Vec<BotEvent> {
+    let bot = user.to_lowercase();
+    let events = match bot.as_str() {
+        "streamelements" => vec![
+            SE_URL.find(message).map(|m| BotEvent::StreamElementsUrl(m.as_str().to_owned())),
+            streamelements_winner(message),
+            ticket_info(message),
+            ticket_purchase(message),
+        ],
+        "wizebot" => vec![WIZEBOT_WIN.captures(message).and_then(|c| winner("wizebot", c.get(1).map(|m| m.as_str()), None))],
+        "nightbot" => vec![NIGHTBOT_WIN.captures(message).and_then(|c| winner("nightbot", c.get(1).map(|m| m.as_str()), None))],
+        "phuzzybot" => vec![ticket_purchase(message)],
+        _ => vec![],
+    };
+    events.into_iter().flatten().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn win(bot: &str, w: &str, chance: Option<&str>) -> BotEvent {
+        BotEvent::Winner { bot: bot.into(), winner: w.into(), chance: chance.map(Into::into) }
+    }
+
+    #[test]
+    fn non_winner_names() {
+        for n in ["Nobody", "NOONE", "personne", "You"] {
+            assert!(is_non_winner_name(n));
+        }
+        for n in ["pseudo", "nobody_x"] {
+            assert!(!is_non_winner_name(n));
+        }
+    }
+
+    #[test]
+    fn streamelements_winners() {
+        assert_eq!(
+            parse_bot_message("StreamElements", "@Pseudo_42 won the giveaway with 3.94% chance to win"),
+            vec![win("streamelements", "Pseudo_42", Some("3.94%"))]
+        );
+        assert_eq!(parse_bot_message("streamelements", "pseudo won the giveaway!"), vec![win("streamelements", "pseudo", None)]);
+        assert_eq!(
+            parse_bot_message("streamelements", "@foo has won the giveaway with 100% chance to win PogChamp"),
+            vec![win("streamelements", "foo", Some("100%"))]
+        );
+        assert_eq!(
+            parse_bot_message("streamelements", "@Gagnant a gagné le concours avec une chance de 0.57%"),
+            vec![win("streamelements", "Gagnant", Some("0.57%"))]
+        );
+        assert_eq!(parse_bot_message("streamelements", "gagnant a gagné le concours"), vec![win("streamelements", "gagnant", None)]);
+    }
+
+    #[test]
+    fn no_winner() {
+        for m in ["Nobody won the giveaway", "No one won the giveaway", "Personne a gagné le concours", "@viewer, you won the giveaway!"] {
+            assert!(parse_bot_message("streamelements", m).is_empty(), "{m}");
+        }
+        assert!(parse_bot_message("streamelements", &format!("{} won the giveaway", "a".repeat(26))).is_empty());
+        assert!(parse_bot_message("nightbot", "Congratulations, nobody! You won the giveaway!").is_empty());
+    }
+
+    #[test]
+    fn streamelements_url_and_tickets() {
+        assert_eq!(
+            parse_bot_message("streamelements", "Join the giveaway here: https://streamelements.com/some_channel/giveaway/65f1a2b3c4d5e6f7a8b9c0d1 !"),
+            vec![BotEvent::StreamElementsUrl("https://streamelements.com/some_channel/giveaway/65f1a2b3c4d5e6f7a8b9c0d1".into())]
+        );
+        assert_eq!(
+            parse_bot_message("streamelements", "@Viewer got 5 tickets! (5/10)"),
+            vec![BotEvent::TicketInfo { pseudo: "Viewer".into(), current: 5, max: 10 }]
+        );
+        assert_eq!(
+            parse_bot_message("streamelements", "viewer got 1 ticket(s)! (1/1)"),
+            vec![BotEvent::TicketInfo { pseudo: "viewer".into(), current: 1, max: 1 }]
+        );
+        assert_eq!(
+            parse_bot_message("streamelements", "@Viewer, you successfully bought 3 tickets!"),
+            vec![BotEvent::TicketPurchase { pseudo: "Viewer".into(), count: 3 }]
+        );
+        assert!(parse_bot_message("streamelements", "Follow the channel to get notified!").is_empty());
+    }
+
+    #[test]
+    fn wizebot_and_nightbot() {
+        assert_eq!(
+            parse_bot_message("WizeBot", "Le tirage au sort tombe sur le/les viewers Pseudo [SUB]."),
+            vec![win("wizebot", "Pseudo", None)]
+        );
+        assert_eq!(parse_bot_message("wizebot", "Le tirage au sort tombe sur le viewer @pseudo !"), vec![win("wizebot", "pseudo", None)]);
+        assert!(parse_bot_message("wizebot", "@foo won the giveaway").is_empty());
+        assert_eq!(
+            parse_bot_message("Nightbot", "Congratulations, nickname1334! You won the giveaway!"),
+            vec![win("nightbot", "nickname1334", None)]
+        );
+        assert_eq!(parse_bot_message("nightbot", "Congratulations @Foo, you won the giveaway"), vec![win("nightbot", "Foo", None)]);
+    }
+
+    #[test]
+    fn phuzzybot() {
+        assert_eq!(
+            parse_bot_message("PhuzzyBot", "@pseudo, successfully bought 4 tickets!"),
+            vec![BotEvent::TicketPurchase { pseudo: "pseudo".into(), count: 4 }]
+        );
+        assert_eq!(
+            parse_bot_message("phuzzybot", "@Pseudo, you successfully bought 1 ticket!"),
+            vec![BotEvent::TicketPurchase { pseudo: "Pseudo".into(), count: 1 }]
+        );
+        assert!(parse_bot_message("phuzzybot", "@pseudo, successfully bought 0 tickets!").is_empty());
+        assert!(parse_bot_message("phuzzybot", "@foo won the giveaway").is_empty());
+        assert!(parse_bot_message("phuzzybot", "@foo got 2 tickets! (2/5)").is_empty());
+    }
+
+    #[test]
+    fn impostors_ignored() {
+        assert!(parse_bot_message("viewer123", "@viewer123 won the giveaway with 99% chance to win").is_empty());
+        assert!(parse_bot_message("viewer123", "https://streamelements.com/x/giveaway/abc123").is_empty());
+        assert!(parse_bot_message("streamelements_fan", "@foo won the giveaway").is_empty());
+    }
+}
