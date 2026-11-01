@@ -185,6 +185,8 @@ export interface Settings {
   detectPercent: number
   detectMaxPerUser: number
   detectCooldownSecs: number
+  // Compter aussi les mots-clés tapés seuls, sans « ! »
+  detectKeywords: boolean
 }
 
 export type ChannelList = 'points' | 'se'

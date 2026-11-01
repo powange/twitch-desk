@@ -9,6 +9,7 @@ import type { GiveawayView, ParticipationResult } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayConditions from '../../components/GiveawayConditions.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
+import ChatLogModal from '../../components/ChatLogModal.vue'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, formatDrawAt } from '../../utils/giveaways'
 
@@ -52,6 +53,38 @@ function followTooltip(channel: string) {
   if (unknown.length) parts.push(`état inconnu pour ${unknown.join(', ')}`)
   return parts.join(' · ')
 }
+// Journal du chat d'une chaîne
+const logChannel = ref<string | null>(null)
+const logOpen = ref(false)
+function openLog(login: string) {
+  logChannel.value = login
+  logOpen.value = true
+}
+
+// Commande : copiée d'un clic, modifiable dans une mini-fenêtre
+async function copyCommand(command: string) {
+  try {
+    await navigator.clipboard.writeText(command)
+    toast.add({ title: `${command} copiée`, color: 'success', icon: 'i-lucide-clipboard-check' })
+  } catch {
+    toast.add({ title: 'Copie impossible', color: 'error' })
+  }
+}
+const editingCommand = ref<number | null>(null)
+const commandDraft = ref('')
+function startEditCommand(g: GiveawayView) {
+  editingCommand.value = g.id
+  commandDraft.value = g.command ?? ''
+}
+async function saveCommand(g: GiveawayView) {
+  try {
+    await invoke('set_giveaway_command', { id: g.id, command: commandDraft.value.trim() || null })
+    editingCommand.value = null
+  } catch (e) {
+    toast.add({ title: 'Commande non enregistrée', description: String(e), color: 'error' })
+  }
+}
+
 // Discord requis : invitation de la fiche du streamer, sinon trouvée sur sa chaîne Twitch
 const openingDiscord = ref<string | null>(null)
 async function openDiscord(channel: string) {
@@ -278,11 +311,34 @@ function share(g: GiveawayView) {
                   <GiveawayConditions v-if="g.kind === 'ticket' && g.ticketUnique !== null" :details="{ ...g, requireFollow: null, requirePresence: null, requireDiscord: null }" :kind="g.kind" />
                 </div>
               </td>
-              <td class="px-3 py-2 whitespace-nowrap">
-                <span v-if="g.command" class="font-mono">{{ g.command }}</span>
-                <button v-else-if="g.url" class="text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
-                <span v-else-if="g.rewardName">{{ g.rewardName }}<template v-if="g.rewardCost !== null"> ({{ g.rewardCost }} pts)</template></span>
-                <span v-else class="text-muted">—</span>
+              <td class="px-3 py-2 whitespace-nowrap group/cmd">
+                <span class="inline-flex items-center gap-1">
+                  <UTooltip v-if="g.command" text="Copier la commande">
+                    <button type="button" class="font-mono hover:text-primary" @click="copyCommand(g.command)">{{ g.command }}</button>
+                  </UTooltip>
+                  <button v-else-if="g.url" class="text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
+                  <span v-else-if="g.rewardName">{{ g.rewardName }}<template v-if="g.rewardCost !== null"> ({{ g.rewardCost }} pts)</template></span>
+                  <span v-else class="text-muted">—</span>
+                  <UPopover :open="editingCommand === g.id" @update:open="(v: boolean) => { if (!v) editingCommand = null }">
+                    <UButton
+                      icon="i-lucide-pencil"
+                      size="xs"
+                      color="neutral"
+                      variant="ghost"
+                      class="opacity-0 group-hover/cmd:opacity-100 focus-visible:opacity-100"
+                      :class="editingCommand === g.id ? 'opacity-100' : ''"
+                      :aria-label="`Modifier la commande du giveaway de ${g.channel}`"
+                      title="Modifier la commande"
+                      @click="startEditCommand(g)"
+                    />
+                    <template #content>
+                      <form class="flex items-center gap-2 p-2" @submit.prevent="saveCommand(g)">
+                        <UInput :id="`cmd-${g.id}`" v-model="commandDraft" placeholder="!join ou mot-clé" size="sm" class="w-44 font-mono" autofocus />
+                        <UButton type="submit" icon="i-lucide-check" size="sm" aria-label="Enregistrer la commande" />
+                      </form>
+                    </template>
+                  </UPopover>
+                </span>
               </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
@@ -372,6 +428,7 @@ function share(g: GiveawayView) {
                     :loading="participating === g.id"
                     @click="participate(g)"
                   />
+                  <UButton icon="i-lucide-scroll-text" size="xs" color="neutral" variant="ghost" :aria-label="`Journal du chat de ${g.channel}`" title="Journal du chat" @click="openLog(g.channel)" />
                   <UButton v-if="g.open" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${g.channel}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(g.channel)" />
                   <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
                   <UButton v-if="g.open" label="Clore" size="xs" color="neutral" variant="ghost" @click="invoke('close_giveaway', { id: g.id })" />
@@ -388,5 +445,6 @@ function share(g: GiveawayView) {
     </section>
 
     <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" />
+    <ChatLogModal v-model:open="logOpen" :channel="logChannel" />
   </div>
 </template>

@@ -9,6 +9,7 @@ import type { Gift, GiveawayChannelView, GiveawayView } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import MonitoredChannelSettings from '../../components/MonitoredChannelSettings.vue'
+import ChatLogModal from '../../components/ChatLogModal.vue'
 import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 
@@ -159,6 +160,12 @@ async function importChannels() {
 const settingsId = ref<number | null>(null)
 const settingsOpen = ref(false)
 const settingsChannel = computed(() => allChannels.value.find(c => c.id === settingsId.value) ?? null)
+const logChannel = ref<string | null>(null)
+const logOpen = ref(false)
+function openLog(login: string) {
+  logChannel.value = login
+  logOpen.value = true
+}
 function openSettings(c: GiveawayChannelView) {
   settingsId.value = c.id
   settingsOpen.value = true
@@ -331,6 +338,7 @@ async function confirmRemove() {
                   class="whitespace-nowrap"
                   @click="openForm(c)"
                 />
+                <UButton icon="i-lucide-scroll-text" size="xs" variant="ghost" color="neutral" :aria-label="`Journal du chat de ${c.login}`" title="Journal du chat" @click="openLog(c.login)" />
                 <UButton
                   icon="i-lucide-settings-2"
                   size="xs"
@@ -359,6 +367,7 @@ async function confirmRemove() {
 
     <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" :channel="formChannel" />
     <MonitoredChannelSettings v-model:open="settingsOpen" :channel="settingsChannel" />
+    <ChatLogModal v-model:open="logOpen" :channel="logChannel" />
 
     <UModal :open="toRemove !== null" title="Ne plus surveiller la chaîne ?" @update:open="v => { if (!v) toRemove = null }">
       <template #body>

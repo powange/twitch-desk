@@ -185,7 +185,25 @@ struct Monitor {
     mentions: VecDeque<MentionView>,
     mention_seq: u64,
     last_mention: HashMap<(String, String), Instant>,
+    /// Chaînes d'un giveaway ouvert hors des chaînes surveillées : chat lu pour le journal
+    giveaway_only: BTreeSet<String>,
+    /// Journal du chat en attente d'écriture (groupée)
+    chat_log: Vec<crate::db::ChatLogEntry>,
+    last_prune: Option<Instant>,
+    /// Commandes des giveaways ouverts par chaîne : un mot-clé sans « ! » tapé est alors journalisé
+    open_commands: HashMap<String, HashSet<String>>,
+    /// Commande d'information tapée, en attente de la réponse d'un bot : chaîne → (commande, pseudo, moment)
+    pending_info: HashMap<String, (String, String, Instant)>,
 }
+
+/// Journal du chat : écrit par lots, gardé 14 jours
+const CHAT_LOG_FLUSH: usize = 50;
+const CHAT_LOG_DAYS: i64 = 14;
+/// Commandes d'information sur le giveaway : la réponse du bot est gardée par chaîne
+const INFO_COMMANDS: &[&str] = &["!giveaway", "!giveaways", "!gw", "!concours"];
+const INFO_REPLY_WITHIN: Duration = Duration::from_secs(15);
+
+use bots::is_bot_like as is_reply_bot;
 
 async fn next_anon(rx: &mut Option<mpsc::Receiver<ChatEvent>>) -> Option<ChatEvent> {
     match rx {
@@ -218,6 +236,11 @@ impl Monitor {
             mentions: VecDeque::new(),
             mention_seq: 0,
             last_mention: HashMap::new(),
+            giveaway_only: BTreeSet::new(),
+            chat_log: vec![],
+            last_prune: None,
+            pending_info: HashMap::new(),
+            open_commands: HashMap::new(),
         }
     }
 
@@ -225,6 +248,7 @@ impl Monitor {
         self.reload();
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         let mut live_tick = tokio::time::interval(Duration::from_secs(10));
+        let mut log_tick = tokio::time::interval(Duration::from_secs(5));
         loop {
             tokio::select! {
                 Some(event) = rx.tap.recv() => self.on_tap(event),
@@ -238,7 +262,9 @@ impl Monitor {
                     None => self.anon_events = None,
                 },
                 _ = live_tick.tick() => self.check_lives().await,
+                _ = log_tick.tick() => self.flush_chat_log(),
                 _ = tick.tick() => {
+                    self.update_anonymous();
                     let before = (chrono::Utc::now() - AUTO_CLOSE_AFTER).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
                     if self.app.db.close_giveaways_before(&before).unwrap_or(0) > 0 {
                         self.publish();
@@ -268,12 +294,26 @@ impl Monitor {
         self.publish();
     }
 
-    /// Chaînes que la connexion anonyme doit rejoindre : surveillées et lues par aucun compte
+    /// Chaînes dont le chat est lu : surveillées, et celles d'un giveaway ouvert (journal)
+    fn logged(&self, channel: &str) -> bool {
+        self.monitored(channel) || self.giveaway_only.contains(channel)
+    }
+
+    /// Chaînes que la connexion anonyme doit rejoindre : lues et sans compte présent
     fn update_anonymous(&mut self) {
+        let open: Vec<GiveawayRow> = self.app.db.giveaways(RECENT_GIVEAWAYS).unwrap_or_default().into_iter().filter(|g| g.open).collect();
+        self.open_commands.clear();
+        for g in &open {
+            if let Some(c) = &g.command {
+                self.open_commands.entry(g.channel.clone()).or_default().insert(c.to_lowercase());
+            }
+        }
+        self.giveaway_only = open.into_iter().filter(|g| !self.monitored(&g.channel)).map(|g| g.channel).collect();
         let wanted: BTreeSet<String> = self
             .channels
             .iter()
             .map(|c| c.login.clone())
+            .chain(self.giveaway_only.iter().cloned())
             .filter(|c| !self.coverage.get(c).is_some_and(|s| s.iter().any(|src| *src != ANONYMOUS)))
             .collect();
         if !wanted.is_empty() && self.anon_task.is_none() {
@@ -422,8 +462,11 @@ impl Monitor {
             }
             TapEvent::Message { source, channel, user, text } => {
                 // Un seul lecteur par chaîne : sinon chaque message compterait double
-                if self.monitored(&channel) && self.reader(&channel) == Some(source) {
-                    self.on_message(&channel, &user, &text);
+                if self.logged(&channel) && self.reader(&channel) == Some(source) {
+                    self.log_chat(&channel, &user, &text);
+                    if self.monitored(&channel) {
+                        self.on_message(&channel, &user, &text);
+                    }
                 }
             }
         }
@@ -461,9 +504,97 @@ impl Monitor {
             .collect()
     }
 
+    /// Journal du chat : commandes des spectateurs, tous nos messages, annonces de gagnant
+    fn log_chat(&mut self, channel: &str, user: &str, text: &str) {
+        let author = user.to_lowercase();
+        // Commande avec « ! », ou mot-clé d'un giveaway ouvert tapé seul (« bonbons »)
+        let mut command = detect::extract_command(text).or_else(|| {
+            let word = text.trim().to_lowercase();
+            self.open_commands.get(channel).is_some_and(|c| c.contains(&word)).then_some(word)
+        });
+        // Commande d'information (!giveaway…) : on attend la réponse d'un bot
+        if let Some(cmd) = command.as_deref().filter(|c| INFO_COMMANDS.contains(&c.split(' ').next().unwrap_or(c))) {
+            let base = cmd.split(' ').next().unwrap_or(cmd).to_owned();
+            self.pending_info.insert(channel.to_owned(), (base, author.clone(), Instant::now()));
+        }
+        let reply = if is_reply_bot(&author) { self.take_info_reply(channel, &author, text) } else { None };
+        let kind = if self.accounts.iter().any(|(_, l)| *l == author) {
+            "own"
+        } else if bots::is_bot_like(&author)
+            && bots::parse_bot_message(&author, text).iter().any(|e| matches!(e, BotEvent::Winner { .. }))
+        {
+            "winner"
+        } else if let Some(cmd) = reply {
+            command = Some(cmd);
+            "reply"
+        } else if command.is_some() && !is_reply_bot(&author) {
+            "command"
+        } else {
+            return;
+        };
+        self.chat_log.push(crate::db::ChatLogEntry {
+            id: 0,
+            channel: channel.to_owned(),
+            at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            author,
+            kind: kind.to_owned(),
+            command,
+            message: text.chars().take(500).collect(),
+        });
+        if self.chat_log.len() >= CHAT_LOG_FLUSH {
+            self.flush_chat_log();
+        }
+    }
+
+    /// Message d'un bot juste après une commande d'information : enregistré comme sa réponse
+    /// (sauf s'il s'adresse visiblement à quelqu'un d'autre) ; renvoie la commande
+    fn take_info_reply(&mut self, channel: &str, bot: &str, text: &str) -> Option<String> {
+        let (command, asked_by, at) = self.pending_info.get(channel)?.clone();
+        if at.elapsed() > INFO_REPLY_WITHIN {
+            self.pending_info.remove(channel);
+            return None;
+        }
+        let lower = text.to_lowercase();
+        if lower.contains('@') && !lower.contains(&asked_by) {
+            return None;
+        }
+        self.pending_info.remove(channel);
+        let now = now_rfc3339();
+        let reply = crate::db::BotReply {
+            channel: channel.to_owned(),
+            command: command.clone(),
+            bot: bot.to_owned(),
+            message: text.chars().take(500).collect(),
+            asked_by,
+            updated_at: now.clone(),
+            seen_at: now,
+        };
+        match self.app.db.save_bot_reply(&reply) {
+            Ok(true) => self.app.log("giveaways", EventKind::Info, format!("Réponse de {bot} à {command} sur {channel} enregistrée")),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("réponse de bot : {e}"),
+        }
+        Some(command)
+    }
+
+    fn flush_chat_log(&mut self) {
+        if !self.chat_log.is_empty() {
+            let entries = std::mem::take(&mut self.chat_log);
+            if let Err(e) = self.app.db.add_chat_log(&entries) {
+                tracing::warn!("journal du chat : {e}");
+            }
+        }
+        // Ménage une fois par heure
+        if self.last_prune.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+            self.last_prune = Some(Instant::now());
+            let before = (chrono::Utc::now() - chrono::Duration::days(CHAT_LOG_DAYS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            let _ = self.app.db.prune_chat_log(&before);
+        }
+    }
+
     fn on_message(&mut self, channel: &str, user: &str, text: &str) {
         let user_l = user.to_lowercase();
-        if bots::is_chat_bot(&user_l) {
+        if bots::is_bot_like(&user_l) {
             for event in bots::parse_bot_message(&user_l, text) {
                 match event {
                     BotEvent::Winner { bot, winner, chance } => self.on_winner(channel, &bot, &winner, chance.as_deref()),
@@ -623,6 +754,8 @@ impl Monitor {
     }
 
     fn publish(&mut self) {
+        // Giveaways ouverts changés : chats lus et mots-clés journalisés à jour
+        self.update_anonymous();
         update_point_priority(&self.app);
         let view = GiveawaysView {
             channels: self.channel_views(),
@@ -844,8 +977,8 @@ pub fn validate_input(mut g: GiveawayInput) -> Result<GiveawayInput, String> {
     g.command = g
         .command
         .map(|c| c.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|c| !c.is_empty())
-        .map(|c| if c.starts_with('!') { c } else { format!("!{c}") });
+        // Tel quel : « !join », ou mot-clé sans « ! » (« bonbons »)
+        .filter(|c| !c.is_empty());
     if g.command.as_ref().is_some_and(|c| c.chars().count() > 50) {
         return Err("Commande trop longue (50 caractères au plus)".into());
     }
@@ -916,7 +1049,8 @@ mod tests {
     #[test]
     fn validation() {
         let g = validate_input(input("command")).unwrap();
-        assert_eq!((g.channel.as_str(), g.command.as_deref()), ("lunarsea", Some("!coffre")));
+        // Commande gardée telle quelle : un mot-clé sans « ! » est valide
+        assert_eq!((g.channel.as_str(), g.command.as_deref()), ("lunarsea", Some("coffre")));
 
         let mut t = input("ticket");
         t.details.ticket_unique = Some(true);

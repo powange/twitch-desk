@@ -85,7 +85,7 @@ function durationLabel(secs: number) {
 }
 function resetDetection() {
   if (!settings.value) return
-  Object.assign(settings.value, { detectWindow: 20, detectPercent: 35, detectMaxPerUser: 2, detectCooldownSecs: 600 })
+  Object.assign(settings.value, { detectWindow: 20, detectPercent: 35, detectMaxPerUser: 2, detectCooldownSecs: 600, detectKeywords: true })
 }
 
 const confirmAuto = ref(false)
@@ -201,6 +201,13 @@ function setAuto(value: boolean) {
           <div class="font-medium">Délai entre deux alertes : {{ durationLabel(settings.detectCooldownSecs) }}</div>
           <USlider v-model="settings.detectCooldownSecs" :min="10" :max="1800" :step="10" aria-label="Délai entre deux alertes" />
           <div class="text-sm text-muted">Délai minimum avant une nouvelle alerte pour la même commande sur un même stream.</div>
+        </div>
+        <div class="flex items-center justify-between gap-4 px-4 py-3">
+          <div>
+            <div class="font-medium">Détecter aussi les mots-clés sans « ! »</div>
+            <div class="text-sm text-muted">Un même mot tapé seul par le chat (« bonbons ») compte comme une commande. Les mots courants (gg, lol, salut…) sont ignorés.</div>
+          </div>
+          <USwitch v-model="settings.detectKeywords" aria-label="Détecter les mots-clés sans !" />
         </div>
         <div class="flex flex-col gap-2 px-4 py-3">
           <div class="font-medium">Messages comptés par spectateur : {{ settings.detectMaxPerUser }}</div>

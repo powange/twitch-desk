@@ -43,6 +43,26 @@ static NIGHTBOT_WIN: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)congratulations
 static PURCHASE: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+),?\s+(?:you\s+)?successfully bought\s+(\d+)\s+ticket"));
 
+// Annonces de gagnant de tout bot : « 🎉 Félicitations @pseudo ! Vous avez gagné le giveaway ! »,
+// « Congrats @pseudo, you won… »
+static GENERIC_WIN_FR: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"(?i)f[ée]licitations?\s*,?\s*@?([A-Za-z0-9_]{3,25})\b[^@]*?\b(?:vous\s+avez|tu\s+as|a)\s+gagn[ée]")
+});
+static GENERIC_WIN_EN: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"(?i)congrat(?:ulation)?s?\s*,?\s*@?([A-Za-z0-9_]{3,25})\b[^@]*?\b(?:you\s+(?:have\s+)?won|has\s+won)\b")
+});
+
+/// Bot du chat : connu, ou pseudo en « …bot » (moobot, fossabot, sery_bot…)
+pub fn is_bot_like(user: &str) -> bool {
+    let user = user.to_lowercase();
+    is_chat_bot(&user) || user.ends_with("bot") || user == "streamlabs"
+}
+
+fn generic_winner(bot: &str, message: &str) -> Option<BotEvent> {
+    let c = GENERIC_WIN_FR.captures(message).or_else(|| GENERIC_WIN_EN.captures(message))?;
+    winner(bot, c.get(1).map(|m| m.as_str()), None)
+}
+
 pub fn is_non_winner_name(name: &str) -> bool {
     NON_WINNER_NAMES.contains(&name.to_lowercase().as_str())
 }
@@ -95,7 +115,12 @@ pub fn parse_bot_message(user: &str, message: &str) -> Vec<BotEvent> {
         "phuzzybot" => vec![ticket_purchase(message)],
         _ => vec![],
     };
-    events.into_iter().flatten().collect()
+    let mut events: Vec<BotEvent> = events.into_iter().flatten().collect();
+    // Format d'annonce non reconnu ci-dessus : formulation générale
+    if !events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) {
+        events.extend(generic_winner(&bot, message));
+    }
+    events
 }
 
 #[cfg(test)]
@@ -114,6 +139,17 @@ mod tests {
         for n in ["pseudo", "nobody_x"] {
             assert!(!is_non_winner_name(n));
         }
+    }
+
+    #[test]
+    fn generic_winner_announcements() {
+        assert_eq!(
+            parse_bot_message("Sery_Bot", "🎉 Félicitations @julsr8 ! Vous avez gagné le giveaway ! 🎉"),
+            vec![win("sery_bot", "julsr8", None)]
+        );
+        assert_eq!(parse_bot_message("moobot", "Congrats @Bob_42, you won the raffle!"), vec![win("moobot", "Bob_42", None)]);
+        assert_eq!(parse_bot_message("fossabot", "Félicitations à tous, tu as gagné quoi ?"), vec![]);
+        assert!(is_bot_like("Sery_Bot") && is_bot_like("streamelements") && !is_bot_like("bobby"));
     }
 
     #[test]

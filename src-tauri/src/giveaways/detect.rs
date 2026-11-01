@@ -22,11 +22,13 @@ pub struct DetectParams {
     pub max_per_user: usize,
     /// Délai minimum entre deux alertes pour la même commande sur une chaîne
     pub cooldown: Duration,
+    /// Compter aussi les mots-clés tapés seuls, sans « ! » (« bonbons »)
+    pub keywords: bool,
 }
 
 impl Default for DetectParams {
     fn default() -> Self {
-        Self { window: 20, min_count: 7, max_per_user: 2, cooldown: Duration::from_secs(10 * 60) }
+        Self { window: 20, min_count: 7, max_per_user: 2, cooldown: Duration::from_secs(10 * 60), keywords: true }
     }
 }
 
@@ -40,6 +42,7 @@ impl DetectParams {
             min_count,
             max_per_user: (s.detect_max_per_user as usize).clamp(1, 10),
             cooldown: Duration::from_secs(s.detect_cooldown_secs.clamp(10, 3600)),
+            keywords: s.detect_keywords,
         }
     }
 
@@ -68,6 +71,26 @@ pub struct Evidence {
 }
 
 /// Commande lue dans un message (« !enter », « !enter mot »), normalisée
+/// Mots tapés seuls très souvent sans être une participation : réactions, salutations, émotes
+const COMMON_WORDS: &[&str] = &[
+    "gg", "ggs", "ggwp", "wp", "lol", "lul", "lmao", "kekw", "omegalul", "pog", "poggers", "pogchamp", "pogu", "kappa",
+    "xd", "xdd", "mdr", "ptdr", "jpp", "hello", "hey", "salut", "slt", "bonjour", "bonsoir", "coucou", "cc", "yo", "hi",
+    "bye", "merci", "thanks", "thx", "oui", "non", "yes", "yep", "nope", "ok", "okay", "wow", "omg", "rip", "f", "o7",
+    "hype", "gogogo", "go", "nice", "bravo", "ez", "clip", "sadge", "monkas", "pepega", "copium", "hahaha", "haha",
+    "ahah", "ahahah", "bien", "trop", "quoi", "feur", "first", "lurk", "love", "bisous", "bonne", "nuit", "bjr",
+];
+
+/// Mot-clé tapé seul (« bonbons »), sans « ! » : un seul mot de 3 à 25 caractères, hors mots
+/// courants du chat
+pub fn extract_keyword(message: &str) -> Option<String> {
+    let word = message.trim().to_lowercase();
+    let valid = (3..=25).contains(&word.chars().count())
+        && word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        && word.chars().any(char::is_alphabetic)
+        && !COMMON_WORDS.contains(&word.as_str());
+    valid.then_some(word)
+}
+
 pub fn extract_command(message: &str) -> Option<String> {
     let c = COMMAND.captures(message)?;
     let cmd = c[1].to_lowercase();
@@ -92,7 +115,8 @@ pub fn normalize_excluded(list: &[String]) -> Vec<String> {
 
 pub fn is_excluded(cmd: &str, excluded: &[String]) -> bool {
     let base = cmd.split(' ').next().unwrap_or(cmd);
-    excluded.iter().any(|e| e == cmd || e == base)
+    // « !kekw » ignoré couvre aussi le mot-clé « kekw » tapé seul
+    excluded.iter().any(|e| e == cmd || e == base || e.trim_start_matches('!') == cmd)
 }
 
 #[derive(Default)]
@@ -137,7 +161,8 @@ impl Detector {
         let mut per_user: HashMap<(String, String), usize> = HashMap::new();
         let mut users: HashMap<String, Vec<String>> = HashMap::new();
         for (user, message) in &state.buffer {
-            let Some(cmd) = extract_command(message) else { continue };
+            let cmd = extract_command(message).or_else(|| self.params.keywords.then(|| extract_keyword(message)).flatten());
+            let Some(cmd) = cmd else { continue };
             if is_excluded(&cmd, ignored) {
                 continue;
             }
@@ -268,6 +293,28 @@ mod tests {
             again = again.or(d.push_at("c", &format!("w{i}"), "!coffre", &[], later));
         }
         assert!(again.is_some());
+    }
+
+    #[test]
+    fn keywords_without_bang() {
+        assert_eq!(extract_keyword("  Bonbons "), Some("bonbons".into()));
+        assert_eq!(extract_keyword("gg"), None);
+        assert_eq!(extract_keyword("KEKW"), None);
+        assert_eq!(extract_keyword("deux mots"), None);
+        assert_eq!(extract_keyword("1234"), None);
+        let mut d = Detector::default();
+        let now = Instant::now();
+        let mut hit = None;
+        for i in 0..7 {
+            hit = d.push_at("c", &format!("u{i}"), "bonbons", &[], now);
+        }
+        assert_eq!(hit.map(|(c, _)| c).as_deref(), Some("bonbons"));
+        // Désactivé dans les réglages : ignoré
+        let mut d = Detector::default();
+        d.set_params(DetectParams { keywords: false, ..DetectParams::default() });
+        for i in 0..7 {
+            assert!(d.push_at("c", &format!("u{i}"), "bonbons", &[], now).is_none());
+        }
     }
 
     #[test]

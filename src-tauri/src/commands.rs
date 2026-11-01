@@ -364,6 +364,39 @@ pub async fn streamer_discord(app: AppState<'_>, login: String) -> CmdResult<Opt
     Ok(profile.and_then(|p| p.discord).filter(|u| u.starts_with("https://")))
 }
 
+// --- Journal du chat ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLogMeta {
+    /// Commandes vues, avec leur nombre
+    commands: Vec<(String, i64)>,
+    /// Dernières réponses des bots aux commandes d'information
+    replies: Vec<crate::db::BotReply>,
+}
+
+/// Messages enregistrés d'une chaîne (200 par page, les plus récents d'abord)
+#[tauri::command]
+pub fn get_chat_log(
+    app: AppState,
+    channel: String,
+    kinds: Vec<String>,
+    command: Option<String>,
+    before_id: Option<i64>,
+) -> CmdResult<Vec<crate::db::ChatLogEntry>> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    app.db.chat_log(&channel, &kinds, command.as_deref(), before_id, 200).map_err(db_err)
+}
+
+#[tauri::command]
+pub fn get_chat_log_meta(app: AppState, channel: String) -> CmdResult<ChatLogMeta> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    Ok(ChatLogMeta {
+        commands: app.db.chat_log_commands(&channel).map_err(db_err)?,
+        replies: app.db.bot_replies(&channel).map_err(db_err)?,
+    })
+}
+
 // --- Follow ---
 
 #[derive(Serialize)]
@@ -1029,6 +1062,19 @@ fn known_gifts(app: &App, ids: &[i64]) -> Vec<i64> {
 #[tauri::command]
 pub fn dismiss_giveaway(app: AppState, id: i64) {
     app.giveaways.send(MonitorCmd::Dismiss(id));
+}
+
+/// Modification rapide de la commande d'un giveaway (vide : pas encore connue)
+#[tauri::command]
+pub fn set_giveaway_command(app: AppState, id: i64, command: Option<String>) -> CmdResult<()> {
+    let command = command.map(|c| c.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")).filter(|c| !c.is_empty());
+    if command.as_ref().is_some_and(|c| c.chars().count() > 50) {
+        return Err("Commande trop longue (50 caractères au plus)".into());
+    }
+    app.db.set_giveaway_command(id, command.as_deref()).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
+    Ok(())
 }
 
 #[tauri::command]

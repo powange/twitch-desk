@@ -218,6 +218,30 @@ const MIGRATIONS: &[&str] = &[r#"
 "#, r#"
     -- Cadeaux recherchés (favoris), propres à ce poste
     ALTER TABLE gifts ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
+"#, r#"
+    -- Journal du chat des chaînes suivies : commandes, nos messages, annonces de gagnant
+    CREATE TABLE chat_log (
+        id INTEGER PRIMARY KEY,
+        channel TEXT NOT NULL,
+        at TEXT NOT NULL,
+        author TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        command TEXT,
+        message TEXT NOT NULL
+    );
+    CREATE INDEX chat_log_channel ON chat_log (channel, id);
+    CREATE INDEX chat_log_at ON chat_log (at);
+    -- Réponse d'un bot à une commande d'information (!giveaway…), par chaîne
+    CREATE TABLE bot_replies (
+        channel TEXT NOT NULL,
+        command TEXT NOT NULL,
+        bot TEXT NOT NULL,
+        message TEXT NOT NULL,
+        asked_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        seen_at TEXT NOT NULL,
+        PRIMARY KEY (channel, command)
+    );
 "#];
 
 /// Types de giveaway
@@ -296,6 +320,36 @@ pub struct Gift {
     /// Cadeau recherché : propre à ce poste (jamais synchronisé ni modifié par le formulaire)
     #[serde(default)]
     pub favorite: bool,
+}
+
+/// Dernière réponse d'un bot à une commande d'information sur une chaîne
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BotReply {
+    pub channel: String,
+    pub command: String,
+    pub bot: String,
+    pub message: String,
+    /// Spectateur dont la commande a obtenu cette réponse
+    pub asked_by: String,
+    /// Dernier changement du message, et dernière fois qu'il a été vu
+    pub updated_at: String,
+    pub seen_at: String,
+}
+
+/// Message du journal du chat
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLogEntry {
+    #[serde(default)]
+    pub id: i64,
+    pub channel: String,
+    pub at: String,
+    pub author: String,
+    /// « command » (commande d'un spectateur), « own » (un de nos comptes), « winner » (bot)
+    pub kind: String,
+    pub command: Option<String>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -500,6 +554,8 @@ pub struct Settings {
     pub detect_max_per_user: u64,
     /// Délai minimum entre deux alertes pour la même commande sur une chaîne, en secondes
     pub detect_cooldown_secs: u64,
+    /// Compter aussi les mots-clés tapés seuls, sans « ! »
+    pub detect_keywords: bool,
 }
 
 pub const DEFAULT_SCANNER_KEYWORDS: &[&str] =
@@ -531,6 +587,7 @@ impl Default for Settings {
             detect_percent: 35,
             detect_max_per_user: 2,
             detect_cooldown_secs: 600,
+            detect_keywords: true,
         }
     }
 }
@@ -1189,6 +1246,11 @@ impl Db {
         rows.collect()
     }
 
+    pub fn set_giveaway_command(&self, id: i64, command: Option<&str>) -> DbResult<()> {
+        self.conn().execute("UPDATE giveaways SET command = ?2 WHERE id = ?1", params![id, command])?;
+        Ok(())
+    }
+
     /// Commande d'un giveaway saisi sans commande, trouvée ensuite par la détection
     pub fn set_giveaway_command_if_unknown(&self, id: i64, command: &str) -> DbResult<bool> {
         let n = self.conn().execute(
@@ -1257,6 +1319,119 @@ impl Db {
     }
 
     // --- Réglages ---
+
+    // --- Journal du chat ---
+
+    pub fn add_chat_log(&self, entries: &[ChatLogEntry]) -> DbResult<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO chat_log (channel, at, author, kind, command, message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for e in entries {
+                stmt.execute(params![e.channel, e.at, e.author, e.kind, e.command, e.message])?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// Enregistre la réponse d'un bot ; vrai si elle est nouvelle ou a changé
+    pub fn save_bot_reply(&self, r: &BotReply) -> DbResult<bool> {
+        let conn = self.conn();
+        let current: Option<(String, String)> = conn
+            .query_row(
+                "SELECT bot, message FROM bot_replies WHERE channel = ?1 AND command = ?2",
+                params![r.channel, r.command],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let changed = current.as_ref().is_none_or(|(bot, message)| *bot != r.bot || *message != r.message);
+        if changed {
+            conn.execute(
+                "INSERT INTO bot_replies (channel, command, bot, message, asked_by, updated_at, seen_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                 ON CONFLICT(channel, command) DO UPDATE SET bot = excluded.bot, message = excluded.message,
+                     asked_by = excluded.asked_by, updated_at = excluded.updated_at, seen_at = excluded.seen_at",
+                params![r.channel, r.command, r.bot, r.message, r.asked_by, r.seen_at],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE bot_replies SET seen_at = ?3 WHERE channel = ?1 AND command = ?2",
+                params![r.channel, r.command, r.seen_at],
+            )?;
+        }
+        Ok(changed)
+    }
+
+    pub fn bot_replies(&self, channel: &str) -> DbResult<Vec<BotReply>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT channel, command, bot, message, asked_by, updated_at, seen_at FROM bot_replies
+             WHERE channel = ?1 ORDER BY command",
+        )?;
+        let rows = stmt.query_map([channel], |r| {
+            Ok(BotReply {
+                channel: r.get(0)?,
+                command: r.get(1)?,
+                bot: r.get(2)?,
+                message: r.get(3)?,
+                asked_by: r.get(4)?,
+                updated_at: r.get(5)?,
+                seen_at: r.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn prune_chat_log(&self, before: &str) -> DbResult<usize> {
+        self.conn().execute("DELETE FROM chat_log WHERE at < ?1", [before])
+    }
+
+    /// Messages d'une chaîne, les plus récents d'abord ; filtres facultatifs : types, commande,
+    /// messages plus anciens que `before_id` (page suivante)
+    pub fn chat_log(
+        &self,
+        channel: &str,
+        kinds: &[String],
+        command: Option<&str>,
+        before_id: Option<i64>,
+        limit: usize,
+    ) -> DbResult<Vec<ChatLogEntry>> {
+        let conn = self.conn();
+        let kinds_json = serde_json::to_string(kinds).expect("liste sérialisable");
+        let mut stmt = conn.prepare(
+            "SELECT id, channel, at, author, kind, command, message FROM chat_log
+             WHERE channel = ?1
+               AND (?2 = '[]' OR kind IN (SELECT value FROM json_each(?2)))
+               AND (?3 IS NULL OR command = ?3)
+               AND (?4 IS NULL OR id < ?4)
+             ORDER BY id DESC LIMIT ?5",
+        )?;
+        let rows = stmt.query_map(params![channel, kinds_json, command, before_id, limit as i64], |r| {
+            Ok(ChatLogEntry {
+                id: r.get(0)?,
+                channel: r.get(1)?,
+                at: r.get(2)?,
+                author: r.get(3)?,
+                kind: r.get(4)?,
+                command: r.get(5)?,
+                message: r.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Commandes vues sur une chaîne, les plus tapées d'abord
+    pub fn chat_log_commands(&self, channel: &str) -> DbResult<Vec<(String, i64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT command, COUNT(*) FROM chat_log WHERE channel = ?1 AND command IS NOT NULL
+             GROUP BY command ORDER BY COUNT(*) DESC, command LIMIT 200",
+        )?;
+        let rows = stmt.query_map([channel], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
 
     // --- Fil d'événements ---
 
@@ -1504,6 +1679,51 @@ mod tests {
 
         db.remove_channel(ch.id, ChannelList::Se).unwrap();
         assert!(db.channels(a).unwrap().is_empty());
+    }
+
+    #[test]
+    fn chat_log_filters() {
+        let db = Db::memory().unwrap();
+        let e = |kind: &str, author: &str, command: Option<&str>, message: &str, at: &str| ChatLogEntry {
+            id: 0,
+            channel: "lunarsea".into(),
+            at: at.into(),
+            author: author.into(),
+            kind: kind.into(),
+            command: command.map(str::to_owned),
+            message: message.into(),
+        };
+        db.add_chat_log(&[
+            e("command", "bob", Some("!join"), "!join", "2026-11-01T10:00:00Z"),
+            e("command", "eve", Some("!join"), "!join", "2026-11-01T10:00:01Z"),
+            e("own", "powange", None, "bonne chance", "2026-11-01T10:00:02Z"),
+            e("winner", "streamelements", None, "Le gagnant est bob", "2026-11-01T10:00:03Z"),
+        ])
+        .unwrap();
+        assert_eq!(db.chat_log("lunarsea", &[], None, None, 10).unwrap().len(), 4);
+        assert_eq!(db.chat_log("lunarsea", &["own".into(), "winner".into()], None, None, 10).unwrap().len(), 2);
+        let joins = db.chat_log("lunarsea", &[], Some("!join"), None, 10).unwrap();
+        assert_eq!(joins.iter().map(|x| x.author.as_str()).collect::<Vec<_>>(), vec!["eve", "bob"]);
+        assert_eq!(db.chat_log("lunarsea", &[], None, Some(joins[0].id), 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log_commands("lunarsea").unwrap(), vec![("!join".to_owned(), 2)]);
+        assert_eq!(db.prune_chat_log("2026-11-01T10:00:02Z").unwrap(), 2);
+
+        // Réponse de bot : gardée, mise à jour seulement quand elle change
+        let reply = |message: &str, at: &str| BotReply {
+            channel: "lunarsea".into(),
+            command: "!giveaway".into(),
+            bot: "streamelements".into(),
+            message: message.into(),
+            asked_by: "bob".into(),
+            updated_at: at.into(),
+            seen_at: at.into(),
+        };
+        assert!(db.save_bot_reply(&reply("Tapez !join pour gagner", "2026-11-01T10:00:00Z")).unwrap());
+        assert!(!db.save_bot_reply(&reply("Tapez !join pour gagner", "2026-11-01T11:00:00Z")).unwrap());
+        let saved = &db.bot_replies("lunarsea").unwrap()[0];
+        assert_eq!((saved.updated_at.as_str(), saved.seen_at.as_str()), ("2026-11-01T10:00:00Z", "2026-11-01T11:00:00Z"));
+        assert!(db.save_bot_reply(&reply("Tapez !coffre", "2026-11-01T12:00:00Z")).unwrap());
+        assert_eq!(db.bot_replies("lunarsea").unwrap()[0].message, "Tapez !coffre");
     }
 
     #[test]
