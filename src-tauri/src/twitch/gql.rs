@@ -340,6 +340,76 @@ pub async fn channel_profile(http: &reqwest::Client, login: &str) -> Result<Opti
     Ok(Some(profile))
 }
 
+/// Stream en live d'une catégorie, pour le scanner
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryStream {
+    pub login: String,
+    pub display_name: String,
+    pub title: String,
+    pub viewers: i64,
+    pub started_at: Option<String>,
+    pub language: Option<String>,
+    pub profile_image: Option<String>,
+    pub game_id: String,
+    pub game_name: String,
+    pub tags: Vec<String>,
+}
+
+/// Streams en live d'une catégorie (slug), les plus regardés d'abord (requête sans connexion)
+pub async fn category_streams(http: &reqwest::Client, slug: &str, first: u32) -> Result<Vec<CategoryStream>> {
+    if slug.is_empty() || !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Ok(vec![]);
+    }
+    let query = format!(
+        "query {{ game(slug: \"{slug}\") {{ id displayName streams(first: {first}) {{ edges {{ node {{ \
+         title viewersCount createdAt freeformTags {{ name }} \
+         broadcaster {{ login displayName profileImageURL(width: 50) broadcastSettings {{ language }} }} }} }} }} }} }}"
+    );
+    let value = raw_query(http, &query).await?;
+    if let Some(errors) = value.get("errors") {
+        if value.pointer("/data/game").is_none_or(Value::is_null) {
+            return Err(TwitchError::Gql(format!("streams de {slug} : {errors}")));
+        }
+    }
+    Ok(parse_category_streams(&value))
+}
+
+fn parse_category_streams(value: &Value) -> Vec<CategoryStream> {
+    let Some(game) = value.pointer("/data/game").filter(|g| !g.is_null()) else { return vec![] };
+    let game_id = game.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let game_name = game.get("displayName").and_then(Value::as_str).unwrap_or_default().to_owned();
+    game.pointer("/streams/edges")
+        .and_then(Value::as_array)
+        .map(|edges| {
+            edges
+                .iter()
+                .filter_map(|e| e.get("node"))
+                .filter_map(|n| {
+                    let b = n.get("broadcaster").filter(|b| !b.is_null())?;
+                    let s = |v: &Value, p: &str| v.pointer(p).and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_owned);
+                    Some(CategoryStream {
+                        login: s(b, "/login")?.to_lowercase(),
+                        display_name: s(b, "/displayName").unwrap_or_default(),
+                        title: s(n, "/title").unwrap_or_default(),
+                        viewers: n.get("viewersCount").and_then(Value::as_i64).unwrap_or(0),
+                        started_at: s(n, "/createdAt"),
+                        language: s(b, "/broadcastSettings/language").map(|l| l.to_lowercase()),
+                        profile_image: s(b, "/profileImageURL"),
+                        game_id: game_id.clone(),
+                        game_name: game_name.clone(),
+                        tags: n
+                            .get("freeformTags")
+                            .and_then(Value::as_array)
+                            .map(|t| t.iter().filter_map(|x| x.get("name").and_then(Value::as_str).map(str::to_owned)).collect())
+                            .unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 async fn raw_query(http: &reqwest::Client, query: &str) -> Result<Value> {
     let res = http
         .post(GQL_URL)
@@ -495,6 +565,19 @@ mod tests {
         ] {
             assert!(!hashes_for(name).is_empty(), "{name}");
         }
+    }
+
+    #[test]
+    fn category_streams_parsing() {
+        let v = json!({"data":{"game":{"id":"490377","displayName":"Sea of Thieves","streams":{"edges":[
+            {"node":{"title":"GIVEAWAY ce soir","viewersCount":151,"createdAt":"2026-11-01T08:00:00Z","freeformTags":[{"name":"Français"}],
+              "broadcaster":{"login":"LevraiDoffy","displayName":"LeVraiDoffy","profileImageURL":"https://x/p.png","broadcastSettings":{"language":"FR"}}}},
+            {"node":{"title":"x","viewersCount":1,"broadcaster":null}}]}}}});
+        let s = parse_category_streams(&v);
+        assert_eq!(s.len(), 1);
+        assert_eq!((s[0].login.as_str(), s[0].language.as_deref(), s[0].game_name.as_str()), ("levraidoffy", Some("fr"), "Sea of Thieves"));
+        assert_eq!(s[0].tags, vec!["Français"]);
+        assert!(parse_category_streams(&json!({"data":{"game":null}})).is_empty());
     }
 
     #[test]

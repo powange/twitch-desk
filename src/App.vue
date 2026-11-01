@@ -34,6 +34,7 @@ const items = computed<NavigationMenuItem[]>(() => [
       { label: 'Alertes', icon: 'i-lucide-bell', to: '/giveaways', exact: true },
       { label: 'Chaînes', icon: 'i-lucide-tv', to: '/giveaways/channels' },
       { label: 'Catégories', icon: 'i-lucide-gamepad-2', to: '/giveaways/categories' },
+      { label: 'Scanner', icon: 'i-lucide-radar', to: '/giveaways/scanner' },
       { label: 'Cadeaux', icon: 'i-lucide-package', to: '/giveaways/gifts' },
       { label: 'Mes gains', icon: 'i-lucide-trophy', to: '/giveaways/wins' },
       { label: 'Réglages', icon: 'i-lucide-sliders-horizontal', to: '/giveaways/settings' }

@@ -14,6 +14,7 @@ const router = createRouter({
     { path: '/giveaways/categories', name: 'giveaway-categories', component: () => import('./pages/giveaways/CategoriesPage.vue') },
     { path: '/giveaways/gifts', name: 'giveaway-gifts', component: () => import('./pages/giveaways/GiftsPage.vue') },
     { path: '/giveaways/wins', name: 'giveaway-wins', component: () => import('./pages/giveaways/WinsPage.vue') },
+    { path: '/giveaways/scanner', name: 'giveaway-scanner', component: () => import('./pages/giveaways/ScannerPage.vue') },
     { path: '/giveaways/settings', name: 'giveaway-settings', component: () => import('./pages/giveaways/SettingsPage.vue') },
     { path: '/drops', name: 'drops', component: () => import('./pages/DropsPage.vue') },
     { path: '/streamelements', name: 'streamelements', component: () => import('./pages/StreamElementsPage.vue') },

@@ -4,6 +4,7 @@ mod db;
 mod drops;
 mod giveaways;
 mod miner;
+mod scanner;
 mod secrets;
 mod streamelements;
 mod tray;
@@ -106,6 +107,7 @@ pub fn run() {
             });
             state.spawn_emitter();
             state.spawn_languages();
+            scanner::spawn(state.clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -161,11 +163,15 @@ pub fn run() {
             commands::get_gift_catalog,
             commands::save_gift,
             commands::delete_gift,
+            commands::save_gift_group,
             commands::delete_gift_group,
             commands::get_wins,
             commands::set_prize,
             commands::resolve_category,
             commands::save_streamer,
+            scanner::scan_streams,
+            scanner::scanner_ignore,
+            scanner::scanner_refilter,
             commands::export_gifts,
             commands::import_gifts,
             commands::update_giveaway,

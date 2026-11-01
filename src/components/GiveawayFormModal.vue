@@ -73,7 +73,10 @@ const suggestionText = computed(() => {
     snapshot.value?.giveaways.channels.find(c => c.login === login)?.live?.title,
     p?.title,
     p?.description,
-    p?.pinnedMessage
+    p?.pinnedMessage,
+    // Giveaway StreamElements actif : son titre et sa description annoncent souvent les lots
+    suggestion.value?.streamelements?.title,
+    suggestion.value?.streamelements?.description
   ].filter(Boolean).join('\n')
 })
 const suggested = computed(() => new Set(suggestGifts(gifts.value, suggestionText.value).map(g => g.id)))
@@ -135,7 +138,7 @@ const channelItems = computed(() => (snapshot.value?.giveaways.channels ?? []).m
 
 // --- Pré-remplissage à la création : giveaway StreamElements actif, commande détectée dans le chat ---
 interface ChannelSuggestion {
-  streamelements: { url: string, title: string, command: string | null, cost: number, maxTickets: number | null } | null
+  streamelements: { url: string, title: string, description: string, command: string | null, cost: number, maxTickets: number | null } | null
   detectedCommand: string | null
   profile: ChannelProfile | null
   streamer: { login: string, discordUrl: string | null, notes: string | null } | null
@@ -436,7 +439,7 @@ async function save() {
                   <span class="leading-tight line-clamp-2">{{ g.title }}</span>
                   <span v-if="g.gameName" class="text-xs text-muted truncate">{{ g.gameName }}</span>
                 </span>
-                <UIcon v-if="suggested.has(g.id)" name="i-lucide-sparkles" class="absolute top-1 right-1 size-3.5 text-primary" title="Suggéré : un mot-clé apparaît dans le titre, la description ou le message épinglé de la chaîne" />
+                <UIcon v-if="suggested.has(g.id)" name="i-lucide-sparkles" class="absolute top-1 right-1 size-3.5 text-primary" title="Suggéré : un mot-clé apparaît dans le titre, la description, le message épinglé ou le giveaway StreamElements de la chaîne" />
               </button>
             </div>
             <p v-else class="text-sm text-muted">Catalogue vide : ajoute un cadeau avec « Nouveau cadeau ».</p>

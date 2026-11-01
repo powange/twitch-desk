@@ -76,6 +76,38 @@ export interface Snapshot {
   giveaways: GiveawaysView
   // Langue de diffusion des chaînes (login → code ISO 639-1)
   languages: Record<string, string>
+  scanner: ScannerView
+}
+
+export interface ScanMatch {
+  login: string
+  displayName: string
+  title: string
+  viewers: number
+  startedAt: string | null
+  language: string | null
+  profileImage: string | null
+  gameId: string
+  gameName: string
+  tags: string[]
+  keywords: string[]
+  monitored: boolean
+  ignored: boolean
+  description: string | null
+  pinnedMessage: string | null
+  // Type du giveaway en cours s'il est connu (giveaway ouvert de la chaîne, ou StreamElements actif)
+  giveawayKind: GiveawayKind | null
+  giveawayCommand: string | null
+  // Giveaway StreamElements actif : titre et description
+  giveawayText: string | null
+}
+
+export interface ScannerView {
+  matches: ScanMatch[]
+  scannedAt: string | null
+  scannedStreams: number
+  scanning: boolean
+  error: string | null
 }
 
 export interface DeviceCode {
@@ -102,6 +134,15 @@ export interface Settings {
   autoDelayMax: number
   // Comptes qui participent automatiquement (vide : tous)
   autoAccounts: number[]
+  scannerKeywords: string[]
+  // Mots-clés de la liste décochés
+  scannerKeywordsOff: string[]
+  // Catégories décochées (identifiants Twitch des jeux)
+  scannerGamesOff: string[]
+  // Langues retenues par le scanner (vide : toutes)
+  scannerLanguages: string[]
+  scannerMinViewers: number
+  scannerAuto: boolean
 }
 
 export type ChannelList = 'points' | 'se'
@@ -308,6 +349,7 @@ export interface GiftGroup {
   name: string
   // Catégorie du groupe (null : sans catégorie)
   gameId: string | null
+  gameName: string | null
 }
 
 export interface TwitchGame {

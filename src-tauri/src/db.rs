@@ -177,6 +177,11 @@ const MIGRATIONS: &[&str] = &[r#"
         discord_url TEXT,
         notes TEXT
     );
+"#, r#"
+    -- Nom de la catégorie d'un groupe, pour l'afficher même sans cadeau
+    ALTER TABLE gift_groups ADD COLUMN game_name TEXT;
+    UPDATE gift_groups SET game_name = (SELECT game_name FROM gifts WHERE gifts.game_id = gift_groups.game_id AND game_name IS NOT NULL LIMIT 1)
+        WHERE game_id IS NOT NULL;
 "#];
 
 /// Types de giveaway
@@ -231,6 +236,7 @@ pub struct GiftGroup {
     pub name: String,
     /// Catégorie (jeu Twitch) du groupe ; None : groupe sans catégorie
     pub game_id: Option<String>,
+    pub game_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -416,7 +422,21 @@ pub struct Settings {
     pub auto_delay_max: u64,
     /// Comptes qui participent automatiquement (vide : tous)
     pub auto_accounts: Vec<i64>,
+    /// Scanner : mots-clés cherchés dans les titres des lives
+    pub scanner_keywords: Vec<String>,
+    /// Scanner : mots-clés de la liste décochés, gardés pour être recochés plus tard
+    pub scanner_keywords_off: Vec<String>,
+    /// Scanner : catégories décochées (identifiants Twitch des jeux)
+    pub scanner_games_off: Vec<String>,
+    /// Scanner : langues retenues (vide : toutes)
+    pub scanner_languages: Vec<String>,
+    pub scanner_min_viewers: u64,
+    /// Scanner automatique toutes les 3 min, avec notification des nouveaux streams
+    pub scanner_auto: bool,
 }
+
+pub const DEFAULT_SCANNER_KEYWORDS: &[&str] =
+    &["giveaway", "concours", "cadeau", "tirage", "cle", "key", "drop", "gift", "gw"];
 
 impl Default for Settings {
     fn default() -> Self {
@@ -429,6 +449,12 @@ impl Default for Settings {
             auto_delay_min: 8,
             auto_delay_max: 45,
             auto_accounts: vec![],
+            scanner_keywords: DEFAULT_SCANNER_KEYWORDS.iter().map(|k| k.to_string()).collect(),
+            scanner_keywords_off: vec![],
+            scanner_games_off: vec![],
+            scanner_languages: vec![],
+            scanner_min_viewers: 0,
+            scanner_auto: false,
         }
     }
 }
@@ -967,20 +993,40 @@ impl Db {
 
     pub fn gift_groups(&self) -> DbResult<Vec<GiftGroup>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT id, name, game_id FROM gift_groups ORDER BY name COLLATE NOCASE")?;
-        let rows = stmt.query_map([], |r| Ok(GiftGroup { id: r.get(0)?, name: r.get(1)?, game_id: r.get(2)? }))?;
+        let mut stmt = conn.prepare("SELECT id, name, game_id, game_name FROM gift_groups ORDER BY name COLLATE NOCASE")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(GiftGroup { id: r.get(0)?, name: r.get(1)?, game_id: r.get(2)?, game_name: r.get(3)? })
+        })?;
         rows.collect()
     }
 
     /// Groupe d'après son nom dans une catégorie (créé s'il n'existe pas)
-    pub fn ensure_gift_group(&self, name: &str, game_id: Option<&str>) -> DbResult<i64> {
+    pub fn ensure_gift_group(&self, name: &str, game_id: Option<&str>, game_name: Option<&str>) -> DbResult<i64> {
         let conn = self.conn();
-        conn.execute("INSERT OR IGNORE INTO gift_groups (name, game_id) VALUES (?1, ?2)", params![name, game_id])?;
+        conn.execute(
+            "INSERT OR IGNORE INTO gift_groups (name, game_id, game_name) VALUES (?1, ?2, ?3)",
+            params![name, game_id, game_name],
+        )?;
         conn.query_row(
             "SELECT id FROM gift_groups WHERE name = ?1 AND game_id IS ?2",
             params![name, game_id],
             |r| r.get(0),
         )
+    }
+
+    /// Nouveau groupe ; None si ce nom existe déjà dans la catégorie
+    pub fn add_gift_group(&self, name: &str, game_id: Option<&str>, game_name: Option<&str>) -> DbResult<Option<i64>> {
+        let conn = self.conn();
+        let added = conn.execute(
+            "INSERT OR IGNORE INTO gift_groups (name, game_id, game_name) VALUES (?1, ?2, ?3)",
+            params![name, game_id, game_name],
+        )?;
+        Ok((added == 1).then(|| conn.last_insert_rowid()))
+    }
+
+    /// Renomme un groupe (sa catégorie ne change pas) ; faux si le nom est déjà pris dans la catégorie
+    pub fn rename_gift_group(&self, id: i64, name: &str) -> DbResult<bool> {
+        Ok(self.conn().execute("UPDATE OR IGNORE gift_groups SET name = ?2 WHERE id = ?1", params![id, name])? == 1)
     }
 
     pub fn delete_gift_group(&self, id: i64) -> DbResult<()> {
@@ -1207,12 +1253,19 @@ mod tests {
         assert_eq!((row.kind.as_str(), row.details.ticket_max, row.details.require_presence), ("ticket", Some(5), Some(true)));
         db.set_giveaway_reminded(g).unwrap();
         assert!(db.giveaway(g).unwrap().unwrap().reminded);
-        let group = db.ensure_gift_group("Navires", Some("490377")).unwrap();
-        assert_eq!(db.ensure_gift_group("Navires", Some("490377")).unwrap(), group);
+        let group = db.ensure_gift_group("Navires", Some("490377"), Some("Sea of Thieves")).unwrap();
+        assert_eq!(db.ensure_gift_group("Navires", Some("490377"), None).unwrap(), group);
         // Même nom dans une autre catégorie, ou sans catégorie : autres groupes
-        assert_ne!(db.ensure_gift_group("Navires", Some("263490")).unwrap(), group);
-        let loose = db.ensure_gift_group("Navires", None).unwrap();
-        assert_eq!(db.ensure_gift_group("Navires", None).unwrap(), loose);
+        assert_ne!(db.ensure_gift_group("Navires", Some("263490"), None).unwrap(), group);
+        let loose = db.ensure_gift_group("Navires", None, None).unwrap();
+        assert_eq!(db.ensure_gift_group("Navires", None, None).unwrap(), loose);
+        assert_eq!(db.add_gift_group("Navires", None, None).unwrap(), None);
+        let sails = db.add_gift_group("Voiles", Some("490377"), Some("Sea of Thieves")).unwrap().unwrap();
+        assert!(!db.rename_gift_group(sails, "Navires").unwrap());
+        assert!(db.rename_gift_group(sails, "Voiles d'obsidienne").unwrap());
+        let groups = db.gift_groups().unwrap();
+        let renamed = groups.iter().find(|g| g.id == sails).unwrap();
+        assert_eq!((renamed.name.as_str(), renamed.game_name.as_deref()), ("Voiles d'obsidienne", Some("Sea of Thieves")));
         let gift = db
             .save_gift(&Gift {
                 id: 0,

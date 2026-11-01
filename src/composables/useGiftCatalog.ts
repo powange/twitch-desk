@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { useSnapshot } from './useSnapshot'
 import type { Gift, GiftCatalog } from '../types'
 
 // Catalogue de cadeaux, partagé par les pages (chargé à la demande : les images
@@ -19,6 +20,20 @@ export function useGiftCatalog() {
   const groupName = (id: number | null) => groups.value.find(g => g.id === id)?.name ?? null
   const usage = (id: number) => catalog.value?.usage[String(id)] ?? 0
   return { catalog, gifts, groups, byId, groupName, usage, refresh }
+}
+
+// Catégories Twitch déjà connues : cadeaux, groupes, catégories des giveaways, jeux des drops
+export function useKnownCategories() {
+  const { gifts, groups } = useGiftCatalog()
+  const { snapshot } = useSnapshot()
+  return computed(() => {
+    const map = new Map<string, string>()
+    for (const g of gifts.value) if (g.gameId && g.gameName) map.set(g.gameId, g.gameName)
+    for (const g of groups.value) if (g.gameId && g.gameName) map.set(g.gameId, g.gameName)
+    for (const g of snapshot.value?.giveaways.games ?? []) map.set(g.gameId, g.name)
+    for (const a of snapshot.value?.accounts ?? []) for (const g of a.drops.games) map.set(g.gameId, g.name)
+    return [...map].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
+  })
 }
 
 // Cadeaux dont un mot-clé apparaît dans le texte (titre d'un live)

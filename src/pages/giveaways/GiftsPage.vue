@@ -3,17 +3,18 @@ import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
 import GiftFormModal from '../../components/GiftFormModal.vue'
+import GiftGroupsModal from '../../components/GiftGroupsModal.vue'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { boxArt } from '../../utils/format'
-import type { Gift, GiftGroup } from '../../types'
+import type { Gift } from '../../types'
 
-const { gifts, groups, groupName, usage, refresh } = useGiftCatalog()
+const { gifts, groups, usage, refresh } = useGiftCatalog()
 const toast = useToast()
 
 const search = ref('')
-// Catégorie : null = toutes, '' = sans catégorie ; groupe (dans la catégorie) : null = tous
+// Catégorie : null = toutes, '' = sans catégorie
 const categoryFilter = ref<string | null>(null)
-const groupFilter = ref<number | null>(null)
+const groupsOpen = ref(false)
 
 // Catégories présentes dans le catalogue
 const categories = computed(() => {
@@ -23,23 +24,51 @@ const categories = computed(() => {
     .sort((a, b) => a.name.localeCompare(b.name))
 })
 const uncategorized = computed(() => gifts.value.filter(g => !g.gameId).length)
-// Groupes de la catégorie choisie
-const categoryGroups = computed(() =>
-  categoryFilter.value === null ? [] : groups.value.filter(g => (g.gameId ?? '') === categoryFilter.value)
-)
-
 function selectCategory(id: string | null) {
   categoryFilter.value = id
-  groupFilter.value = null
 }
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   return gifts.value.filter((g) => {
     if (categoryFilter.value !== null && (g.gameId ?? '') !== categoryFilter.value) return false
-    if (groupFilter.value !== null && g.groupId !== groupFilter.value) return false
     return !q || g.title.toLowerCase().includes(q) || g.keywords.some(k => k.includes(q))
   })
+})
+
+// Affichage : par catégorie (sans catégorie à la fin), puis par groupe (sans groupe à la fin)
+interface GroupSection { id: number | null, name: string, loose: boolean, gifts: Gift[] }
+interface CategorySection { id: string | null, name: string, count: number, groups: GroupSection[] }
+const sections = computed<CategorySection[]>(() => {
+  const byCategory = new Map<string, Gift[]>()
+  for (const g of filtered.value) {
+    const key = g.gameId ?? ''
+    if (!byCategory.has(key)) byCategory.set(key, [])
+    byCategory.get(key)!.push(g)
+  }
+  return [...byCategory].map(([key, list]) => {
+    const byGroup = new Map<number | null, Gift[]>()
+    for (const g of list) {
+      const group = groups.value.some(x => x.id === g.groupId) ? g.groupId : null
+      if (!byGroup.has(group)) byGroup.set(group, [])
+      byGroup.get(group)!.push(g)
+    }
+    const groupSections = [...byGroup].map(([id, items]) => {
+      const group = groups.value.find(x => x.id === id)
+      return {
+        id,
+        name: group?.name ?? 'Sans groupe',
+        loose: !!group && !group.gameId,
+        gifts: items.sort((a, b) => a.title.localeCompare(b.title))
+      }
+    }).sort((a, b) => (a.id === null ? 1 : 0) - (b.id === null ? 1 : 0) || a.name.localeCompare(b.name))
+    return {
+      id: key || null,
+      name: key ? (list[0]?.gameName ?? key) : 'Sans catégorie',
+      count: list.length,
+      groups: groupSections
+    }
+  }).sort((a, b) => (a.id === null ? 1 : 0) - (b.id === null ? 1 : 0) || a.name.localeCompare(b.name))
 })
 
 // --- Export / import ---
@@ -85,16 +114,6 @@ async function confirmRemove() {
   toRemove.value = null
   await refresh()
 }
-
-async function removeGroup(g: GiftGroup) {
-  try {
-    await invoke('delete_gift_group', { id: g.id })
-    if (groupFilter.value === g.id) groupFilter.value = null
-    await refresh()
-  } catch (e) {
-    toast.add({ title: 'Groupe non supprimé', description: String(e), color: 'error' })
-  }
-}
 </script>
 
 <template>
@@ -103,6 +122,7 @@ async function removeGroup(g: GiftGroup) {
       <h1 class="text-xl font-semibold flex-1">Cadeaux</h1>
       <UButton label="Importer" icon="i-lucide-upload" color="neutral" variant="soft" @click="importGifts" />
       <UButton label="Exporter" icon="i-lucide-download" color="neutral" variant="soft" :disabled="gifts.length === 0" @click="exportGifts" />
+      <UButton label="Gérer les groupes" icon="i-lucide-folder-cog" color="neutral" variant="soft" @click="groupsOpen = true" />
       <UButton label="Nouveau cadeau" icon="i-lucide-plus" @click="openForm(null)" />
     </div>
 
@@ -125,46 +145,49 @@ async function removeGroup(g: GiftGroup) {
           Sans catégorie <span class="text-muted">{{ uncategorized }}</span>
         </UButton>
       </div>
-      <div v-if="categoryGroups.length" class="flex items-center gap-2 flex-wrap pl-1">
-        <span class="text-xs uppercase text-muted tracking-wide">Groupes</span>
-        <UButton label="Tous" size="xs" :color="groupFilter === null ? 'primary' : 'neutral'" :variant="groupFilter === null ? 'soft' : 'ghost'" @click="groupFilter = null" />
-        <UFieldGroup v-for="g in categoryGroups" :key="g.id">
-          <UButton :label="g.name" size="xs" :color="groupFilter === g.id ? 'primary' : 'neutral'" :variant="groupFilter === g.id ? 'soft' : 'ghost'" @click="groupFilter = g.id" />
-          <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :aria-label="`Supprimer le groupe ${g.name}`" title="Supprimer le groupe (ses cadeaux restent, sans groupe)" @click="removeGroup(g)" />
-        </UFieldGroup>
-      </div>
     </div>
 
-    <div v-if="filtered.length" class="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3">
-      <div v-for="g in filtered" :key="g.id" class="border border-default rounded-lg overflow-hidden flex flex-col group">
-        <div class="aspect-square bg-elevated flex items-center justify-center">
-          <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="w-full h-full object-contain">
-          <UIcon v-else name="i-lucide-gift" class="size-10 text-muted" />
+    <div v-if="filtered.length" class="flex flex-col gap-6">
+      <section v-for="cs in sections" :key="cs.id ?? ''" class="flex flex-col gap-3">
+        <h2 class="flex items-center gap-2 text-base font-semibold border-b border-default pb-1.5">
+          <img v-if="cs.id" :src="boxArt(null, cs.id)" alt="" class="w-6 h-8 rounded object-cover">
+          <UIcon v-else name="i-lucide-package" class="size-5 text-muted" />
+          {{ cs.name }} <span class="text-sm font-normal text-muted">{{ cs.count }}</span>
+        </h2>
+        <div v-for="gs in cs.groups" :key="gs.id ?? 'none'" class="flex flex-col gap-2 pl-2">
+          <h3 class="flex items-center gap-1.5 text-sm font-medium" :class="gs.id === null ? 'text-muted' : ''">
+            <UIcon :name="gs.id === null ? 'i-lucide-folder-x' : 'i-lucide-folder'" class="size-4 text-muted" />
+            {{ gs.name }} <span class="text-xs font-normal text-muted">{{ gs.gifts.length }}</span>
+            <UBadge v-if="gs.loose" label="tous les jeux" size="sm" color="neutral" variant="subtle" />
+          </h3>
+          <div class="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3">
+            <div v-for="g in gs.gifts" :key="g.id" class="border border-default rounded-lg overflow-hidden flex flex-col group">
+              <div class="aspect-square bg-elevated flex items-center justify-center">
+                <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="w-full h-full object-contain">
+                <UIcon v-else name="i-lucide-gift" class="size-10 text-muted" />
+              </div>
+              <div class="p-3 flex flex-col gap-1.5 flex-1">
+                <div class="font-medium leading-tight">{{ g.title }}</div>
+                <div class="text-xs text-muted">{{ usage(g.id) }} giveaway(s)</div>
+                <div v-if="g.keywords.length" class="flex flex-wrap gap-1">
+                  <UBadge v-for="k in g.keywords" :key="k" :label="k" size="sm" color="neutral" variant="subtle" />
+                </div>
+                <div class="flex justify-end gap-1 mt-auto pt-1">
+                  <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
+                  <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" aria-label="Supprimer" @click="toRemove = g" />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="p-3 flex flex-col gap-1.5 flex-1">
-          <div class="font-medium leading-tight">{{ g.title }}</div>
-          <div v-if="g.gameName" class="flex items-center gap-1.5 text-xs">
-            <img :src="boxArt(null, g.gameId ?? '')" alt="" class="w-3.5 h-4.5 rounded-sm object-cover">
-            <span>{{ g.gameName }}</span>
-          </div>
-          <div class="text-xs text-muted">
-            <span v-if="groupName(g.groupId)">{{ groupName(g.groupId) }} · </span>{{ usage(g.id) }} giveaway(s)
-          </div>
-          <div v-if="g.keywords.length" class="flex flex-wrap gap-1">
-            <UBadge v-for="k in g.keywords" :key="k" :label="k" size="sm" color="neutral" variant="subtle" />
-          </div>
-          <div class="flex justify-end gap-1 mt-auto pt-1">
-            <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
-            <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" aria-label="Supprimer" @click="toRemove = g" />
-          </div>
-        </div>
-      </div>
+      </section>
     </div>
     <p v-else class="text-sm text-muted">
       {{ gifts.length ? 'Aucun cadeau ne correspond.' : 'Catalogue vide. Ajoute ton premier cadeau : il pourra ensuite être rattaché aux giveaways.' }}
     </p>
 
     <GiftFormModal v-model:open="formOpen" :gift="editing" />
+    <GiftGroupsModal v-model:open="groupsOpen" :game-id="categoryFilter || null" :game-name="categories.find(c => c.id === categoryFilter)?.name ?? null" />
 
     <UModal :open="toRemove !== null" title="Supprimer le cadeau ?" @update:open="v => { if (!v) toRemove = null }">
       <template #body>

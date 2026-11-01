@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { useGiftCatalog } from '../composables/useGiftCatalog'
-import { useSnapshot } from '../composables/useSnapshot'
+import { useGiftCatalog, useKnownCategories } from '../composables/useGiftCatalog'
+import GiftGroupsModal from './GiftGroupsModal.vue'
 import { boxArt } from '../utils/format'
 import { firstImage, imageToDataUrl } from '../utils/images'
+import type { SelectItem } from '@nuxt/ui'
 import type { Gift, TwitchGame } from '../types'
 
 // Ajout (gift = null) ou modification d'un cadeau du catalogue
@@ -12,8 +13,7 @@ const props = defineProps<{ gift: Gift | null }>()
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ saved: [id: number] }>()
 
-const { gifts, groups, groupName, refresh } = useGiftCatalog()
-const { snapshot } = useSnapshot()
+const { groups, refresh } = useGiftCatalog()
 const toast = useToast()
 const image = ref<string | null>(null)
 
@@ -22,14 +22,7 @@ const gameId = ref<string | null>(null)
 const gameName = ref<string | null>(null)
 const categoryInput = ref('')
 const resolving = ref(false)
-// Catégories déjà connues : catalogue, catégories des giveaways, jeux des drops
-const knownCategories = computed(() => {
-  const map = new Map<string, string>()
-  for (const g of gifts.value) if (g.gameId && g.gameName) map.set(g.gameId, g.gameName)
-  for (const g of snapshot.value?.giveaways.games ?? []) map.set(g.gameId, g.name)
-  for (const a of snapshot.value?.accounts ?? []) for (const g of a.drops.games) map.set(g.gameId, g.name)
-  return [...map].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
-})
+const knownCategories = useKnownCategories()
 async function chooseCategory() {
   const value = categoryInput.value.trim()
   if (!value) return
@@ -94,8 +87,26 @@ function clearCategory() {
   gameId.value = null
   gameName.value = null
 }
-// Groupes de la catégorie choisie
-const categoryGroups = computed(() => groups.value.filter(g => g.gameId === gameId.value))
+// Groupe : un groupe de la catégorie choisie, ou un groupe sans catégorie (0 : aucun)
+const NO_GROUP = 0
+const group = ref<number>(NO_GROUP)
+const groupItems = computed(() => {
+  const own = groups.value.filter(g => gameId.value && g.gameId === gameId.value)
+  const loose = groups.value.filter(g => !g.gameId)
+  const items: SelectItem[] = [{ label: 'Aucun groupe', value: NO_GROUP }]
+  if (own.length) items.push({ type: 'separator' }, { type: 'label', label: gameName.value ?? '' }, ...own.map(g => ({ label: g.name, value: g.id })))
+  if (loose.length) items.push({ type: 'separator' }, { type: 'label', label: 'Sans catégorie' }, ...loose.map(g => ({ label: g.name, value: g.id })))
+  return items
+})
+// Catégorie changée : un groupe d'une autre catégorie ne convient plus
+watch(gameId, (id) => {
+  const g = groups.value.find(x => x.id === group.value)
+  if (g?.gameId && g.gameId !== id) group.value = NO_GROUP
+})
+const groupsOpen = ref(false)
+function onGroupCreated(id: number) {
+  group.value = id
+}
 
 // --- Image : téléversée ou en ligne ---
 // L'adresse saisie est l'image du cadeau : aperçu immédiat, enregistrée avec le cadeau
@@ -115,7 +126,6 @@ function removeImage() {
 }
 
 const title = ref('')
-const group = ref('')
 const keywords = ref<string[]>([])
 const keywordInput = ref('')
 const saving = ref(false)
@@ -124,7 +134,7 @@ const dragging = ref(false)
 watch(open, (isOpen) => {
   if (!isOpen) return
   title.value = props.gift?.title ?? ''
-  group.value = groupName(props.gift?.groupId ?? null) ?? ''
+  group.value = props.gift?.groupId ?? NO_GROUP
   keywords.value = [...(props.gift?.keywords ?? [])]
   keywordInput.value = ''
   image.value = props.gift?.image ?? null
@@ -182,12 +192,12 @@ async function save() {
       id: props.gift?.id ?? 0,
       title: title.value,
       image: image.value,
-      groupId: null,
+      groupId: group.value || null,
       keywords: keywords.value,
       gameId: gameId.value,
       gameName: gameName.value
     }
-    const id = await invoke<number>('save_gift', { gift, groupName: group.value || null })
+    const id = await invoke<number>('save_gift', { gift })
     await refresh()
     toast.add({ title: props.gift ? 'Cadeau modifié' : 'Cadeau ajouté', color: 'success', icon: 'i-lucide-check' })
     emit('saved', id)
@@ -276,12 +286,13 @@ async function save() {
                 </ul>
               </div>
             </UFormField>
-            <UFormField label="Groupe" :help="gameId ? `Groupes de ${gameName} : choisis-en un ou tape un nouveau nom` : 'Choisis un groupe ou tape un nouveau nom'">
-              <UInput id="gift-group" v-model="group" list="gift-group-list" placeholder="Skins d'armes" autocomplete="off" class="w-full" />
-              <datalist id="gift-group-list">
-                <option v-for="g in categoryGroups" :key="g.id" :value="g.name" />
-              </datalist>
+            <UFormField label="Groupe" :help="gameId ? `Groupes de ${gameName} ou sans catégorie` : 'Groupes sans catégorie (choisis une catégorie pour voir les siens)'">
+              <div class="flex gap-2">
+                <USelect id="gift-group" v-model="group" :items="groupItems" class="flex-1" />
+                <UButton icon="i-lucide-folder-cog" color="neutral" variant="soft" title="Gérer les groupes" aria-label="Gérer les groupes" @click="groupsOpen = true" />
+              </div>
             </UFormField>
+            <GiftGroupsModal v-model:open="groupsOpen" :game-id="gameId" :game-name="gameName" @created="onGroupCreated" />
           </div>
         </div>
 

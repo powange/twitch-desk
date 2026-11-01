@@ -134,6 +134,7 @@ pub struct Snapshot {
     pub giveaways: crate::giveaways::GiveawaysView,
     /// Langue de diffusion des chaînes (login → code ISO 639-1), pour les drapeaux
     pub languages: HashMap<String, String>,
+    pub scanner: crate::scanner::ScannerView,
 }
 
 struct MinerHandle {
@@ -156,6 +157,7 @@ pub struct App {
     pub giveaways: crate::giveaways::GiveawayHandle,
     /// Chaînes à regarder en premier pour les points : giveaway par points de chaîne ouvert
     pub point_priority: RwLock<std::collections::HashSet<String>>,
+    pub scanner: Mutex<crate::scanner::ScannerState>,
     languages: RwLock<HashMap<String, String>>,
 }
 
@@ -175,6 +177,7 @@ impl App {
             login_task: Mutex::new(None),
             giveaways: crate::giveaways::GiveawayHandle::default(),
             point_priority: RwLock::new(std::collections::HashSet::new()),
+            scanner: Mutex::new(crate::scanner::ScannerState::default()),
             languages: RwLock::new(HashMap::new()),
         })
     }
@@ -294,6 +297,7 @@ impl App {
             operations_updated,
             giveaways: self.giveaways.view(),
             languages: self.languages.read().unwrap().clone(),
+            scanner: self.scanner.lock().unwrap().view(),
         }
     }
 

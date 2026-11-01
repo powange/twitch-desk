@@ -435,6 +435,7 @@ pub struct ChannelSuggestion {
 pub struct SeSuggestion {
     pub url: String,
     pub title: String,
+    pub description: String,
     pub command: Option<String>,
     pub cost: i64,
     pub max_tickets: Option<i64>,
@@ -459,6 +460,7 @@ pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdRe
         Ok(Some(se_id)) => streamelements::active_giveaway(&app.http, &se_id).await.ok().flatten().map(|g| SeSuggestion {
             url: format!("https://streamelements.com/{login}/giveaway/{}", g.id),
             title: g.title,
+            description: g.description,
             command: g.command,
             cost: g.cost,
             max_tickets: g.max_tickets,
@@ -539,9 +541,9 @@ pub fn get_gift_catalog(app: AppState) -> CmdResult<GiftCatalog> {
 /// Image d'un cadeau : data URL d'image, 2 Mo au plus (réduite par l'interface avant l'envoi)
 const MAX_GIFT_IMAGE: usize = 2 * 1024 * 1024;
 
-/// Ajoute (id 0) ou modifie un cadeau ; `group_name` : groupe choisi ou à créer (vide : aucun)
+/// Ajoute (id 0) ou modifie un cadeau ; son groupe est un groupe de sa catégorie ou sans catégorie
 #[tauri::command]
-pub fn save_gift(app: AppState, mut gift: crate::db::Gift, group_name: Option<String>) -> CmdResult<i64> {
+pub fn save_gift(app: AppState, mut gift: crate::db::Gift) -> CmdResult<i64> {
     gift.title = gift.title.trim().to_owned();
     if gift.title.is_empty() {
         return Err("Donne un titre au cadeau".into());
@@ -569,10 +571,13 @@ pub fn save_gift(app: AppState, mut gift: crate::db::Gift, group_name: Option<St
         }
     }
     gift.keywords = keywords;
-    gift.group_id = match group_name.map(|g| g.trim().to_owned()).filter(|g| !g.is_empty()) {
-        Some(name) => Some(app.db.ensure_gift_group(&name, gift.game_id.as_deref()).map_err(db_err)?),
-        None => None,
-    };
+    if let Some(group_id) = gift.group_id {
+        let groups = app.db.gift_groups().map_err(db_err)?;
+        let group = groups.iter().find(|g| g.id == group_id).ok_or("Ce groupe n'existe plus")?;
+        if group.game_id.is_some() && group.game_id != gift.game_id {
+            return Err(format!("Le groupe « {} » appartient à une autre catégorie", group.name));
+        }
+    }
     let id = app.db.save_gift(&gift).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
     Ok(id)
@@ -583,6 +588,31 @@ pub fn delete_gift(app: AppState, id: i64) -> CmdResult<()> {
     app.db.delete_gift(id).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
     Ok(())
+}
+
+/// Ajoute (id 0) ou renomme un groupe de cadeaux ; la catégorie n'est retenue qu'à la création
+#[tauri::command]
+pub fn save_gift_group(
+    app: AppState,
+    id: i64,
+    name: String,
+    game_id: Option<String>,
+    game_name: Option<String>,
+) -> CmdResult<i64> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Donne un nom au groupe".into());
+    }
+    if name.chars().count() > 60 {
+        return Err("Nom trop long (60 caractères au plus)".into());
+    }
+    let taken = || format!("Le groupe « {name} » existe déjà dans cette catégorie");
+    if id > 0 {
+        return if app.db.rename_gift_group(id, name).map_err(db_err)? { Ok(id) } else { Err(taken()) };
+    }
+    let game_id = game_id.filter(|g| !g.trim().is_empty());
+    let game_name = game_name.filter(|_| game_id.is_some());
+    app.db.add_gift_group(name, game_id.as_deref(), game_name.as_deref()).map_err(db_err)?.ok_or_else(taken)
 }
 
 #[tauri::command]
@@ -714,7 +744,10 @@ pub fn import_gifts(app: AppState, path: String) -> CmdResult<GiftImportResult> 
         }
         let game_id = item.game_id.filter(|g| !g.is_empty());
         let group_id = match item.group.map(|g| g.trim().to_owned()).filter(|g| !g.is_empty()) {
-            Some(name) => Some(app.db.ensure_gift_group(&name, game_id.as_deref()).map_err(db_err)?),
+            Some(name) => {
+                let game_name = item.game_name.as_deref().filter(|_| game_id.is_some());
+                Some(app.db.ensure_gift_group(&name, game_id.as_deref(), game_name).map_err(db_err)?)
+            }
             None => None,
         };
         let same = existing.iter().find(|g| g.title.eq_ignore_ascii_case(&title) && g.game_id == game_id);
