@@ -1,10 +1,12 @@
 name: Page GitHub
 
-# Page de présentation (dossier site/) publiée sur GitHub Pages à chaque version,
-# pour qu'elle décrive la version téléchargeable
+# Page de présentation (dossier site/) publiée sur GitHub Pages après chaque release réussie,
+# avec le contenu du tag publié : elle décrit la version téléchargeable. Le déploiement part
+# de main (seule branche autorisée par l'environnement github-pages).
 on:
-  push:
-    tags: ['v*']
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -19,11 +21,15 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Après une release : le tag publié ; à la main : la branche choisie
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
