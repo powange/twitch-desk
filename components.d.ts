@@ -16,6 +16,8 @@ declare module 'vue' {
     ChannelFlag: typeof import('./src/components/ChannelFlag.vue')['default']
     ChannelProfileCard: typeof import('./src/components/ChannelProfileCard.vue')['default']
     ChatLogModal: typeof import('./src/components/ChatLogModal.vue')['default']
+    ConditionCells: typeof import('./src/components/conditions/ConditionCells.vue')['default']
+    ConditionHeaders: typeof import('./src/components/conditions/ConditionHeaders.vue')['default']
     GiftFormModal: typeof import('./src/components/GiftFormModal.vue')['default']
     GiftGroupsModal: typeof import('./src/components/GiftGroupsModal.vue')['default']
     GiveawayConditions: typeof import('./src/components/GiveawayConditions.vue')['default']

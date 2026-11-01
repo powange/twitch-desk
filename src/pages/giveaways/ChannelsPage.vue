@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
@@ -12,6 +12,10 @@ import ChatLogModal from '../../components/ChatLogModal.vue'
 import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
+import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
+import ConditionCells from '../../components/conditions/ConditionCells.vue'
+import { useConditionActions } from '../../composables/useConditionActions'
+import type { ConditionTarget } from '../../composables/useConditionActions'
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
@@ -121,6 +125,9 @@ const channels = computed(() =>
 
 // --- Ajout ou modification du giveaway de la chaîne ---
 const formOpen = ref(false)
+// Fiche du streamer seule (sans la partie giveaway)
+const streamerOpen = ref(false)
+const streamerLogin = ref<string | null>(null)
 const editing = ref<GiveawayView | null>(null)
 const formChannel = ref<string | null>(null)
 function openForm(c: GiveawayChannelView) {
@@ -128,6 +135,36 @@ function openForm(c: GiveawayChannelView) {
   formChannel.value = c.login
   formOpen.value = true
 }
+
+// --- Conditions : celles du giveaway ouvert, sinon les conditions habituelles du streamer ---
+type StreamerConditions = Omit<ConditionTarget, 'channel'> & { login: string }
+const streamers = ref<Map<string, StreamerConditions>>(new Map())
+async function loadStreamers() {
+  try {
+    const list = await invoke<StreamerConditions[]>('get_streamers')
+    streamers.value = new Map(list.map(s => [s.login, s]))
+  } catch {
+    // Conditions affichées « ? »
+  }
+}
+onMounted(loadStreamers)
+// Fiche ou giveaway enregistré : conditions habituelles relues
+watch([formOpen, streamerOpen], ([a, b]) => { if (!a && !b) void loadStreamers() })
+function conditionsOf(c: GiveawayChannelView): ConditionTarget {
+  const g = openGiveaway(c)
+  if (g) return g
+  const s = streamers.value.get(c.login)
+  return {
+    channel: c.login,
+    requirePresence: s?.requirePresence ?? null,
+    requireDiscord: s?.requireDiscord ?? null,
+    requireFollow: s?.requireFollow ?? null,
+    followMinDays: s?.followMinDays ?? null,
+    requireGreeting: s?.requireGreeting ?? null,
+    minChatMinutes: s?.minChatMinutes ?? null
+  }
+}
+const cond = useConditionActions(() => (view.value?.channels ?? []).map(conditionsOf))
 
 function status(c: GiveawayChannelView): { label: string, color: 'success' | 'warning' | 'neutral', hint: string } {
   if (c.live && c.inCategory) return { label: 'En live', color: 'success', hint: 'Giveaways surveillés' }
@@ -158,8 +195,6 @@ async function importChannels() {
 }
 
 // Fiche du streamer : chaîne (Discord, notes, commandes ignorées) et conditions habituelles
-const streamerOpen = ref(false)
-const streamerLogin = ref<string | null>(null)
 const logChannel = ref<string | null>(null)
 const logOpen = ref(false)
 function openLog(login: string) {
@@ -238,11 +273,13 @@ async function confirmRemove() {
       <table class="w-full text-sm">
         <thead class="bg-elevated/60 text-xs uppercase text-muted">
           <tr>
+            <th class="px-2 py-2"><span class="sr-only">Regarder</span></th>
             <th class="text-left px-3 py-2">Chaîne</th>
             <th class="text-left px-3 py-2">État</th>
             <th class="text-left px-3 py-2">Titre du live</th>
             <th class="text-left px-3 py-2">Giveaway</th>
             <th class="text-left px-3 py-2">Cadeaux</th>
+            <ConditionHeaders />
             <th class="text-left px-3 py-2">Chat lu par</th>
             <th class="px-3 py-2" />
           </tr>
@@ -254,6 +291,9 @@ async function confirmRemove() {
             class="border-t border-default"
             :class="[c.live && !c.inCategory ? 'opacity-70' : '', interesting(c) ? 'bg-primary/5 shadow-[inset_3px_0_0_var(--ui-primary)]' : '']"
           >
+            <td class="px-2 py-2">
+              <UButton v-if="c.live" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${c.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(c.login)" />
+            </td>
             <td class="px-3 py-2">
               <div class="flex items-center gap-1.5 whitespace-nowrap">
                 <ChannelFlag :login="c.login" />
@@ -301,6 +341,7 @@ async function confirmRemove() {
                 <span v-if="channelGifts(c).length === 0" class="text-muted">—</span>
               </div>
             </td>
+            <ConditionCells :target="conditionsOf(c)" :actions="cond" />
             <td class="px-3 py-2">
               <UTooltip :text="c.reader === 'anonyme' ? 'Connexion anonyme commune (lecture seule)' : c.reader ? 'Connexion déjà présente pour StreamElements : pas de connexion en plus' : 'En cours de connexion'">
                 <span class="inline-flex items-center gap-1.5">
@@ -311,7 +352,6 @@ async function confirmRemove() {
             </td>
             <td class="px-3 py-2">
               <div class="flex justify-end items-center gap-1">
-                <UButton v-if="c.live" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${c.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(c.login)" />
                 <UButton
                   v-if="openGiveaway(c)"
                   label="Modifier le giveaway"
@@ -346,7 +386,7 @@ async function confirmRemove() {
             </td>
           </tr>
           <tr v-if="channels.length === 0">
-            <td colspan="7" class="px-3 py-8 text-center text-muted">
+            <td colspan="13" class="px-3 py-8 text-center text-muted">
               {{ filtering ? 'Aucune chaîne ne correspond aux filtres.' : 'Aucune chaîne surveillée. Ajoute la première avec le champ ci-dessus.' }}
             </td>
           </tr>

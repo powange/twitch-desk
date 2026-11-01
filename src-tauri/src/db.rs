@@ -333,6 +333,24 @@ pub struct Streamer {
     pub min_chat_minutes: Option<i64>,
 }
 
+const STREAMER_SELECT: &str = "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_days,
+     require_presence, require_discord, require_greeting, min_chat_minutes FROM streamers";
+
+fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
+    Ok(Streamer {
+        login: r.get(0)?,
+        discord_url: r.get(1)?,
+        notes: r.get(2)?,
+        ignored_commands: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default(),
+        require_follow: r.get(4)?,
+        follow_min_days: r.get(5)?,
+        require_presence: r.get(6)?,
+        require_discord: r.get(7)?,
+        require_greeting: r.get(8)?,
+        min_chat_minutes: r.get(9)?,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GiftGroup {
@@ -1255,28 +1273,14 @@ impl Db {
     // --- Streamers ---
 
     pub fn streamer(&self, login: &str) -> DbResult<Option<Streamer>> {
-        self.conn()
-            .query_row(
-                "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_days, require_presence,
-                        require_discord, require_greeting, min_chat_minutes
-                 FROM streamers WHERE login = ?1",
-                [login],
-                |r| {
-                    Ok(Streamer {
-                        login: r.get(0)?,
-                        discord_url: r.get(1)?,
-                        notes: r.get(2)?,
-                        ignored_commands: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default(),
-                        require_follow: r.get(4)?,
-                        follow_min_days: r.get(5)?,
-                        require_presence: r.get(6)?,
-                        require_discord: r.get(7)?,
-                        require_greeting: r.get(8)?,
-                        min_chat_minutes: r.get(9)?,
-                    })
-                },
-            )
-            .optional()
+        self.conn().query_row(&format!("{STREAMER_SELECT} WHERE login = ?1"), [login], streamer_row).optional()
+    }
+
+    pub fn streamers(&self) -> DbResult<Vec<Streamer>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(STREAMER_SELECT)?;
+        let rows = stmt.query_map([], streamer_row)?.collect::<Result<_, _>>()?;
+        Ok(rows)
     }
 
     pub fn save_streamer(&self, s: &Streamer) -> DbResult<()> {

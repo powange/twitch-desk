@@ -235,6 +235,12 @@ pub fn set_paused(app: AppState, paused: bool) {
     crate::tray::refresh(app.handle(), paused);
 }
 
+/// Fiches des streamers (conditions habituelles), pour la page Chaînes
+#[tauri::command]
+pub fn get_streamers(app: AppState) -> CmdResult<Vec<crate::db::Streamer>> {
+    app.db.streamers().map_err(db_err)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectionRules {

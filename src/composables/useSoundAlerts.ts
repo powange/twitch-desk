@@ -41,6 +41,7 @@ export const DEFAULT_SOUND: Record<SoundAlertKind, string> = {
 }
 
 let context: AudioContext | null = null
+let output: AudioNode | null = null
 
 function audio(): AudioContext {
   context ??= new AudioContext()
@@ -48,26 +49,45 @@ function audio(): AudioContext {
   return context
 }
 
-// Volume perçu : progression au carré, plafonné pour rester supportable
-const gainFor = (volume: number) => Math.min(1, volume / 100) ** 2
+// Sortie commune : limiteur qui laisse pousser le niveau au maximum sans saturer
+function master(ctx: AudioContext): AudioNode {
+  if (!output) {
+    const limiter = ctx.createDynamicsCompressor()
+    limiter.threshold.value = -6
+    limiter.knee.value = 3
+    limiter.ratio.value = 20
+    limiter.attack.value = 0.002
+    limiter.release.value = 0.1
+    limiter.connect(ctx.destination)
+    output = limiter
+  }
+  return output
+}
+
+// Volume perçu : progression au carré ; à 100 %, le son est poussé contre le limiteur (×3)
+const gainFor = (volume: number) => 3 * Math.min(1, volume / 100) ** 2
 
 function playPattern(pattern: Pattern, volume: number) {
   const ctx = audio()
   const start = ctx.currentTime + 0.02
-  const peak = gainFor(volume) * 0.5
+  const peak = gainFor(volume)
+  const out = master(ctx)
   pattern.notes.forEach((freq, i) => {
     const t = start + i * pattern.step
     const osc = ctx.createOscillator()
     const gain = ctx.createGain()
     osc.type = pattern.wave
     osc.frequency.value = freq
-    // Attaque courte puis extinction, sans clic
+    // Attaque courte, note tenue, puis extinction, sans clic
+    const level = pattern.wave === 'square' ? peak * 0.6 : peak
+    const length = Math.max(pattern.length, 0.1) * 1.4
     gain.gain.setValueAtTime(0.0001, t)
-    gain.gain.exponentialRampToValueAtTime(pattern.wave === 'square' ? peak * 0.4 : peak, t + 0.01)
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + pattern.length)
-    osc.connect(gain).connect(ctx.destination)
+    gain.gain.exponentialRampToValueAtTime(level, t + 0.01)
+    gain.gain.setValueAtTime(level, t + length * 0.5)
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + length)
+    osc.connect(gain).connect(out)
     osc.start(t)
-    osc.stop(t + pattern.length + 0.02)
+    osc.stop(t + length + 0.02)
   })
 }
 
@@ -90,7 +110,7 @@ async function playCustom(kind: SoundAlertKind, volume: number) {
   const gain = ctx.createGain()
   source.buffer = buffer
   gain.gain.value = gainFor(volume)
-  source.connect(gain).connect(ctx.destination)
+  source.connect(gain).connect(master(ctx))
   source.start()
 }
 

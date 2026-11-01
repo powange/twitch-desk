@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { RouterLink } from 'vue-router'
 import { useSnapshot } from '../../composables/useSnapshot'
@@ -14,6 +14,9 @@ import ChatLogModal from '../../components/ChatLogModal.vue'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, formatDrawAt } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
+import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
+import ConditionCells from '../../components/conditions/ConditionCells.vue'
+import { useConditionActions } from '../../composables/useConditionActions'
 
 const { snapshot, accounts } = useSnapshot()
 const toast = useToast()
@@ -25,53 +28,9 @@ const giveaways = computed(() => view.value?.giveaways ?? [])
 // Live en cours d'une chaîne surveillée (catégorie, spectateurs)
 const liveOf = (channel: string) => view.value?.channels.find(c => c.login === channel)?.live ?? null
 
-// --- Follow requis : nos comptes suivent-ils la chaîne ? (relu à l'ouverture de la page) ---
-interface FollowState { accountId: number, login: string, follows: boolean | null, followedAt: string | null }
-const follows = reactive<Record<string, FollowState[] | 'loading'>>({})
-const following = ref<string | null>(null)
-async function loadFollows(channel: string) {
-  follows[channel] = 'loading'
-  try {
-    follows[channel] = await invoke<FollowState[]>('follow_status', { channel })
-  } catch {
-    delete follows[channel]
-  }
-}
-// Giveaways (ouverts ou clos) avec follow requis : état lu une fois par chaîne
-watch(() => giveaways.value.filter(g => g.requireFollow === true).map(g => g.channel), (channels) => {
-  for (const c of new Set(channels)) if (!(c in follows)) void loadFollows(c)
-}, { immediate: true })
-function followList(channel: string): FollowState[] | null {
-  const f = follows[channel]
-  return Array.isArray(f) ? f : null
-}
-const notFollowing = (channel: string) => (followList(channel) ?? []).filter(f => f.follows === false)
-// Jours depuis le follow d'un compte
-const followDays = (f: FollowState) => f.followedAt ? Math.floor((Date.now() - new Date(f.followedAt).getTime()) / 86_400_000) : null
-// Comptes qui suivent, mais depuis moins longtemps que demandé
-function tooRecent(g: GiveawayView) {
-  const min = g.followMinDays
-  if (!min) return []
-  return (followList(g.channel) ?? []).filter(f => f.follows && (followDays(f) ?? 0) < min)
-}
-const followOk = (g: GiveawayView) => {
-  const list = followList(g.channel)
-  return !!list && list.every(f => f.follows) && tooRecent(g).length === 0
-}
-function followTooltip(g: GiveawayView) {
-  const list = followList(g.channel)
-  const head = g.followMinDays ? `Follow requis depuis au moins ${g.followMinDays} jour(s)` : 'Follow requis'
-  if (!list) return follows[g.channel] === 'loading' ? `${head} : vérification…` : `${head} : état du follow inconnu`
-  const missing = list.filter(f => f.follows === false).map(f => f.login)
-  const unknown = list.filter(f => f.follows === null).map(f => f.login)
-  const recent = tooRecent(g).map(f => `${f.login} (${followDays(f)} j)`)
-  const parts = [head]
-  if (missing.length) parts.push(`pas suivie par ${missing.join(', ')} : clique pour suivre`)
-  if (recent.length) parts.push(`follow trop récent : ${recent.join(', ')}`)
-  if (!missing.length && !recent.length && !unknown.length) parts.push('suivie par tous tes comptes')
-  if (unknown.length) parts.push(`état inconnu pour ${unknown.join(', ')}`)
-  return parts.join(' · ')
-}
+// Conditions : follow, bonjour, Discord (giveaways ouverts ou clos)
+const cond = useConditionActions(() => giveaways.value)
+
 // Journal du chat d'une chaîne
 const logChannel = ref<string | null>(null)
 const logOpen = ref(false)
@@ -104,73 +63,6 @@ async function saveCommand(g: GiveawayView) {
   }
 }
 
-// Discord requis : invitation de la fiche du streamer, sinon trouvée sur sa chaîne Twitch
-const openingDiscord = ref<string | null>(null)
-async function openDiscord(channel: string) {
-  if (openingDiscord.value) return
-  openingDiscord.value = channel
-  try {
-    const url = await invoke<string | null>('streamer_discord', { login: channel })
-    if (url) openExternal(url)
-    else toast.add({ title: 'Aucune invitation Discord connue', description: `Ajoute-la sur la fiche de ${channel} (Modifier → Chaîne).`, color: 'warning' })
-  } catch (e) {
-    toast.add({ title: 'Invitation Discord introuvable', description: String(e), color: 'error' })
-  } finally {
-    openingDiscord.value = null
-  }
-}
-
-// --- Avoir dit bonjour : comptes qui l'ont déjà dit sur la chaîne (24 h), bonjour en un clic ---
-interface GreetingState { accountId: number, login: string, greeted: boolean }
-const greetings = reactive<Record<string, GreetingState[]>>({})
-const greeting = ref<string | null>(null)
-async function loadGreetings(channel: string) {
-  try {
-    greetings[channel] = await invoke<GreetingState[]>('greeting_status', { channel })
-  } catch {
-    delete greetings[channel]
-  }
-}
-watch(() => giveaways.value.filter(g => g.requireGreeting === true).map(g => g.channel), (channels) => {
-  for (const c of new Set(channels)) if (!(c in greetings)) void loadGreetings(c)
-}, { immediate: true })
-const greetedByAll = (channel: string) => !!greetings[channel]?.length && greetings[channel]!.every(s => s.greeted)
-function greetingTooltip(channel: string) {
-  const list = greetings[channel]
-  if (!list) return 'Avoir dit bonjour dans le chat'
-  const missing = list.filter(s => !s.greeted).map(s => s.login)
-  return missing.length
-    ? `Avoir dit bonjour : pas encore dit par ${missing.join(', ')}. Clique pour dire bonjour (phrase au hasard dans la langue de la chaîne)`
-    : 'Bonjour déjà dit par tous tes comptes'
-}
-async function sayHello(channel: string) {
-  if (greeting.value) return
-  greeting.value = channel
-  try {
-    greetings[channel] = await invoke<GreetingState[]>('say_hello', { channel })
-    toast.add({ title: `Bonjour dit sur ${channel}`, color: 'success', icon: 'i-lucide-hand' })
-  } catch (e) {
-    toast.add({ title: 'Bonjour non envoyé', description: String(e), color: 'error' })
-    void loadGreetings(channel)
-  } finally {
-    greeting.value = null
-  }
-}
-
-async function followChannel(channel: string) {
-  const ids = notFollowing(channel).map(f => f.accountId)
-  if (!ids.length || following.value) return
-  following.value = channel
-  try {
-    follows[channel] = await invoke<FollowState[]>('follow_channel', { channel, accountIds: ids })
-    toast.add({ title: `${channel} suivie`, color: 'success', icon: 'i-lucide-check' })
-  } catch (e) {
-    toast.add({ title: 'Follow impossible', description: String(e), color: 'error' })
-    void loadFollows(channel)
-  } finally {
-    following.value = null
-  }
-}
 const mentions = computed(() => view.value?.mentions ?? [])
 // File d'alertes : giveaways ouverts pas encore traités, et mentions
 const alerts = computed(() => giveaways.value.filter(g => g.open && !g.handled))
@@ -277,24 +169,24 @@ function share(g: GiveawayView) {
             <button type="button" class="font-mono bg-elevated px-1.5 py-0.5 rounded hover:text-primary" @click="copyCommand(g.command)">{{ g.command }}</button>
           </UTooltip>
           <!-- Follow requis : cœur rempli si suivie par tous tes comptes, sinon cliquable pour suivre -->
-          <UTooltip v-if="g.requireFollow" :text="followTooltip(g)">
+          <UTooltip v-if="g.requireFollow" :text="cond.followTooltip(g)">
             <button
-              v-if="notFollowing(g.channel).length"
+              v-if="cond.notFollowing(g.channel).length"
               type="button"
               class="inline-flex items-center gap-0.5 text-warning hover:text-pink-500 disabled:opacity-50"
-              :disabled="following === g.channel"
+              :disabled="cond.following === g.channel"
               :aria-label="`Suivre ${g.channel}`"
-              @click="followChannel(g.channel)"
+              @click="cond.followChannel(g.channel)"
             >
-              <UIcon :name="following === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="following === g.channel ? 'animate-spin' : ''" />
+              <UIcon :name="cond.following === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="cond.following === g.channel ? 'animate-spin' : ''" />
               <span v-if="g.followMinDays" class="text-xs font-medium">{{ g.followMinDays }} j</span>
             </button>
             <span
               v-else
               class="inline-flex items-center gap-0.5"
-              :class="followOk(g) ? 'text-success' : tooRecent(g).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'"
+              :class="cond.followOk(g) ? 'text-success' : cond.tooRecent(g).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'"
             >
-              <SolidIcon v-if="followOk(g)" name="heart" class="size-4" />
+              <SolidIcon v-if="cond.followOk(g)" name="heart" class="size-4" />
               <UIcon v-else name="i-lucide-heart" class="size-4" />
               <span v-if="g.followMinDays" class="text-xs font-medium">{{ g.followMinDays }} j</span>
             </span>
@@ -359,45 +251,12 @@ function share(g: GiveawayView) {
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
             <tr>
               <th class="text-left px-3 py-2">Détecté</th>
+              <th class="px-2 py-2"><span class="sr-only">Regarder</span></th>
               <th class="text-left px-3 py-2">Chaîne</th>
               <th class="text-left px-3 py-2">Type</th>
               <th class="text-left px-3 py-2">Commande</th>
               <th class="text-left px-3 py-2">Cadeaux</th>
-              <th class="px-2 py-2">
-                <div class="flex justify-center">
-                  <UTooltip text="Présence requise dans le chat au moment du tirage">
-                  <UIcon name="i-lucide-user-check" class="size-4 block" aria-label="Présence au tirage" />
-                  </UTooltip>
-                </div>
-              </th>
-              <th class="px-2 py-2">
-                <div class="flex justify-center">
-                  <UTooltip text="Être sur le Discord du streamer">
-                  <UIcon name="i-simple-icons-discord" class="size-4 block" aria-label="Discord requis" />
-                  </UTooltip>
-                </div>
-              </th>
-              <th class="px-2 py-2">
-                <div class="flex justify-center">
-                  <UTooltip text="Follow de la chaîne requis (vert : suivie par tous tes comptes ; clique pour suivre sinon)">
-                    <UIcon name="i-lucide-heart" class="size-4 block" aria-label="Follow requis" />
-                  </UTooltip>
-                </div>
-              </th>
-              <th class="px-2 py-2">
-                <div class="flex justify-center">
-                  <UTooltip text="Avoir dit bonjour dans le chat">
-                    <UIcon name="i-lucide-hand" class="size-4 block" aria-label="Avoir dit bonjour" />
-                  </UTooltip>
-                </div>
-              </th>
-              <th class="px-2 py-2">
-                <div class="flex justify-center">
-                  <UTooltip text="Temps de présence minimum dans le chat">
-                    <UIcon name="i-lucide-timer" class="size-4 block" aria-label="Temps de présence dans le chat" />
-                  </UTooltip>
-                </div>
-              </th>
+              <ConditionHeaders />
               <th class="text-left px-3 py-2">Tirage</th>
               <th class="text-left px-3 py-2">Participations</th>
               <th class="text-left px-3 py-2">Gagnant</th>
@@ -408,6 +267,9 @@ function share(g: GiveawayView) {
           <tbody>
             <tr v-for="g in giveaways" :key="g.id" class="border-t border-default" :class="g.winnerOurs ? 'bg-success/10' : ''">
               <td class="px-3 py-2 whitespace-nowrap text-muted">{{ timeAgo(g.detectedAt, now) }}</td>
+              <td class="px-2 py-2">
+                <UButton v-if="liveOf(g.channel)" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${g.channel}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(g.channel)" />
+              </td>
               <td class="px-3 py-2">
                 <div class="flex items-center gap-1.5">
                   <ChannelFlag :login="g.channel" />
@@ -465,82 +327,7 @@ function share(g: GiveawayView) {
                   <span v-if="g.giftIds.length === 0" class="text-muted">—</span>
                 </div>
               </td>
-              <!-- Une colonne par condition : ? inconnu, picto si requis, rien sinon -->
-              <td class="px-2 py-2">
-                <div class="flex justify-center items-center">
-                  <span v-if="g.requirePresence === null" class="text-muted" title="On ne sait pas">?</span>
-                  <UTooltip v-else-if="g.requirePresence" text="Présence requise au moment du tirage">
-                    <UIcon name="i-lucide-user-check" class="size-4 text-emerald-600 dark:text-emerald-400 block" />
-                  </UTooltip>
-                </div>
-              </td>
-              <td class="px-2 py-2">
-                <div class="flex justify-center items-center">
-                  <span v-if="g.requireDiscord === null" class="text-muted" title="On ne sait pas">?</span>
-                  <UTooltip v-else-if="g.requireDiscord" text="Être sur le Discord du streamer : clique pour ouvrir son invitation">
-                    <button
-                      type="button"
-                      class="inline-flex text-indigo-600 dark:text-indigo-400 hover:text-indigo-400 disabled:opacity-50"
-                      :disabled="openingDiscord === g.channel"
-                      :aria-label="`Ouvrir le Discord de ${g.channel}`"
-                      @click="openDiscord(g.channel)"
-                    >
-                      <UIcon :name="openingDiscord === g.channel ? 'i-lucide-loader-circle' : 'i-simple-icons-discord'" class="size-4" :class="openingDiscord === g.channel ? 'animate-spin' : ''" />
-                    </button>
-                  </UTooltip>
-                </div>
-              </td>
-              <td class="px-2 py-2">
-                <div class="flex justify-center items-center">
-                  <span v-if="g.requireFollow === null" class="text-muted" title="On ne sait pas">?</span>
-                  <UTooltip v-else-if="g.requireFollow" :text="followTooltip(g)">
-                    <button
-                      v-if="notFollowing(g.channel).length"
-                      type="button"
-                      class="inline-flex text-warning hover:text-pink-500 disabled:opacity-50"
-                      :disabled="following === g.channel"
-                      :aria-label="`Suivre ${g.channel}`"
-                      @click="followChannel(g.channel)"
-                    >
-                      <UIcon :name="following === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="following === g.channel ? 'animate-spin' : ''" />
-                    </button>
-                    <SolidIcon v-else-if="followOk(g)" name="heart" class="size-4 block text-success" />
-                    <UIcon v-else name="i-lucide-heart" class="size-4 block" :class="tooRecent(g).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'" />
-                  </UTooltip>
-                  <span v-if="g.requireFollow && g.followMinDays" class="text-xs text-muted ml-1 whitespace-nowrap">{{ g.followMinDays }} j</span>
-                </div>
-              </td>
-              <td class="px-2 py-2">
-                <div class="flex justify-center items-center">
-                  <span v-if="g.requireGreeting === null" class="text-muted" title="On ne sait pas">?</span>
-                  <UTooltip v-else-if="g.requireGreeting" :text="greetingTooltip(g.channel)">
-                    <span v-if="greetedByAll(g.channel)" class="relative inline-flex text-success" aria-label="Bonjour déjà dit">
-                      <UIcon name="i-lucide-hand" class="size-4 block" />
-                      <UIcon name="i-lucide-check" class="absolute -bottom-1 -right-1.5 size-3 bg-default rounded-full" />
-                    </span>
-                    <button
-                      v-else
-                      type="button"
-                      class="inline-flex text-amber-600 dark:text-amber-400 hover:text-amber-500 disabled:opacity-50"
-                      :disabled="greeting === g.channel"
-                      :aria-label="`Dire bonjour sur ${g.channel}`"
-                      @click="sayHello(g.channel)"
-                    >
-                      <UIcon :name="greeting === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-hand'" class="size-4" :class="greeting === g.channel ? 'animate-spin' : ''" />
-                    </button>
-                  </UTooltip>
-                </div>
-              </td>
-              <td class="px-2 py-2">
-                <div class="flex justify-center items-center">
-                  <span v-if="g.minChatMinutes === null" class="text-muted" title="On ne sait pas">?</span>
-                  <UTooltip v-else-if="g.minChatMinutes > 0" :text="`Présent dans le chat depuis au moins ${g.minChatMinutes} min`">
-                    <span class="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 whitespace-nowrap">
-                      <UIcon name="i-lucide-timer" class="size-4" />{{ g.minChatMinutes }} min
-                    </span>
-                  </UTooltip>
-                </div>
-              </td>
+              <ConditionCells :target="g" :actions="cond" />
               <td class="px-3 py-2 whitespace-nowrap" :class="g.drawAt ? '' : 'text-muted'">{{ formatDrawAt(g.drawAt) }}</td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap gap-1">
@@ -586,7 +373,6 @@ function share(g: GiveawayView) {
                     @click="participate(g)"
                   />
                   <UButton icon="i-lucide-scroll-text" size="xs" color="neutral" variant="ghost" :aria-label="`Journal du chat de ${g.channel}`" title="Journal du chat" @click="openLog(g.channel)" />
-                  <UButton v-if="g.open" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${g.channel}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(g.channel)" />
                   <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
                   <UButton v-if="g.open" label="Clore" size="xs" color="neutral" variant="ghost" @click="invoke('close_giveaway', { id: g.id })" />
                   <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" aria-label="Supprimer" @click="invoke('delete_giveaway', { id: g.id })" />
@@ -594,7 +380,7 @@ function share(g: GiveawayView) {
               </td>
             </tr>
             <tr v-if="giveaways.length === 0">
-              <td colspan="15" class="px-3 py-8 text-center text-muted">Aucun giveaway pour l'instant. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».</td>
+              <td colspan="16" class="px-3 py-8 text-center text-muted">Aucun giveaway pour l'instant. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».</td>
             </tr>
           </tbody>
         </table>

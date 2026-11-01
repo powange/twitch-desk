@@ -254,6 +254,7 @@ pub fn run() {
             commands::search_categories,
             commands::game_box_arts,
             commands::save_streamer,
+            commands::get_streamers,
             scanner::scan_streams,
             scanner::scanner_ignore,
             scanner::scanner_refilter,
