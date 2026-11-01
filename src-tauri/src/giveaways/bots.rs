@@ -4,7 +4,7 @@
 //! décide quoi en faire. Seuls les bots de confiance sont lus : un viewer ne
 //! doit pas pouvoir falsifier un gagnant en imitant le format.
 
-use std::sync::LazyLock;
+use std::sync::{LazyLock, RwLock};
 
 use regex::Regex;
 
@@ -52,21 +52,96 @@ static GENERIC_WIN_FR: LazyLock<Regex> = LazyLock::new(|| {
 static GENERIC_WIN_SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?i)(?:^|[\s:!,.])@?([A-Za-z0-9_]{3,25})\s+(?:a\s+(?:gagn[ée]|remport[ée])|remporte|gagne|has\s+won|won|wins)\s+(?:le|la|l'|the)\s*(?:giveaway|concours|tirage|raffle|loterie|cadeau)")
 });
+// « 🎁 Le gagnant du tirage est wazagoat. », « The winner of the giveaway is Bob »
+static GENERIC_WIN_IS: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"(?i)(?:\ble\s+gagnant|\bla\s+gagnante|\bles\s+gagnants?|\bthe\s+winners?)(?:\s+(?:du|de\s+la|of\s+the)\s+(?:tirage|giveaway|concours|raffle|loterie))?\s*(?:est|sont|is|are)\s*:?\s*@?([A-Za-z0-9_]{3,25})\b")
+});
 static GENERIC_WIN_EN: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?i)congrat(?:ulation)?s?\s*,?\s*@?([A-Za-z0-9_]{3,25})\b[^@]*?\b(?:you\s+(?:have\s+)?won|has\s+won)\b")
 });
 
 /// Bot du chat : connu, ou pseudo en « …bot » (moobot, fossabot, sery_bot…)
+/// Pseudos ajoutés par l'utilisateur comme bots (Giveaways → Réglages)
+static EXTRA_BOTS: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(vec![]));
+
+pub fn set_extra_bots(names: &[String]) {
+    *EXTRA_BOTS.write().unwrap() = names.iter().map(|n| n.trim().trim_start_matches('@').to_lowercase()).filter(|n| !n.is_empty()).collect();
+}
+
+/// Bot du chat : connu, pseudo en « …bot », ou ajouté dans les réglages
 pub fn is_bot_like(user: &str) -> bool {
     let user = user.to_lowercase();
-    is_chat_bot(&user) || user.ends_with("bot") || user == "streamlabs"
+    is_chat_bot(&user) || user.ends_with("bot") || user == "streamlabs" || EXTRA_BOTS.read().unwrap().contains(&user)
+}
+
+/// Formulations ajoutées par l'utilisateur (Giveaways → Réglages), compilées
+static CUSTOM_WINS: LazyLock<RwLock<Vec<Regex>>> = LazyLock::new(|| RwLock::new(vec![]));
+
+/// Formulation saisie (« Le gagnant est {pseudo} ») en expression : majuscules ignorées,
+/// espaces souples, « @ » facultatif devant le pseudo. Erreur si {pseudo} manque ou se répète
+pub fn compile_template(template: &str) -> Result<Regex, String> {
+    let template = template.trim();
+    let parts: Vec<&str> = template.split("{pseudo}").collect();
+    if parts.len() != 2 {
+        return Err(format!("« {template} » : mets {{pseudo}} une fois à la place du nom du gagnant"));
+    }
+    if template.chars().count() > 200 {
+        return Err(format!("« {template} » : 200 caractères au plus"));
+    }
+    let literal = |s: &str| s.split_whitespace().map(regex::escape).collect::<Vec<_>>().join(r"\s+");
+    let (before, after) = (literal(parts[0]), literal(parts[1]));
+    let pattern = format!(r"(?i){before}\s*@?([A-Za-z0-9_]{{3,25}})\b\s*{after}");
+    Regex::new(&pattern).map_err(|e| format!("« {template} » : {e}"))
+}
+
+/// Remplace les formulations personnalisées ; renvoie les erreurs des formulations écartées
+pub fn set_custom_patterns(templates: &[String]) -> Vec<String> {
+    let mut compiled = vec![];
+    let mut errors = vec![];
+    for t in templates.iter().filter(|t| !t.trim().is_empty()) {
+        match compile_template(t) {
+            Ok(re) => compiled.push(re),
+            Err(e) => errors.push(e),
+        }
+    }
+    *CUSTOM_WINS.write().unwrap() = compiled;
+    errors
+}
+
+fn custom_winner(bot: &str, message: &str) -> Option<BotEvent> {
+    let customs = CUSTOM_WINS.read().unwrap();
+    customs.iter().find_map(|re| re.captures(message).and_then(|c| winner(bot, c.get(1).map(|m| m.as_str()), None)))
+}
+
+/// Teste une phrase avec les formulations intégrées et celles données (non enregistrées) :
+/// (gagnant, formulation personnalisée ?)
+pub fn test_phrase(message: &str, templates: &[String]) -> Result<Option<(String, bool)>, String> {
+    for t in templates.iter().filter(|t| !t.trim().is_empty()) {
+        let re = compile_template(t)?;
+        if let Some(BotEvent::Winner { winner, .. }) = re.captures(message).and_then(|c| winner("test", c.get(1).map(|m| m.as_str()), None)) {
+            return Ok(Some((winner, true)));
+        }
+    }
+    let builtin = [&SE_WIN_EN, &SE_WIN_FR, &WIZEBOT_WIN, &NIGHTBOT_WIN]
+        .iter()
+        .find_map(|re| re.captures(message).and_then(|c| winner("test", c.get(1).map(|m| m.as_str()), None)))
+        .or_else(|| generic_winner_builtin("test", message));
+    Ok(builtin.and_then(|e| match e {
+        BotEvent::Winner { winner, .. } => Some((winner, false)),
+        _ => None,
+    }))
 }
 
 fn generic_winner(bot: &str, message: &str) -> Option<BotEvent> {
+    generic_winner_builtin(bot, message).or_else(|| custom_winner(bot, message))
+}
+
+fn generic_winner_builtin(bot: &str, message: &str) -> Option<BotEvent> {
     let c = GENERIC_WIN_FR
         .captures(message)
         .or_else(|| GENERIC_WIN_EN.captures(message))
-        .or_else(|| GENERIC_WIN_SUBJECT.captures(message))?;
+        .or_else(|| GENERIC_WIN_SUBJECT.captures(message))
+        .or_else(|| GENERIC_WIN_IS.captures(message))?;
     winner(bot, c.get(1).map(|m| m.as_str()), None)
 }
 
@@ -133,6 +208,10 @@ pub fn parse_bot_message(user: &str, message: &str) -> Vec<BotEvent> {
     if !is_chat_bot(&bot) && is_bot_like(&bot) && !events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) {
         events.extend(generic_winner(&bot, message));
     }
+    // Formulations personnalisées : pour tous les bots, connus compris
+    if is_bot_like(&bot) && !events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) {
+        events.extend(custom_winner(&bot, message));
+    }
     events
 }
 
@@ -155,6 +234,20 @@ mod tests {
     }
 
     #[test]
+    fn custom_templates() {
+        let re = compile_template("Bravo à {pseudo} qui remporte").unwrap();
+        let c = re.captures("🎉 BRAVO   à @Zoe_77 qui remporte le lot !").unwrap();
+        assert_eq!(&c[1], "Zoe_77");
+        assert!(compile_template("pas de pseudo").is_err());
+        assert!(compile_template("{pseudo} et {pseudo}").is_err());
+        // Caractères spéciaux pris tels quels
+        assert!(compile_template("(gagnant) {pseudo} ?").unwrap().is_match("(gagnant) bob42 ?"));
+        assert_eq!(test_phrase("Bravo à bob42 qui remporte", &["Bravo à {pseudo} qui remporte".into()]).unwrap(), Some(("bob42".into(), true)));
+        assert_eq!(test_phrase("Le gagnant du tirage est wazagoat.", &[]).unwrap(), Some(("wazagoat".into(), false)));
+        assert_eq!(test_phrase("rien à voir", &[]).unwrap(), None);
+    }
+
+    #[test]
     fn generic_winner_announcements() {
         assert_eq!(
             parse_bot_message("Sery_Bot", "🎉 Félicitations @julsr8 ! Vous avez gagné le giveaway ! 🎉"),
@@ -173,6 +266,12 @@ mod tests {
             vec![win("mwettonbot", "zalmomo", None)]
         );
         assert_eq!(moderator_winner("lunarsea", "Bob_42 wins the raffle!"), Some(win("lunarsea", "Bob_42", None)));
+        // Annonce réelle de lcalypsl (modérateur)
+        assert_eq!(moderator_winner("lcalypsl", "🎁 Le gagnant du tirage est wazagoat."), Some(win("lcalypsl", "wazagoat", None)));
+        assert_eq!(moderator_winner("x", "La gagnante est @Alice_99 !"), Some(win("x", "Alice_99", None)));
+        assert_eq!(moderator_winner("x", "The winner of the giveaway is: Bob42"), Some(win("x", "Bob42", None)));
+        assert_eq!(moderator_winner("x", "le gagnant est personne"), None);
+        assert_eq!(moderator_winner("x", "qui sera le gagnant ? tapez !join"), None);
         assert_eq!(moderator_winner("lunarsea", "le giveaway commence, tapez !join"), None);
         assert!(is_bot_like("Sery_Bot") && is_bot_like("streamelements") && !is_bot_like("bobby"));
     }

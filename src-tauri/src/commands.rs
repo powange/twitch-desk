@@ -235,6 +235,50 @@ pub fn set_paused(app: AppState, paused: bool) {
     crate::tray::refresh(app.handle(), paused);
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectionRules {
+    winner_patterns: Vec<String>,
+    extra_bots: Vec<String>,
+}
+
+#[tauri::command]
+pub fn get_detection_rules(app: AppState) -> CmdResult<DetectionRules> {
+    Ok(DetectionRules {
+        winner_patterns: app.db.detection_rules("winner").map_err(db_err)?,
+        extra_bots: app.db.detection_rules("bot").map_err(db_err)?,
+    })
+}
+
+/// `kind` : `winner` (formulations avec {pseudo}) ou `bot` (pseudos) ; liste nettoyée et renvoyée
+#[tauri::command]
+pub fn set_detection_rules(app: AppState, kind: String, values: Vec<String>) -> CmdResult<Vec<String>> {
+    let mut list: Vec<String> = vec![];
+    for v in values.iter().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        let v = match kind.as_str() {
+            "winner" => {
+                crate::giveaways::bots::compile_template(v)?;
+                v.to_string()
+            }
+            "bot" => {
+                let name = v.trim_start_matches('@').to_lowercase();
+                if !crate::sync::valid_login(&name) {
+                    return Err(format!("Pseudo de bot invalide : {v}"));
+                }
+                name
+            }
+            _ => return Err(format!("Type inconnu : {kind}")),
+        };
+        if !list.iter().any(|x| x.eq_ignore_ascii_case(&v)) {
+            list.push(v);
+        }
+    }
+    app.db.set_detection_rules(&kind, &list).map_err(db_err)?;
+    app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
+    app.db.detection_rules(&kind).map_err(db_err)
+}
+
 #[tauri::command]
 pub fn get_settings(app: AppState) -> Settings {
     app.db.settings()
@@ -410,6 +454,21 @@ pub fn get_chat_log_meta(app: AppState, channel: String) -> CmdResult<ChatLogMet
         commands: app.db.chat_log_commands(&channel).map_err(db_err)?,
         replies: app.db.bot_replies(&channel).map_err(db_err)?,
     })
+}
+
+/// Teste une annonce de gagnant avec les formulations intégrées et celles données
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WinnerTest {
+    winner: Option<String>,
+    /// Trouvé par une formulation personnalisée
+    custom: bool,
+}
+
+#[tauri::command]
+pub fn test_winner_phrase(text: String, templates: Vec<String>) -> CmdResult<WinnerTest> {
+    let found = crate::giveaways::bots::test_phrase(&text, &templates)?;
+    Ok(WinnerTest { custom: found.as_ref().is_some_and(|f| f.1), winner: found.map(|f| f.0) })
 }
 
 // --- Dire bonjour ---
@@ -879,7 +938,16 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
     }
     let notes = streamer.notes.map(|n| n.trim().chars().take(2000).collect::<String>()).filter(|n| !n.is_empty());
     let ignored_commands = crate::giveaways::detect::normalize_excluded(&streamer.ignored_commands);
-    app.db.save_streamer(&crate::db::Streamer { login, discord_url, notes, ignored_commands }).map_err(db_err)?;
+    if streamer.min_chat_minutes.is_some_and(|m| !(0..=1440).contains(&m)) {
+        return Err("Temps de présence dans le chat invalide (24 h au plus)".into());
+    }
+    if streamer.follow_min_days.is_some_and(|n| !(1..=3650).contains(&n)) {
+        return Err("Ancienneté du follow invalide (1 à 3650 jours)".into());
+    }
+    let follow_min_days = streamer.follow_min_days.filter(|_| streamer.require_follow == Some(true));
+    app.db
+        .save_streamer(&crate::db::Streamer { login, discord_url, notes, ignored_commands, follow_min_days, ..streamer })
+        .map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();
     Ok(())

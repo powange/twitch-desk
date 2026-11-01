@@ -1,6 +1,6 @@
 # Twitch Desk Sync
 
-Serveur de synchronisation de Twitch Desk : plusieurs personnes mettent en commun ce qu'elles ajoutent dans l'application (cadeaux, groupes, giveaways, chaînes surveillées, fiches des streamers).
+Serveur de synchronisation de Twitch Desk : plusieurs personnes mettent en commun ce qu'elles ajoutent dans l'application (cadeaux, groupes, giveaways, chaînes surveillées, fiches des streamers, formulations de gagnant et bots ajoutés).
 
 Chaque application envoie ses modifications et récupère celles des autres toutes les 30 secondes (et quelques secondes après une modification). La dernière modification reçue l'emporte ; une suppression s'applique chez tout le monde. Deux personnes qui créent le même élément (même cadeau, même groupe, même giveaway ouvert sur une chaîne) se retrouvent avec un seul élément.
 
@@ -25,7 +25,7 @@ Mettre le serveur derrière un proxy HTTPS (Nginx Proxy Manager, Traefik, Caddy�
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
 | `SYNC_CODE` | (obligatoire) | Code à donner aux utilisateurs, 8 caractères au moins |
-| `SYNC_COLLECTIONS` | toutes | Données partagées, séparées par des virgules : `groups`, `gifts`, `giveaways`, `channels`, `streamers` |
+| `SYNC_COLLECTIONS` | toutes | Données partagées, séparées par des virgules : `groups`, `gifts`, `giveaways`, `channels`, `streamers`, `detection` (formulations de gagnant et bots ajoutés) |
 | `SYNC_HISTORY_DAYS` | `90` | Conservation de l'historique des modifications |
 | `SYNC_DB` | `/data/sync.db` | Fichier SQLite (volume `/data`) |
 | `SYNC_PORT` | `8787` | Port d'écoute |

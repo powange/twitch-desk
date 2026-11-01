@@ -8,7 +8,6 @@ import { boxArt, channelUrl, formatNumber } from '../../utils/format'
 import type { Gift, GiveawayChannelView, GiveawayView } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
-import MonitoredChannelSettings from '../../components/MonitoredChannelSettings.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
 import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
@@ -158,19 +157,18 @@ async function importChannels() {
   toast.add({ title: added ? `${added} chaîne(s) ajoutée(s)` : 'Toutes tes chaînes sont déjà surveillées', color: 'success', icon: 'i-lucide-check' })
 }
 
-// Réglages d'une chaîne (commandes ignorées…) : la vue à jour est relue par son identifiant
-const settingsId = ref<number | null>(null)
-const settingsOpen = ref(false)
-const settingsChannel = computed(() => allChannels.value.find(c => c.id === settingsId.value) ?? null)
+// Fiche du streamer : chaîne (Discord, notes, commandes ignorées) et conditions habituelles
+const streamerOpen = ref(false)
+const streamerLogin = ref<string | null>(null)
 const logChannel = ref<string | null>(null)
 const logOpen = ref(false)
 function openLog(login: string) {
   logChannel.value = login
   logOpen.value = true
 }
-function openSettings(c: GiveawayChannelView) {
-  settingsId.value = c.id
-  settingsOpen.value = true
+function openStreamer(c: GiveawayChannelView) {
+  streamerLogin.value = c.login
+  streamerOpen.value = true
 }
 
 const toRemove = ref<GiveawayChannelView | null>(null)
@@ -335,13 +333,13 @@ async function confirmRemove() {
                 />
                 <UButton icon="i-lucide-scroll-text" size="xs" variant="ghost" color="neutral" :aria-label="`Journal du chat de ${c.login}`" title="Journal du chat" @click="openLog(c.login)" />
                 <UButton
-                  icon="i-lucide-settings-2"
+                  icon="i-lucide-user-pen"
                   size="xs"
                   variant="ghost"
                   color="neutral"
-                  :aria-label="`Réglages de ${c.login}`"
-                  :title="c.excluded.length ? `Réglages (${c.excluded.length} commande(s) ignorée(s))` : 'Réglages de la chaîne'"
-                  @click="openSettings(c)"
+                  :aria-label="`Fiche de ${c.login}`"
+                  title="Fiche du streamer (Discord, notes, commandes ignorées, conditions habituelles)"
+                  @click="openStreamer(c)"
                 />
                 <UButton icon="i-lucide-trash-2" size="xs" variant="ghost" color="error" aria-label="Ne plus surveiller" @click="toRemove = c" />
               </div>
@@ -357,11 +355,11 @@ async function confirmRemove() {
     </div>
     <p class="text-xs text-muted max-w-[85ch]">
       Une chaîne où l'un de tes comptes est déjà présent pour StreamElements est lue via cette connexion. Les autres sont lues par une seule connexion anonyme commune, qui n'apparaît pour aucun de tes comptes.
-      Une commande ignorée (ex. <span class="font-mono">!points</span>, bouton réglages de la chaîne) ne déclenche jamais d'alerte. Quand une chaîne passe hors ligne, ses giveaways ouverts sont clos.
+      Une commande ignorée (ex. <span class="font-mono">!points</span>, dans la fiche du streamer) ne déclenche jamais d'alerte. Quand une chaîne passe hors ligne, ses giveaways ouverts sont clos.
     </p>
 
     <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" :channel="formChannel" />
-    <MonitoredChannelSettings v-model:open="settingsOpen" :channel="settingsChannel" />
+    <GiveawayFormModal v-model:open="streamerOpen" :giveaway="null" :channel="streamerLogin" streamer-only />
     <ChatLogModal v-model:open="logOpen" :channel="logChannel" />
 
     <UModal :open="toRemove !== null" title="Ne plus surveiller la chaîne ?" @update:open="v => { if (!v) toRemove = null }">

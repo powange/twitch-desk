@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { getVersion } from '@tauri-apps/api/app'
 import type { NavigationMenuItem } from '@nuxt/ui'
 import { useSnapshot } from './composables/useSnapshot'
@@ -8,6 +9,7 @@ import { useUpdater } from './composables/useUpdater'
 import { installSoundAlerts } from './composables/useSoundAlerts'
 import type { Settings } from './types'
 import UpdateBanner from './components/UpdateBanner.vue'
+import GiveawayFormModal from './components/GiveawayFormModal.vue'
 
 const { snapshot, accounts, paused } = useSnapshot()
 const updater = useUpdater()
@@ -54,6 +56,19 @@ async function togglePause() {
 
 installSoundAlerts()
 
+// Fiche d'un streamer demandée depuis la fenêtre des streams
+const streamerOpen = ref(false)
+const streamerLogin = ref<string | null>(null)
+void listen<string>('open-streamer', async (e) => {
+  // Une autre fiche déjà ouverte : refermée d'abord pour être relue
+  if (streamerOpen.value) {
+    streamerOpen.value = false
+    await nextTick()
+  }
+  streamerLogin.value = e.payload
+  streamerOpen.value = true
+})
+
 onMounted(async () => {
   version.value = await getVersion()
   const settings = await invoke<Settings>('get_settings')
@@ -92,6 +107,7 @@ onMounted(async () => {
           <RouterView />
         </div>
       </main>
+      <GiveawayFormModal v-model:open="streamerOpen" :giveaway="null" :channel="streamerLogin" streamer-only />
     </div>
   </UApp>
 </template>

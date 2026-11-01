@@ -44,6 +44,7 @@ async function checkNow(): Promise<boolean> {
   try {
     available.value = await check()
   } catch (e) {
+    void invoke('save_window_state', { updating: false }).catch(() => {})
     error.value = friendlyUpdateError(e)
   } finally {
     checking.value = false
@@ -62,7 +63,7 @@ async function install() {
   let received = 0
   try {
     // L'installateur ferme l'application lui-même : taille de la fenêtre enregistrée avant
-    await invoke('save_window_state').catch(() => {})
+    await invoke('save_window_state', { updating: true }).catch(() => {})
     await update.downloadAndInstall((event) => {
       if (event.event === 'Started') total = event.data.contentLength ?? 0
       if (event.event === 'Progress') {

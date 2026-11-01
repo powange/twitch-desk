@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 // et réponses des bots aux commandes d'information (!giveaway…), gardés 14 jours
 interface ChatLogEntry { id: number, channel: string, at: string, author: string, kind: Kind, command: string | null, message: string }
 interface BotReply { channel: string, command: string, bot: string, message: string, askedBy: string, updatedAt: string, seenAt: string }
-type Kind = 'command' | 'own' | 'streamer' | 'winner' | 'reply'
+type Kind = 'command' | 'own' | 'streamer' | 'bot' | 'winner' | 'reply'
 
 const props = defineProps<{ channel: string | null }>()
 const open = defineModel<boolean>('open', { required: true })
@@ -16,6 +16,7 @@ const KINDS: Record<Kind, { label: string, color: 'neutral' | 'primary' | 'succe
   command: { label: 'Commande', color: 'neutral' },
   own: { label: 'Mon message', color: 'primary' },
   streamer: { label: 'Streamer', color: 'warning' },
+  bot: { label: 'Bot', color: 'neutral' },
   winner: { label: 'Gagnant', color: 'success' },
   reply: { label: 'Réponse de bot', color: 'info' }
 }
@@ -24,6 +25,7 @@ const kindItems = [
   { label: 'Commandes', value: 'command' },
   { label: 'Mes messages', value: 'own' },
   { label: 'Messages du streamer', value: 'streamer' },
+  { label: 'Messages des bots', value: 'bot' },
   { label: 'Gagnants', value: 'winner' },
   { label: 'Réponses de bots', value: 'reply' }
 ]

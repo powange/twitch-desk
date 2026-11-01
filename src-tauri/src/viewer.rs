@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 use crate::app::App;
 
@@ -122,10 +122,20 @@ fn open_window(app: &App, query: &str) -> Result<(), String> {
         .inner_size(1280.0, 760.0)
         .min_inner_size(480.0, 320.0)
         .menu(menu(handle).map_err(|e| format!("menu : {e}"))?)
-        // Bouton « Fermer la page » de la page vide : adresse convenue (…?close=1)
+        // Adresses convenues de la page : « Fermer la page » (…?close=1) et fiche d'un streamer
+        // (…?fiche=<chaîne>), ouverte dans la fenêtre principale
         .on_navigation({
             let handle = handle.clone();
             move |url| {
+                if let Some(login) = url.query().and_then(|q| q.strip_prefix("fiche=")).filter(|l| valid_login(l)) {
+                    let _ = handle.emit_to("main", "open-streamer", login.to_owned());
+                    if let Some(main) = handle.get_webview_window("main") {
+                        let _ = main.unminimize();
+                        let _ = main.show();
+                        let _ = main.set_focus();
+                    }
+                    return false;
+                }
                 if url.query() == Some("close=1") {
                     let handle = handle.clone();
                     let _ = handle.clone().run_on_main_thread(move || {

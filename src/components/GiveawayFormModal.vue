@@ -13,7 +13,8 @@ import IgnoredCommandsEditor from './IgnoredCommandsEditor.vue'
 
 // Création (giveaway = null) ou modification d'une fiche de giveaway
 // channel : chaîne pré-remplie pour un nouveau giveaway
-const props = defineProps<{ giveaway: GiveawayView | null, channel?: string | null }>()
+// streamerOnly : fiche du streamer seulement (chaîne et conditions habituelles), sans giveaway
+const props = defineProps<{ giveaway: GiveawayView | null, channel?: string | null, streamerOnly?: boolean }>()
 const open = defineModel<boolean>('open', { required: true })
 
 const { snapshot } = useSnapshot()
@@ -146,8 +147,9 @@ watch(open, (isOpen) => {
   streamerNotes.value = ''
   streamerIgnored.value = []
   streamerLoaded.value = { discord: '', notes: '', ignored: '' }
-  // Modification : fiche de la chaîne chargée tout de suite
+  // Modification ou fiche du streamer : fiche de la chaîne chargée tout de suite
   if (props.giveaway) void inspect(props.giveaway.channel)
+  else if (props.streamerOnly && props.channel) void inspect(props.channel)
   const g = props.giveaway
   form.value = {
     channel: g?.channel ?? props.channel ?? '',
@@ -179,7 +181,19 @@ interface ChannelSuggestion {
   streamelements: { url: string, title: string, description: string, command: string | null, cost: number, maxTickets: number | null } | null
   detectedCommand: string | null
   profile: ChannelProfile | null
-  streamer: { login: string, discordUrl: string | null, notes: string | null, ignoredCommands: string[] } | null
+  streamer: {
+    login: string
+    discordUrl: string | null
+    notes: string | null
+    ignoredCommands: string[]
+    // Conditions habituelles du streamer
+    requireFollow: boolean | null
+    followMinDays: number | null
+    requirePresence: boolean | null
+    requireDiscord: boolean | null
+    requireGreeting: boolean | null
+    minChatMinutes: number | null
+  } | null
 }
 
 // --- Informations propres au streamer (mémorisées, retrouvées à chaque giveaway) ---
@@ -214,9 +228,24 @@ async function inspect(login: string) {
     streamerDiscord.value = found.streamer?.discordUrl ?? found.profile?.discord ?? ''
     streamerNotes.value = found.streamer?.notes ?? ''
     streamerIgnored.value = [...(found.streamer?.ignoredCommands ?? [])]
-    // En modification, la fiche de la chaîne suffit : on ne remplace pas ce qui a été saisi
-    if (props.giveaway) return
     const f = form.value
+    const st = found.streamer
+    // Fiche du streamer : ses conditions habituelles ; nouveau giveaway : elles pré-remplissent
+    // celles encore inconnues
+    if (st && (props.streamerOnly || !props.giveaway)) {
+      const only = props.streamerOnly
+      if (only || f.follow === 'unknown') f.follow = toTri(st.requireFollow)
+      if ((only || !f.followDays) && st.followMinDays) f.followDays = st.followMinDays
+      if (only || f.presence === 'unknown') f.presence = toTri(st.requirePresence)
+      if (only || f.discord === 'unknown') f.discord = toTri(st.requireDiscord)
+      if (only || f.greeting === 'unknown') f.greeting = toTri(st.requireGreeting)
+      if ((only || f.chatTime === 'unknown') && st.minChatMinutes !== null) {
+        f.chatTime = st.minChatMinutes > 0 ? 'yes' : 'no'
+        f.chatMinutes = st.minChatMinutes > 0 ? st.minChatMinutes : null
+      }
+    }
+    // En modification (ou fiche du streamer), la fiche de la chaîne suffit : on ne remplace pas ce qui a été saisi
+    if (props.giveaway || props.streamerOnly) return
     if (found.streamelements) {
       f.kind = 'streamelements'
       f.url = found.streamelements.url
@@ -251,12 +280,14 @@ const KIND_ICONS: Record<GiveawayInput['kind'], string> = {
 const sections = computed(() => {
   const f = form.value
   const conditions = [f.follow, f.presence, f.discord, f.greeting, f.chatTime].filter(v => v !== 'unknown').length
-  return [
+  const all = [
     { key: 'channel' as const, label: 'Chaîne', icon: 'i-lucide-tv', summary: f.channel.trim() || 'à choisir', missing: !f.channel.trim() },
     { key: 'giveaway' as const, label: 'Giveaway', icon: 'i-lucide-gift', summary: (f.kind === 'command' || f.kind === 'ticket') && !f.command.trim() ? 'commande à détecter' : GIVEAWAY_KIND_ITEMS.find(k => k.value === f.kind)?.label ?? '', missing: false },
     { key: 'gifts' as const, label: 'Cadeaux', icon: 'i-lucide-package', summary: f.giftIds.length ? `${f.giftIds.length} choisi(s)` : 'aucun', missing: false },
     { key: 'conditions' as const, label: 'Conditions', icon: 'i-lucide-list-checks', summary: conditions ? `${conditions} renseignée(s)` : 'inconnues', missing: false }
   ]
+  // Fiche du streamer : ni giveaway ni cadeaux
+  return props.streamerOnly ? all.filter(s => s.key === 'channel' || s.key === 'conditions') : all
 })
 
 // Erreur du cœur : ouvrir la section concernée
@@ -267,7 +298,36 @@ function sectionForError(message: string): Section | null {
   return null
 }
 
+// Fiche du streamer : Discord, notes, commandes ignorées et conditions habituelles
+async function saveStreamer() {
+  const f = form.value
+  saving.value = true
+  try {
+    await invoke('save_streamer', {
+      streamer: {
+        login: f.channel,
+        discordUrl: streamerDiscord.value || null,
+        notes: streamerNotes.value || null,
+        ignoredCommands: streamerIgnored.value,
+        requireFollow: fromTri(f.follow),
+        followMinDays: f.follow === 'yes' ? (f.followDays || null) : null,
+        requirePresence: fromTri(f.presence),
+        requireDiscord: fromTri(f.discord),
+        requireGreeting: fromTri(f.greeting),
+        minChatMinutes: f.chatTime === 'yes' ? (f.chatMinutes ?? null) : f.chatTime === 'no' ? 0 : null
+      }
+    })
+    toast.add({ title: `Fiche de ${f.channel} enregistrée`, color: 'success', icon: 'i-lucide-check' })
+    open.value = false
+  } catch (e) {
+    toast.add({ title: 'Fiche non enregistrée', description: String(e), color: 'error' })
+  } finally {
+    saving.value = false
+  }
+}
+
 async function save() {
+  if (props.streamerOnly) return saveStreamer()
   const f = form.value
   const input: GiveawayInput = {
     channel: f.channel,
@@ -295,8 +355,9 @@ async function save() {
     else await invoke('create_giveaway', { input })
     // Fiche du streamer : enregistrée si elle a changé (ou si le Discord vient d'être trouvé)
     if (streamerDiscord.value !== streamerLoaded.value.discord || streamerNotes.value !== streamerLoaded.value.notes || streamerIgnored.value.join() !== streamerLoaded.value.ignored) {
+      // Conditions habituelles de la fiche reprises telles quelles (sinon elles seraient effacées)
       await invoke('save_streamer', {
-        streamer: { login: f.channel, discordUrl: streamerDiscord.value || null, notes: streamerNotes.value || null, ignoredCommands: streamerIgnored.value }
+        streamer: { ...(suggestion.value?.streamer ?? {}), login: f.channel, discordUrl: streamerDiscord.value || null, notes: streamerNotes.value || null, ignoredCommands: streamerIgnored.value }
       })
     }
     toast.add({ title: props.giveaway ? 'Giveaway modifié' : 'Giveaway ajouté', color: 'success', icon: 'i-lucide-check' })
@@ -312,7 +373,7 @@ async function save() {
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="giveaway ? `Giveaway de ${giveaway.channel}` : 'Nouveau giveaway'" :ui="{ content: 'max-w-4xl' }">
+  <UModal v-model:open="open" :title="streamerOnly ? `Fiche de ${channel}` : giveaway ? `Giveaway de ${giveaway.channel}` : 'Nouveau giveaway'" :ui="{ content: 'max-w-4xl' }">
     <template #body>
       <form id="giveaway-form" class="grid grid-cols-[200px_1fr] gap-6 min-h-[440px]" @submit.prevent="save">
         <!-- Menu des sections -->
@@ -342,6 +403,7 @@ async function save() {
               <UInput
                 id="gw-channel"
                 v-model="form.channel"
+                :disabled="streamerOnly"
                 list="gw-channel-list"
                 placeholder="lunarsea"
                 autocomplete="off"
@@ -358,7 +420,7 @@ async function save() {
             <p v-else-if="suggestion && !inspecting && form.channel.trim()" class="text-sm text-error">Chaîne introuvable sur Twitch.</p>
 
             <UAlert
-              v-if="suggestion?.streamelements && !giveaway"
+              v-if="suggestion?.streamelements && !giveaway && !streamerOnly"
               icon="i-lucide-sparkles"
               color="success"
               variant="subtle"
@@ -366,7 +428,7 @@ async function save() {
               :description="`${suggestion.streamelements.cost} points le ticket${suggestion.streamelements.maxTickets ? `, ${suggestion.streamelements.maxTickets} au plus par personne` : ''}. Type, lien et commande remplis.`"
             />
             <UAlert
-              v-else-if="suggestion?.detectedCommand && !giveaway"
+              v-else-if="suggestion?.detectedCommand && !giveaway && !streamerOnly"
               icon="i-lucide-sparkles"
               color="info"
               variant="subtle"
@@ -524,7 +586,10 @@ async function save() {
 
           <!-- Conditions : une par ligne -->
           <div v-show="section === 'conditions'" class="flex flex-col gap-3">
-            <p class="text-sm text-muted">Ce qu'il faut pour participer. « ? » : on ne sait pas.</p>
+            <p class="text-sm text-muted">
+              <template v-if="streamerOnly">Ses conditions habituelles : elles pré-remplissent ses nouveaux giveaways (chacun garde ensuite les siennes). « ? » : on ne sait pas.</template>
+              <template v-else>Ce qu'il faut pour participer. « ? » : on ne sait pas.</template>
+            </p>
             <div v-for="c in CONDITIONS" :key="c.key" class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border border-default rounded-lg px-4 py-3">
               <span class="inline-flex items-center gap-2.5">
                 <UIcon :name="c.icon" class="size-5 text-muted" />{{ c.label }}
@@ -562,7 +627,7 @@ async function save() {
     <template #footer>
       <div class="flex justify-end gap-2 w-full">
         <UButton label="Annuler" color="neutral" variant="ghost" @click="open = false" />
-        <UButton type="submit" form="giveaway-form" :label="giveaway ? 'Enregistrer' : 'Ajouter'" :loading="saving" />
+        <UButton type="submit" form="giveaway-form" :label="giveaway || streamerOnly ? 'Enregistrer' : 'Ajouter'" :loading="saving" />
       </div>
     </template>
   </UModal>

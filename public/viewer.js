@@ -104,6 +104,11 @@ function createTile(channel) {
   star.className = 'star'
   star.textContent = '★'
   star.title = 'Mettre en avant (agrandir)'
+  const ficheButton = document.createElement('button')
+  ficheButton.textContent = 'Fiche'
+  ficheButton.title = 'Fiche du streamer dans Twitch Desk (Discord, notes, conditions habituelles)'
+  // Ouverte par l'application (adresse convenue interceptée, la page ne se recharge pas)
+  ficheButton.addEventListener('click', () => { location.href = `${location.pathname}?fiche=${channel}` })
   const videoButton = document.createElement('button')
   videoButton.textContent = 'Vidéo'
   videoButton.title = 'Afficher ou masquer la vidéo (le son continue)'
@@ -114,7 +119,7 @@ function createTile(channel) {
   close.textContent = '✕'
   close.title = 'Retirer ce stream'
   close.setAttribute('aria-label', `Retirer ${channel}`)
-  bar.append(name, star, videoButton, chatButton, close)
+  bar.append(name, star, ficheButton, videoButton, chatButton, close)
 
   const body = document.createElement('div')
   body.className = 'body'

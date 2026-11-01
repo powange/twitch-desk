@@ -8,7 +8,7 @@
 //! Configuration (variables d'environnement) :
 //! - `SYNC_CODE` (obligatoire) : code à communiquer aux utilisateurs, 8 caractères au moins
 //! - `SYNC_COLLECTIONS` : collections synchronisées, séparées par des virgules
-//!   (défaut : toutes : groups, gifts, giveaways, channels, streamers)
+//!   (défaut : toutes : groups, gifts, giveaways, channels, streamers, detection)
 //! - `SYNC_DB` : fichier SQLite (défaut : /data/sync.db)
 //! - `SYNC_PORT` : port d'écoute (défaut : 8787)
 //! - `SYNC_HISTORY_DAYS` : durée de conservation de l'historique (défaut : 90 jours)
@@ -27,7 +27,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 /// Collections connues, dans l'ordre où les appliquer (les groupes avant les cadeaux, etc.)
-const COLLECTIONS: &[&str] = &["groups", "gifts", "giveaways", "channels", "streamers"];
+const COLLECTIONS: &[&str] = &["groups", "gifts", "giveaways", "channels", "streamers", "detection"];
 /// Un document : une image de cadeau en data URL fait 2 Mo au plus
 const MAX_DOCUMENT: usize = 4 * 1024 * 1024;
 const MAX_BODY: usize = 32 * 1024 * 1024;

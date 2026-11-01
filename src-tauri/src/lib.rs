@@ -41,8 +41,25 @@ pub fn save_windows(app: &tauri::AppHandle) {
     }
 }
 
+/// Clé posée juste avant une mise à jour quand la fenêtre principale est affichée
+const SHOW_AFTER_UPDATE: &str = "show_after_update";
+
+/// `updating` : une mise à jour va relancer l'application. Fenêtre affichée à ce moment :
+/// elle revient affichée, même avec « Démarrer réduit »
 #[tauri::command]
-fn save_window_state(app: tauri::AppHandle) {
+fn save_window_state(app: tauri::AppHandle, updating: Option<bool>) {
+    if updating == Some(false) {
+        // Mise à jour échouée : démarrage habituel
+        if let Some(state) = app.try_state::<Arc<app::App>>() {
+            let _ = state.db.conn().execute("DELETE FROM app_state WHERE key = ?1", [SHOW_AFTER_UPDATE]);
+        }
+    }
+    if updating == Some(true) {
+        let visible = app.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false);
+        if let Some(state) = app.try_state::<Arc<app::App>>() {
+            let _ = state.db.set_state(SHOW_AFTER_UPDATE, if visible { "1" } else { "0" });
+        }
+    }
     save_windows(&app);
 }
 
@@ -118,7 +135,16 @@ pub fn run() {
             tray::setup(app.handle())?;
 
             let started_by_autostart = std::env::args().any(|a| a == MINIMIZED_ARG);
-            if settings.start_minimized || started_by_autostart {
+            let after_update = state.db.get_state(SHOW_AFTER_UPDATE);
+            if after_update.is_some() {
+                let _ = state.db.conn().execute("DELETE FROM app_state WHERE key = ?1", [SHOW_AFTER_UPDATE]);
+            }
+            let hide = match after_update.as_deref() {
+                // Relance après une mise à jour : la fenêtre retrouve l'état d'avant
+                Some(shown) => shown != "1",
+                None => settings.start_minimized || started_by_autostart,
+            };
+            if hide {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
@@ -210,6 +236,9 @@ pub fn run() {
             commands::follow_status,
             commands::greeting_status,
             commands::say_hello,
+            commands::test_winner_phrase,
+            commands::get_detection_rules,
+            commands::set_detection_rules,
             commands::get_chat_log,
             commands::set_giveaway_command,
             commands::get_chat_log_meta,

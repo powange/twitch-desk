@@ -260,6 +260,22 @@ const MIGRATIONS: &[&str] = &[r#"
         author TEXT NOT NULL,
         message TEXT NOT NULL
     );
+"#, r#"
+    -- Conditions habituelles du streamer : pré-remplissent ses giveaways
+    ALTER TABLE streamers ADD COLUMN require_follow INTEGER;
+    ALTER TABLE streamers ADD COLUMN follow_min_days INTEGER;
+    ALTER TABLE streamers ADD COLUMN require_presence INTEGER;
+    ALTER TABLE streamers ADD COLUMN require_discord INTEGER;
+    ALTER TABLE streamers ADD COLUMN require_greeting INTEGER;
+    ALTER TABLE streamers ADD COLUMN min_chat_minutes INTEGER;
+"#, r#"
+    -- Détection des gagnants ajoutée par l'utilisateur : formulations ('winner') et bots ('bot').
+    -- À part des réglages : synchronisée élément par élément, jamais écrasée par une mise à jour
+    CREATE TABLE detection_rules (
+        kind TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (kind, value)
+    );
 "#];
 
 /// Types de giveaway
@@ -307,6 +323,14 @@ pub struct Streamer {
     pub notes: Option<String>,
     /// Commandes du chat que la détection de giveaway ignore sur sa chaîne
     pub ignored_commands: Vec<String>,
+    /// Conditions habituelles de ses giveaways (None : on ne sait pas) ; pré-remplissent ses
+    /// nouveaux giveaways, chacun gardant ensuite les siennes
+    pub require_follow: Option<bool>,
+    pub follow_min_days: Option<i64>,
+    pub require_presence: Option<bool>,
+    pub require_discord: Option<bool>,
+    pub require_greeting: Option<bool>,
+    pub min_chat_minutes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1232,23 +1256,67 @@ impl Db {
 
     pub fn streamer(&self, login: &str) -> DbResult<Option<Streamer>> {
         self.conn()
-            .query_row("SELECT login, discord_url, notes, ignored_commands FROM streamers WHERE login = ?1", [login], |r| {
-                Ok(Streamer {
-                    login: r.get(0)?,
-                    discord_url: r.get(1)?,
-                    notes: r.get(2)?,
-                    ignored_commands: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default(),
-                })
-            })
+            .query_row(
+                "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_days, require_presence,
+                        require_discord, require_greeting, min_chat_minutes
+                 FROM streamers WHERE login = ?1",
+                [login],
+                |r| {
+                    Ok(Streamer {
+                        login: r.get(0)?,
+                        discord_url: r.get(1)?,
+                        notes: r.get(2)?,
+                        ignored_commands: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default(),
+                        require_follow: r.get(4)?,
+                        follow_min_days: r.get(5)?,
+                        require_presence: r.get(6)?,
+                        require_discord: r.get(7)?,
+                        require_greeting: r.get(8)?,
+                        min_chat_minutes: r.get(9)?,
+                    })
+                },
+            )
             .optional()
     }
 
     pub fn save_streamer(&self, s: &Streamer) -> DbResult<()> {
         self.conn().execute(
-            "INSERT INTO streamers (login, discord_url, notes, ignored_commands) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO streamers (login, discord_url, notes, ignored_commands, require_follow, follow_min_days,
+                 require_presence, require_discord, require_greeting, min_chat_minutes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(login) DO UPDATE SET discord_url = excluded.discord_url, notes = excluded.notes,
-                 ignored_commands = excluded.ignored_commands",
-            params![s.login, s.discord_url, s.notes, serde_json::to_string(&s.ignored_commands).expect("liste sérialisable")],
+                 ignored_commands = excluded.ignored_commands, require_follow = excluded.require_follow,
+                 follow_min_days = excluded.follow_min_days, require_presence = excluded.require_presence,
+                 require_discord = excluded.require_discord, require_greeting = excluded.require_greeting,
+                 min_chat_minutes = excluded.min_chat_minutes",
+            params![
+                s.login,
+                s.discord_url,
+                s.notes,
+                serde_json::to_string(&s.ignored_commands).expect("liste sérialisable"),
+                s.require_follow,
+                s.follow_min_days,
+                s.require_presence,
+                s.require_discord,
+                s.require_greeting,
+                s.min_chat_minutes
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Nouveau giveaway : conditions encore inconnues reprises de la fiche du streamer
+    pub fn apply_streamer_conditions(&self, giveaway_id: i64) -> DbResult<()> {
+        self.conn().execute(
+            "UPDATE giveaways SET
+                 require_follow = COALESCE(require_follow, (SELECT require_follow FROM streamers WHERE login = giveaways.channel)),
+                 follow_min_days = COALESCE(follow_min_days, (SELECT follow_min_days FROM streamers WHERE login = giveaways.channel)),
+                 require_presence = COALESCE(require_presence, (SELECT require_presence FROM streamers WHERE login = giveaways.channel)),
+                 require_discord = COALESCE(require_discord, (SELECT require_discord FROM streamers WHERE login = giveaways.channel)),
+                 require_greeting = COALESCE(require_greeting, (SELECT require_greeting FROM streamers WHERE login = giveaways.channel)),
+                 min_chat_minutes = COALESCE(min_chat_minutes, (SELECT min_chat_minutes FROM streamers WHERE login = giveaways.channel))
+             WHERE id = ?1",
+            [giveaway_id],
         )?;
         Ok(())
     }
@@ -1640,6 +1708,28 @@ impl Db {
         Ok(())
     }
 
+    // --- Détection des gagnants ajoutée par l'utilisateur ---
+
+    /// Formulations (`winner`, « Le gagnant est {pseudo} ») ou bots (`bot`), dans l'ordre alphabétique
+    pub fn detection_rules(&self, kind: &str) -> DbResult<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT value FROM detection_rules WHERE kind = ?1 ORDER BY value COLLATE NOCASE")?;
+        let rows = stmt.query_map([kind], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Remplace toute la liste d'un type
+    pub fn set_detection_rules(&self, kind: &str, values: &[String]) -> DbResult<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM detection_rules WHERE kind = ?1", [kind])?;
+        for v in values {
+            tx.execute("INSERT OR IGNORE INTO detection_rules (kind, value) VALUES (?1, ?2)", params![kind, v])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     // --- Fil d'événements ---
 
     /// Ajoute un événement et ne garde que les `keep` plus récents
@@ -1849,7 +1939,7 @@ mod tests {
     fn streamers() {
         let db = Db::memory().unwrap();
         assert_eq!(db.streamer("levraidoffy").unwrap(), None);
-        let s = Streamer { login: "levraidoffy".into(), discord_url: Some("https://discord.gg/abc".into()), notes: None, ignored_commands: vec![] };
+        let s = Streamer { login: "levraidoffy".into(), discord_url: Some("https://discord.gg/abc".into()), notes: None, ignored_commands: vec![], ..Default::default() };
         db.save_streamer(&s).unwrap();
         db.save_streamer(&Streamer { notes: Some("Tirage à 22 h".into()), ..s.clone() }).unwrap();
         let back = db.streamer("levraidoffy").unwrap().unwrap();
@@ -1886,6 +1976,34 @@ mod tests {
 
         db.remove_channel(ch.id, ChannelList::Se).unwrap();
         assert!(db.channels(a).unwrap().is_empty());
+    }
+
+    #[test]
+    fn streamer_conditions_prefill_giveaways() {
+        let db = Db::memory().unwrap();
+        db.save_streamer(&Streamer {
+            login: "lunarsea".into(),
+            require_follow: Some(true),
+            follow_min_days: Some(30),
+            require_greeting: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = db
+            .insert_giveaway(&NewGiveaway {
+                channel: "lunarsea".into(),
+                kind: "command".into(),
+                command: Some("!join".into()),
+                url: None,
+                evidence: None,
+                detected_at: "2026-11-01T10:00:00Z".into(),
+            })
+            .unwrap();
+        // Déjà renseignée sur le giveaway : gardée
+        db.conn().execute("UPDATE giveaways SET require_greeting = 0 WHERE id = ?1", [id]).unwrap();
+        db.apply_streamer_conditions(id).unwrap();
+        let d = db.giveaway(id).unwrap().unwrap().details;
+        assert_eq!((d.require_follow, d.follow_min_days, d.require_greeting, d.require_presence), (Some(true), Some(30), Some(false), None));
     }
 
     #[test]

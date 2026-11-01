@@ -293,7 +293,12 @@ impl Monitor {
     }
 
     fn reload(&mut self) {
-        self.detector.set_params(detect::DetectParams::from_settings(&self.app.db.settings()));
+        let settings = self.app.db.settings();
+        self.detector.set_params(detect::DetectParams::from_settings(&settings));
+        bots::set_extra_bots(&self.app.db.detection_rules("bot").unwrap_or_default());
+        for e in bots::set_custom_patterns(&self.app.db.detection_rules("winner").unwrap_or_default()) {
+            tracing::warn!("formulation de gagnant écartée : {e}");
+        }
         self.channels = self.app.db.giveaway_channels().unwrap_or_default();
         self.games = self.app.db.giveaway_games().unwrap_or_default();
         self.gql = None;
@@ -550,6 +555,9 @@ impl Monitor {
             "streamer"
         } else if command.is_some() && !is_reply_bot(&author) {
             "command"
+        } else if is_reply_bot(&author) {
+            // Tous les messages des bots (annonces, règles, minuteurs…)
+            "bot"
         } else {
             return;
         };
@@ -733,6 +741,8 @@ impl Monitor {
                 return;
             }
         };
+        // Conditions habituelles du streamer (fiche)
+        let _ = self.app.db.apply_streamer_conditions(id);
         let share = evidence.count * 100 / evidence.window.max(1);
         self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway détecté sur {channel} : {command} ({share} % du chat)"));
         self.app.notify(Alert::Giveaway, &format!("Giveaway sur {channel}"), &format!("Commande {command}, reprise par {share} % du chat"));
@@ -746,14 +756,16 @@ impl Monitor {
         if open.iter().any(|g| g.url.as_deref().is_some_and(|u| u.eq_ignore_ascii_case(url))) {
             return;
         }
-        let _ = self.app.db.insert_giveaway(&NewGiveaway {
+        if let Ok(id) = self.app.db.insert_giveaway(&NewGiveaway {
             channel: channel.to_owned(),
             kind: "streamelements".into(),
             command: None,
             url: Some(url.to_owned()),
             evidence: None,
             detected_at: now_rfc3339(),
-        });
+        }) {
+            let _ = self.app.db.apply_streamer_conditions(id);
+        }
         self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway StreamElements sur {channel}"));
         let app = self.app.clone();
         let login = channel.to_owned();

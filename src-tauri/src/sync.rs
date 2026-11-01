@@ -22,7 +22,7 @@ use crate::app::App;
 use crate::giveaways::MonitorCmd;
 
 /// Collections, dans l'ordre où les appliquer (groupes avant cadeaux, cadeaux avant giveaways)
-pub const COLLECTIONS: [&str; 5] = ["groups", "gifts", "giveaways", "channels", "streamers"];
+pub const COLLECTIONS: [&str; 6] = ["groups", "gifts", "giveaways", "channels", "streamers", "detection"];
 const EVERY: Duration = Duration::from_secs(30);
 /// Après une modification locale : petit délai pour regrouper les envois
 const DEBOUNCE: Duration = Duration::from_secs(2);
@@ -199,8 +199,26 @@ fn strings_of(v: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn valid_login(login: &str) -> bool {
+pub fn valid_login(login: &str) -> bool {
     !login.is_empty() && login.len() <= 25 && login.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Règle de détection (formulation de gagnant ou bot) : identifiant tiré de son contenu,
+/// la même règle ajoutée sur deux postes n'est qu'un seul document
+fn rule_id(kind: &str, value: &str) -> String {
+    match kind {
+        "bot" => format!("bot:{value}"),
+        _ => format!("{kind}:{}", hash(&json!(value.to_lowercase()))),
+    }
+}
+
+fn rules(conn: &Connection) -> rusqlite::Result<Vec<(String, Value)>> {
+    conn.prepare("SELECT kind, value FROM detection_rules")?
+        .query_map([], |r| {
+            let (kind, value): (String, String) = (r.get(0)?, r.get(1)?);
+            Ok((rule_id(&kind, &value), json!({ "kind": kind, "value": value })))
+        })?
+        .collect()
 }
 
 /// Image d'un cadeau reçue : data URL d'image ou adresse https:// seulement
@@ -343,7 +361,11 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>) -> rusqli
             .query_map([only], |r| Ok((r.get(0)?, json!({ "channelId": r.get::<_, String>(1)? }))))?
             .collect(),
         "streamers" => conn
-            .prepare("SELECT login, discord_url, notes, ignored_commands FROM streamers WHERE ?1 IS NULL OR login = ?1")?
+            .prepare(
+                "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_days, require_presence,
+                        require_discord, require_greeting, min_chat_minutes
+                 FROM streamers WHERE ?1 IS NULL OR login = ?1",
+            )?
             .query_map([only], |r| {
                 let ignored: Vec<String> = serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default();
                 Ok((
@@ -352,10 +374,19 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>) -> rusqli
                         "discordUrl": r.get::<_, Option<String>>(1)?,
                         "notes": r.get::<_, Option<String>>(2)?,
                         "ignoredCommands": ignored,
+                        "conditions": {
+                            "requireFollow": r.get::<_, Option<bool>>(4)?,
+                            "followMinDays": r.get::<_, Option<i64>>(5)?,
+                            "requirePresence": r.get::<_, Option<bool>>(6)?,
+                            "requireDiscord": r.get::<_, Option<bool>>(7)?,
+                            "requireGreeting": r.get::<_, Option<bool>>(8)?,
+                            "minChatMinutes": r.get::<_, Option<i64>>(9)?,
+                        },
                     }),
                 ))
             })?
             .collect(),
+        "detection" => Ok(rules(conn)?.into_iter().filter(|(id, _)| only.is_none_or(|o| o == id)).collect()),
         _ => Ok(vec![]),
     }
 }
@@ -368,6 +399,7 @@ fn exists(conn: &Connection, collection: &str, id: &str) -> rusqlite::Result<boo
         "giveaways" => "SELECT 1 FROM giveaways WHERE sync_id = ?1",
         "channels" => "SELECT 1 FROM giveaway_channels WHERE login = ?1",
         "streamers" => "SELECT 1 FROM streamers WHERE login = ?1",
+        "detection" => return Ok(rules(conn)?.iter().any(|(r, _)| r == id)),
         _ => return Ok(false),
     };
     Ok(conn.query_row(sql, [id], |_| Ok(())).optional()?.is_some())
@@ -454,6 +486,17 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
             "giveaways" => "DELETE FROM giveaways WHERE sync_id = ?1",
             "channels" => "DELETE FROM giveaway_channels WHERE login = ?1",
             "streamers" => "DELETE FROM streamers WHERE login = ?1",
+            "detection" => {
+                for (rid, d) in rules(conn)? {
+                    if rid == id {
+                        conn.execute(
+                            "DELETE FROM detection_rules WHERE kind = ?1 AND value = ?2",
+                            params![str_of(&d, "kind"), str_of(&d, "value")],
+                        )?;
+                    }
+                }
+                return Ok(true);
+            }
             _ => return Ok(false),
         };
         conn.execute(sql, [id])?;
@@ -614,9 +657,41 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                 params![id, str_of(data, "discordUrl"), str_of(data, "notes")],
             )?;
             // Absent (version plus ancienne) : les commandes ignorées locales restent
+            // Conditions habituelles (absentes : version plus ancienne, celles d'ici restent)
+            if let Some(c) = data.get("conditions") {
+                conn.execute(
+                    "UPDATE streamers SET require_follow = ?2, follow_min_days = ?3, require_presence = ?4, require_discord = ?5,
+                         require_greeting = ?6, min_chat_minutes = ?7 WHERE login = ?1",
+                    params![
+                        id,
+                        bool_of(c, "requireFollow"),
+                        int_of(c, "followMinDays"),
+                        bool_of(c, "requirePresence"),
+                        bool_of(c, "requireDiscord"),
+                        bool_of(c, "requireGreeting"),
+                        int_of(c, "minChatMinutes"),
+                    ],
+                )?;
+            }
             if data.get("ignoredCommands").is_some() {
                 let ignored = serde_json::to_string(&strings_of(data, "ignoredCommands")).expect("liste sérialisable");
                 conn.execute("UPDATE streamers SET ignored_commands = ?2 WHERE login = ?1", params![id, ignored])?;
+            }
+        }
+        "detection" => {
+            let (Some(kind), Some(value)) = (str_of(data, "kind"), str_of(data, "value")) else { return Ok(false) };
+            let valid = match kind.as_str() {
+                "winner" => crate::giveaways::bots::compile_template(&value).is_ok(),
+                "bot" => valid_login(&value),
+                _ => false,
+            };
+            // Identifiant qui ne correspond pas au contenu : document refusé
+            if !valid || rule_id(&kind, &value) != id {
+                return Ok(false);
+            }
+            // Déjà là, éventuellement avec d'autres majuscules
+            if !exists(conn, "detection", id)? {
+                conn.execute("INSERT OR IGNORE INTO detection_rules (kind, value) VALUES (?1, ?2)", params![kind, value])?;
             }
         }
         _ => return Ok(false),
@@ -1000,6 +1075,26 @@ mod tests {
     }
 
     #[test]
+    fn detection_rules_merge() {
+        let a = Db::memory().unwrap();
+        let b = Db::memory().unwrap();
+        a.set_detection_rules("winner", &["Bravo {pseudo} !".into()]).unwrap();
+        a.set_detection_rules("bot", &["mwetton".into()]).unwrap();
+        b.set_detection_rules("winner", &["bravo {PSEUDO} !".into(), "Gagné par {pseudo}".into()]).unwrap();
+        transfer(&a, &b, "detection");
+        // Même formulation à la casse près : un seul document, gardé sous sa forme locale
+        assert_eq!(b.detection_rules("winner").unwrap().len(), 2);
+        assert_eq!(b.detection_rules("bot").unwrap(), vec!["mwetton"]);
+        // Suppression reçue
+        let id = rule_id("bot", "mwetton");
+        apply(&b.conn(), "detection", &id, None).unwrap();
+        assert!(b.detection_rules("bot").unwrap().is_empty());
+        // Contenu qui ne correspond pas à l'identifiant, ou invalide : refusé
+        assert!(!apply(&b.conn(), "detection", "bot:autre", Some(&json!({ "kind": "bot", "value": "pirate" }))).unwrap());
+        assert!(!apply(&b.conn(), "detection", &rule_id("winner", "sans pseudo"), Some(&json!({ "kind": "winner", "value": "sans pseudo" }))).unwrap());
+    }
+
+    #[test]
     fn hash_ignores_key_order() {
         assert_eq!(hash(&json!({"a": 1, "b": [1, {"y": 2, "x": 1}]})), hash(&json!({"b": [1, {"x": 1, "y": 2}], "a": 1})));
         assert_ne!(hash(&json!({"a": 1})), hash(&json!({"a": 2})));
@@ -1039,7 +1134,7 @@ mod tests {
         };
         a.insert_manual_giveaway(&input, "2026-11-01T10:00:00Z").unwrap();
         a.add_giveaway_channel("lunarsea", "123").unwrap();
-        a.save_streamer(&crate::db::Streamer { login: "lunarsea".into(), discord_url: Some("https://discord.gg/x".into()), notes: None, ignored_commands: vec!["!points".into()] })
+        a.save_streamer(&crate::db::Streamer { login: "lunarsea".into(), discord_url: Some("https://discord.gg/x".into()), notes: None, ignored_commands: vec!["!points".into()], ..Default::default() })
             .unwrap();
         assign_ids(&a.conn()).unwrap();
         for c in COLLECTIONS {

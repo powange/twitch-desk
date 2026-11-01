@@ -12,8 +12,8 @@ services:
     environment:
       # Code à communiquer aux utilisateurs (8 caractères au moins)
       SYNC_CODE: ${SYNC_CODE:?Définis SYNC_CODE dans les variables d'environnement de la pile}
-      # Données mises en commun : groups, gifts, giveaways, channels, streamers
-      SYNC_COLLECTIONS: ${SYNC_COLLECTIONS:-groups,gifts,giveaways,channels,streamers}
+      # Données mises en commun : groups, gifts, giveaways, channels, streamers, detection
+      SYNC_COLLECTIONS: ${SYNC_COLLECTIONS:-groups,gifts,giveaways,channels,streamers,detection}
       # Durée de conservation de l'historique des modifications, en jours
       SYNC_HISTORY_DAYS: ${SYNC_HISTORY_DAYS:-90}
     volumes:

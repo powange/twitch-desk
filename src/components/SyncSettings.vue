@@ -13,7 +13,8 @@ const COLLECTION_LABELS: Record<string, string> = {
   gifts: 'Cadeaux',
   giveaways: 'Giveaways',
   channels: 'Chaînes surveillées',
-  streamers: 'Fiches des streamers'
+  streamers: 'Fiches des streamers',
+  detection: 'Détection des gagnants (formulations, bots)'
 }
 const labelOf = (c: string) => COLLECTION_LABELS[c] ?? c
 
