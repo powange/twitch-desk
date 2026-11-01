@@ -26,6 +26,27 @@ function readMap(key) {
 }
 const volumes = readMap('vol')
 const qualities = readMap('q')
+// Qualité retrouvée pas encore appliquée : le lecteur ne connaît les qualités d'un stream qu'une
+// fois la lecture lancée. Tant qu'elle attend, la qualité lue (« auto ») n'est pas enregistrée
+const wantedQuality = new Map([...qualities].filter(([, q]) => q !== 'auto').map(([c, q]) => [c, { q, since: Date.now() }]))
+const QUALITY_WAIT_MS = 90_000
+function applyWantedQuality(channel, player) {
+  const wanted = wantedQuality.get(channel)
+  if (!wanted) return
+  if (Date.now() - wanted.since > QUALITY_WAIT_MS) {
+    wantedQuality.delete(channel)
+    return
+  }
+  try {
+    if (player.getQuality() === wanted.q) {
+      wantedQuality.delete(channel)
+      return
+    }
+    if ((player.getQualities() || []).some(q => q.group === wanted.q)) player.setQuality(wanted.q)
+  } catch {
+    // Lecteur pas encore prêt
+  }
+}
 const mutedSet = new Set(readList('muted'))
 const unmutedSet = new Set(readList('unmuted'))
 // Chaîne → { el, player, setChat }
@@ -145,8 +166,9 @@ function createTile(channel) {
   player.addEventListener(Twitch.Player.READY, () => {
     const v = parseFloat(volumes.get(channel))
     if (!Number.isNaN(v)) player.setVolume(Math.min(1, Math.max(0, v)))
-    if (qualities.has(channel)) player.setQuality(qualities.get(channel))
+    applyWantedQuality(channel, player)
   })
+  player.addEventListener(Twitch.Player.PLAYING, () => applyWantedQuality(channel, player))
 
   let chatFrame = null
   function setChat(open) {
@@ -265,9 +287,11 @@ document.getElementById('low-quality').addEventListener('click', () => {
     const lowest = list.sort((a, b) => (parseInt(a.name) || 0) - (parseInt(b.name) || 0))[0]
     if (lowest) p.setQuality(lowest.group)
   }
+  wantedQuality.clear()
 })
 document.getElementById('auto-quality').addEventListener('click', () => {
   for (const p of players()) p.setQuality('auto')
+  wantedQuality.clear()
 })
 
 // --- Pause des autres streams quand l'un est mis en avant (option retenue) ---
@@ -305,7 +329,8 @@ setInterval(() => {
         if (muted) { mutedSet.add(c); unmutedSet.delete(c) } else { mutedSet.delete(c); unmutedSet.add(c) }
         changed = true
       }
-      if (q && /^[a-z0-9_]+$/i.test(q) && qualities.get(c) !== q) { qualities.set(c, q); changed = true }
+      if (wantedQuality.has(c)) applyWantedQuality(c, t.player)
+      else if (q && /^[a-z0-9_]+$/i.test(q) && qualities.get(c) !== q) { qualities.set(c, q); changed = true }
     } catch {
       // Lecteur pas encore prêt
     }
