@@ -1,0 +1,53 @@
+# Prépare sur main le cache des dépendances Rust compilées en mode release, pour Windows et
+# Linux. Les releases (tags) le relisent : un tag ne peut relire que le cache de main.
+# Relancé quand les dépendances changent, chaque semaine (nouvelle version de Rust, cache
+# expiré après 7 jours sans usage) ou à la main.
+name: Cache de compilation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/Cargo.toml'
+      - '.github/workflows/cache.yml'
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dépendances Linux
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Même clé que release.yml
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release
+
+      - run: npm ci
+
+      # Même compilation que la release (profil et options de tauri build), sans paquets
+      - run: npx tauri build --no-bundle

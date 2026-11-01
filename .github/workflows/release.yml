@@ -1,6 +1,7 @@
 # Publie une version : pousser un tag vX.Y.Z (même numéro que tauri.conf.json).
 # Compile Windows (installateur NSIS) et Linux (AppImage, .deb), signe chaque
 # paquet et publie latest.json, que l'application lit pour se mettre à jour.
+# Les tests passent dans ci.yml à chaque push sur main.
 name: Release
 
 on:
@@ -33,14 +34,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Cache des dépendances compilées, préparé sur main par cache.yml (un tag ne peut relire
+      # que le cache de main) ; jamais enregistré ici : il resterait attaché au tag, inutilisable
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          shared-key: release
+          save-if: false
 
       - run: npm ci
-
-      - name: Tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - uses: tauri-apps/tauri-action@v0
         env:
