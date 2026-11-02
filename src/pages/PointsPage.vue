@@ -5,7 +5,7 @@ import { useChannelList } from '../composables/useChannelList'
 import { useDragReorder } from '../composables/useDragReorder'
 import { useOpenExternal } from '../utils/external'
 import { CHANNEL_STATE, formatNumber } from '../utils/format'
-import type { ChannelView } from '../types'
+import type { ChannelState, ChannelView } from '../types'
 import ChannelFlag from '../components/ChannelFlag.vue'
 import AccountPicker from '../components/AccountPicker.vue'
 import PointsChannelSettings from '../components/PointsChannelSettings.vue'
@@ -29,6 +29,16 @@ const { grabbed, dragging, ordered, onDragStart, onDragOver, onDrop, endDrag, on
   ids => account.value ? invoke('reorder_channels', { accountId: account.value.id, ids }) : Promise.resolve(),
   'Ordre non enregistré'
 )
+
+// Légende de la colonne État, dans l'ordre où on les rencontre
+const STATE_LEGEND: { state: ChannelState, text: string }[] = [
+  { state: 'watching', text: 'En live et regardée : le temps de visionnage rapporte des points (2 chaînes au plus à la fois, selon l\'ordre de la liste).' },
+  { state: 'waiting', text: 'En live, mais 2 chaînes plus haut dans la liste sont déjà regardées. Les bonus à cliquer sont quand même récupérés ; elle passe « En cours » dès qu\'une place se libère.' },
+  { state: 'balanceReached', text: 'Le solde maximum fixé pour la chaîne est atteint : elle n\'est plus regardée et laisse sa place à la suivante.' },
+  { state: 'offline', text: 'Le streamer n\'est pas en live.' },
+  { state: 'disabled', text: 'Récolte coupée pour cette chaîne.' },
+  { state: 'unknown', text: 'L\'état de la chaîne n\'a pas encore été relu (juste après le démarrage ou un ajout).' }
+]
 </script>
 
 <template>
@@ -161,6 +171,16 @@ const { grabbed, dragging, ordered, onDragStart, onDragOver, onDrop, endDrag, on
             </tr>
           </tbody>
         </table>
+      </div>
+      <!-- Légende de la colonne État -->
+      <div class="flex flex-col gap-2">
+        <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">Colonne État</h2>
+        <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm items-center max-w-[85ch]">
+          <template v-for="item in STATE_LEGEND" :key="item.state">
+            <dt><UBadge :color="CHANNEL_STATE[item.state].color" variant="subtle" :label="CHANNEL_STATE[item.state].label" class="whitespace-nowrap" /></dt>
+            <dd class="text-muted">{{ item.text }}</dd>
+          </template>
+        </dl>
       </div>
     </template>
 
