@@ -32,6 +32,7 @@ pub struct ChannelInsight {
     pub pinned_message: Option<String>,
     /// Giveaway StreamElements actif sur la chaîne
     pub streamelements: Option<SeActive>,
+    #[serde(skip_serializing)]
     pub checked_at: Option<String>,
 }
 
@@ -77,7 +78,7 @@ async fn refresh(app: &Arc<App>) {
         state.view.retain(|login, _| live_logins.contains(login));
         state.checked.retain(|login, _| live_logins.contains(login));
         if state.view.len() != before {
-            app.touch();
+            app.touch_domain(crate::app::Domain::Insights);
         }
         live.iter()
             .filter(|(login, broadcast)| {
@@ -115,6 +116,6 @@ async fn refresh(app: &Arc<App>) {
         state.checked.insert(login.clone(), (live[&login].clone(), Instant::now()));
         state.view.insert(login, insight);
         drop(state);
-        app.touch();
+        app.touch_domain(crate::app::Domain::Insights);
     }
 }

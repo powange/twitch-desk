@@ -23,7 +23,6 @@ export interface ChannelView {
   live: StreamInfo | null
   state: ChannelState
   error: string | null
-  lastBonusAt: string | null
   // Listes où figure la chaîne : page Points de chaîne, page StreamElements
   inPoints: boolean
   inSe: boolean
@@ -107,7 +106,6 @@ export interface ChannelInsight {
   description: string | null
   pinnedMessage: string | null
   streamelements: { title: string, description: string, command: string | null, cost: number } | null
-  checkedAt: string | null
 }
 
 export interface ScanMatch {
@@ -120,7 +118,6 @@ export interface ScanMatch {
   profileImage: string | null
   gameId: string
   gameName: string
-  tags: string[]
   keywords: string[]
   monitored: boolean
   ignored: boolean
@@ -227,7 +224,6 @@ export interface SeGiveaway {
   subscriberOnly: boolean
   totalTickets: number
   totalUsers: number
-  botResponses: boolean
 }
 
 // --- Drops ---
@@ -256,11 +252,9 @@ export interface TimedDrop {
   requiredMinutes: number
   currentMinutes: number
   claimed: boolean
-  instanceId: string | null
   startsAt: string
   endsAt: string
   rewards: DropReward[]
-  preconditions: string[]
 }
 
 export interface DropCampaign {
@@ -357,7 +351,6 @@ export interface MentionView {
 export interface GiveawayChannelView {
   id: number
   login: string
-  excluded: string[]
   // Qui lit ce chat : « anonyme », le pseudo d'un compte, ou null (pas encore rejoint)
   reader: string | null
   liveChecked: boolean
@@ -379,7 +372,6 @@ export interface GiveawaysView {
   games: GiveawayGame[]
   giveaways: GiveawayView[]
   mentions: MentionView[]
-  anonymousConnected: boolean
   // Réponses des bots aux commandes d'information (!giveaway…), par chaîne
   botReplies: Record<string, BotReply[]>
 }

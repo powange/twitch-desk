@@ -436,6 +436,7 @@ pub struct CategoryStream {
     pub profile_image: Option<String>,
     pub game_id: String,
     pub game_name: String,
+    #[serde(skip_serializing)]
     pub tags: Vec<String>,
 }
 

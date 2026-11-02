@@ -57,7 +57,7 @@ Utiliser ces outils va contre l'esprit des conditions d'utilisation de Twitch : 
 - `src-tauri/src/drops.rs` : drops (campagnes, choix du stream, réclamation).
 - `src-tauri/src/giveaways/` : moniteur des chats, détection (`detect.rs`), lecture des bots (`bots.rs`), participation.
 - `src-tauri/src/miner.rs` : superviseur d'un compte (choix des chaînes, bonus, événements). Un superviseur isolé par compte.
-- `src-tauri/src/app.rs` : état partagé, envoyé à l'interface par l'événement `snapshot`.
+- `src-tauri/src/app.rs` : état partagé, lu entier par `get_snapshot` puis mis à jour par parties (événement `snapshot-patch`, seules les parties changées).
 - `src-tauri/src/db.rs` : base SQLite (comptes, chaînes, gains, réglages).
 - `src/` : interface Vue (pages Tableau de bord, Points de chaîne, Comptes, Paramètres).
 

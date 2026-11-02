@@ -66,11 +66,13 @@ pub struct TimedDrop {
     pub current_minutes: i64,
     pub claimed: bool,
     /// Identifiant à envoyer pour réclamer le drop (présent une fois commencé)
+    #[serde(skip_serializing)]
     pub instance_id: Option<String>,
     pub starts_at: String,
     pub ends_at: String,
     pub rewards: Vec<Reward>,
     /// Drops à obtenir avant celui-ci
+    #[serde(skip_serializing)]
     pub preconditions: Vec<String>,
 }
 
