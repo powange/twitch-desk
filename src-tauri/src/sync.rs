@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 use tauri::State;
 
 use crate::app::App;
+use crate::db::Db;
 use crate::giveaways::MonitorCmd;
 
 /// Collections, dans l'ordre où les appliquer (groupes avant cadeaux, cadeaux avant giveaways)
@@ -158,26 +159,27 @@ fn normalize_url(url: &str) -> Result<String, String> {
 
 // --- Contenu des documents ---
 
-/// JSON aux clés triées : deux contenus identiques ont la même empreinte
-fn canonical(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => Value::Object(
-            map.iter().map(|(k, v)| (k.clone(), canonical(v))).collect::<BTreeMap<_, _>>().into_iter().collect(),
-        ),
-        Value::Array(list) => Value::Array(list.iter().map(canonical).collect()),
-        v => v.clone(),
-    }
-}
-
-/// Empreinte FNV-1a 64 bits du JSON canonique (stable d'une version à l'autre)
+/// Empreinte FNV-1a 64 bits du JSON canonique, aux clés triées (stable d'une version à
+/// l'autre). Les objets de serde_json gardent leurs clés triées (pas de « preserve_order ») :
+/// le texte est écrit directement dans l'empreinte, sans copie ni chaîne intermédiaire, même
+/// pour une image de plusieurs Mo
 fn hash(value: &Value) -> String {
-    let text = canonical(value).to_string();
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in text.bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
+    struct Fnv(u64);
+    impl std::io::Write for Fnv {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            for b in buf {
+                self.0 ^= *b as u64;
+                self.0 = self.0.wrapping_mul(0x100000001b3);
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
-    format!("{h:016x}")
+    let mut h = Fnv(0xcbf29ce484222325);
+    serde_json::to_writer(&mut h, value).expect("JSON sérialisable");
+    format!("{:016x}", h.0)
 }
 
 fn str_of(v: &Value, key: &str) -> Option<String> {
@@ -213,7 +215,7 @@ fn rule_id(kind: &str, value: &str) -> String {
 }
 
 fn rules(conn: &Connection) -> rusqlite::Result<Vec<(String, Value)>> {
-    conn.prepare("SELECT kind, value FROM detection_rules")?
+    conn.prepare_cached("SELECT kind, value FROM detection_rules")?
         .query_map([], |r| {
             let (kind, value): (String, String) = (r.get(0)?, r.get(1)?);
             Ok((rule_id(&kind, &value), json!({ "kind": kind, "value": value })))
@@ -247,7 +249,7 @@ fn assign_ids(conn: &Connection) -> rusqlite::Result<()> {
 /// collection que le serveur ne synchronise pas (groupe d'un cadeau, cadeaux d'un giveaway)
 /// ne sont pas envoyés : chacun garde les siens
 fn export(conn: &Connection, collection: &str, enabled: &[&str]) -> rusqlite::Result<Vec<(String, Value)>> {
-    let mut docs = export_all(conn, collection, None)?;
+    let mut docs = export_all(conn, collection, None, true)?;
     for (_, data) in &mut docs {
         strip_links(collection, enabled, data);
     }
@@ -263,26 +265,37 @@ fn strip_links(collection: &str, enabled: &[&str], data: &mut Value) {
     data.as_object_mut().map(|o| o.remove(unlinked));
 }
 
-/// `only` : un seul document (sans limite de date pour les giveaways)
-/// Un document tel qu'il est enregistré localement (mêmes règles que `export`)
+/// Un document tel qu'il est enregistré localement (mêmes règles que `export`, sans limite
+/// de date pour les giveaways)
 fn export_one(conn: &Connection, collection: &str, id: &str, enabled: &[&str]) -> rusqlite::Result<Option<Value>> {
-    let mut doc = export_all(conn, collection, Some(id))?.into_iter().next().map(|(_, v)| v);
+    let mut doc = export_all(conn, collection, Some(id), false)?.into_iter().next().map(|(_, v)| v);
     if let Some(d) = doc.as_mut() {
         strip_links(collection, enabled, d);
     }
     Ok(doc)
 }
 
-fn export_all(conn: &Connection, collection: &str, only: Option<&str>) -> rusqlite::Result<Vec<(String, Value)>> {
+/// Un document tel que `export` l'enverrait (absent : supprimé, ou giveaway trop ancien).
+/// Règle de détection en double à la casse près : la dernière, comme `export` rangé en table
+fn export_sent(conn: &Connection, collection: &str, id: &str, enabled: &[&str]) -> rusqlite::Result<Option<Value>> {
+    let mut doc = export_all(conn, collection, Some(id), true)?.pop().map(|(_, v)| v);
+    if let Some(d) = doc.as_mut() {
+        strip_links(collection, enabled, d);
+    }
+    Ok(doc)
+}
+
+/// `only` : un seul document ; `windowed` : giveaways ouverts ou récents seulement (ceux qu'on envoie)
+fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed: bool) -> rusqlite::Result<Vec<(String, Value)>> {
     match collection {
         "groups" => conn
-            .prepare("SELECT sync_id, name, game_id, game_name FROM gift_groups WHERE sync_id IS NOT NULL AND (?1 IS NULL OR sync_id = ?1)")?
+            .prepare_cached("SELECT sync_id, name, game_id, game_name FROM gift_groups WHERE sync_id IS NOT NULL AND (?1 IS NULL OR sync_id = ?1)")?
             .query_map([only], |r| {
                 Ok((r.get(0)?, json!({ "name": r.get::<_, String>(1)?, "gameId": r.get::<_, Option<String>>(2)?, "gameName": r.get::<_, Option<String>>(3)? })))
             })?
             .collect(),
         "gifts" => conn
-            .prepare(
+            .prepare_cached(
                 "SELECT g.sync_id, g.title, g.image, gr.sync_id, g.keywords, g.game_id, g.game_name
                  FROM gifts g LEFT JOIN gift_groups gr ON gr.id = g.group_id
                  WHERE g.sync_id IS NOT NULL AND (?1 IS NULL OR g.sync_id = ?1)",
@@ -303,21 +316,21 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>) -> rusqli
             })?
             .collect(),
         "giveaways" => {
-            let since = (chrono::Utc::now() - chrono::Duration::days(GIVEAWAY_DAYS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-            let mut gifts = conn.prepare(
+            let since = giveaway_since();
+            let mut gifts = conn.prepare_cached(
                 "SELECT gi.sync_id FROM giveaway_gifts gg JOIN gifts gi ON gi.id = gg.gift_id
                  WHERE gg.giveaway_id = ?1 AND gi.sync_id IS NOT NULL ORDER BY gi.sync_id",
             )?;
             let rows: Vec<(i64, String, Value)> = conn
-                .prepare(
+                .prepare_cached(
                     "SELECT id, sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance, drawn_at,
                             ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                             require_follow, require_presence, require_discord, notes,
                             require_greeting, min_chat_minutes, follow_min_days
                      FROM giveaways WHERE sync_id IS NOT NULL
-                         AND (?2 IS NULL OR sync_id = ?2) AND (?2 IS NOT NULL OR status = 'open' OR detected_at >= ?1)",
+                         AND (?2 IS NULL OR sync_id = ?2) AND (?3 = 0 OR status = 'open' OR detected_at >= ?1)",
                 )?
-                .query_map(params![since, only], |r| {
+                .query_map(params![since, only, windowed], |r| {
                     Ok((
                         r.get(0)?,
                         r.get(1)?,
@@ -357,11 +370,11 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>) -> rusqli
                 .collect()
         }
         "channels" => conn
-            .prepare("SELECT login, channel_id FROM giveaway_channels WHERE ?1 IS NULL OR login = ?1")?
+            .prepare_cached("SELECT login, channel_id FROM giveaway_channels WHERE ?1 IS NULL OR login = ?1")?
             .query_map([only], |r| Ok((r.get(0)?, json!({ "channelId": r.get::<_, String>(1)? }))))?
             .collect(),
         "streamers" => conn
-            .prepare(
+            .prepare_cached(
                 "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_days, require_presence,
                         require_discord, require_greeting, min_chat_minutes
                  FROM streamers WHERE ?1 IS NULL OR login = ?1",
@@ -420,6 +433,153 @@ fn set_state(conn: &Connection, collection: &str, id: &str, hash: Option<&str>) 
         )?,
         None => conn.execute("DELETE FROM sync_state WHERE collection = ?1 AND id = ?2", params![collection, id])?,
     };
+    Ok(())
+}
+
+fn state_of(conn: &Connection, collection: &str, id: &str) -> rusqlite::Result<Option<String>> {
+    conn.prepare_cached("SELECT hash FROM sync_state WHERE collection = ?1 AND id = ?2")?
+        .query_row(params![collection, id], |r| r.get(0))
+        .optional()
+}
+
+// --- Documents modifiés ici (table `sync_dirty`, remplie par des déclencheurs) ---
+
+/// Identifiant noté pour toute une collection (règles de détection : identifiant calculé en Rust)
+const WHOLE: &str = "*";
+
+/// Documents notés modifiés d'une collection, avec leur dernier numéro, dans l'ordre des modifications
+fn dirty(conn: &Connection, collection: &str) -> rusqlite::Result<Vec<(String, i64)>> {
+    conn.prepare_cached("SELECT id, MAX(seq) FROM sync_dirty WHERE collection = ?1 GROUP BY id ORDER BY MAX(seq)")?
+        .query_map([collection], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect()
+}
+
+/// Oublie un document noté, sauf s'il a encore été modifié depuis la lecture (numéro plus grand)
+fn clear_dirty(conn: &Connection, collection: &str, id: &str, seq: i64) -> rusqlite::Result<()> {
+    conn.prepare_cached("DELETE FROM sync_dirty WHERE collection = ?1 AND id = ?2 AND seq <= ?3")?.execute(params![collection, id, seq])?;
+    Ok(())
+}
+
+/// Note tous les documents, y compris ceux supprimés que le serveur connaît : le passage
+/// suivant compare tout, comme avant le suivi des modifications
+fn mark_all_dirty(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "INSERT INTO sync_touch SELECT 'groups', sync_id FROM gift_groups;
+         INSERT INTO sync_touch SELECT 'gifts', sync_id FROM gifts;
+         INSERT INTO sync_touch SELECT 'giveaways', sync_id FROM giveaways;
+         INSERT INTO sync_touch SELECT 'channels', login FROM giveaway_channels;
+         INSERT INTO sync_touch SELECT 'streamers', login FROM streamers;
+         INSERT INTO sync_touch VALUES ('detection', '*');
+         INSERT INTO sync_touch SELECT collection, id FROM sync_state WHERE collection != 'detection';
+         DELETE FROM sync_meta WHERE key = 'dirty_all';",
+    )
+}
+
+fn giveaway_since() -> String {
+    (chrono::Utc::now() - chrono::Duration::days(GIVEAWAY_DAYS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Nombre de documents que `export` donnerait, sans les relire (diagnostic)
+fn count(conn: &Connection, collection: &str) -> rusqlite::Result<i64> {
+    let sql = match collection {
+        "groups" => "SELECT COUNT(*) FROM gift_groups WHERE sync_id IS NOT NULL",
+        "gifts" => "SELECT COUNT(*) FROM gifts WHERE sync_id IS NOT NULL",
+        "giveaways" => {
+            return conn.query_row(
+                "SELECT COUNT(*) FROM giveaways WHERE sync_id IS NOT NULL AND (status = 'open' OR detected_at >= ?1)",
+                [giveaway_since()],
+                |r| r.get(0),
+            )
+        }
+        "channels" => "SELECT COUNT(*) FROM giveaway_channels",
+        "streamers" => "SELECT COUNT(*) FROM streamers",
+        "detection" => "SELECT COUNT(*) FROM detection_rules",
+        _ => return Ok(0),
+    };
+    conn.query_row(sql, [], |r| r.get(0))
+}
+
+/// Envoi à faire, avec l'empreinte à garder une fois reçu par le serveur et le numéro de
+/// la modification notée à oublier alors
+struct Pending<'a> {
+    change: OutgoingChange<'a>,
+    hash: Option<String>,
+    seq: Option<i64>,
+}
+
+/// Envoi pour un document noté modifié : contenu différent du dernier état envoyé ou reçu,
+/// ou suppression d'un document que le serveur connaît
+fn diff_one<'a>(conn: &Connection, collection: &'a str, id: &str, enabled: &[&str]) -> rusqlite::Result<Option<(OutgoingChange<'a>, Option<String>)>> {
+    let known = state_of(conn, collection, id)?;
+    Ok(match export_sent(conn, collection, id, enabled)? {
+        Some(data) => {
+            let h = hash(&data);
+            (known.as_ref() != Some(&h)).then(|| (OutgoingChange { collection, id: id.to_owned(), data: Some(data), deleted: false }, Some(h)))
+        }
+        None if known.is_some() && !exists(conn, collection, id)? => {
+            Some((OutgoingChange { collection, id: id.to_owned(), data: None, deleted: true }, None))
+        }
+        None => None,
+    })
+}
+
+/// Collection notée en entier, et dernier numéro couvert
+type Whole<'a> = (&'a str, i64);
+
+/// Nos modifications : parmi les documents notés modifiés, ceux qui diffèrent du dernier état
+/// envoyé ou reçu, puis les suppressions (collection notée en entier : tout est comparé).
+/// Verrou de la base repris document par document. Rend aussi les collections notées en
+/// entier, à oublier une fois tout envoyé
+fn outgoing<'a>(db: &Db, enabled: &[&'a str]) -> rusqlite::Result<(Vec<Pending<'a>>, Vec<Whole<'a>>)> {
+    let mut out = vec![];
+    let mut whole = vec![];
+    for &c in enabled {
+        let ids = dirty(&db.conn(), c)?;
+        if let Some(seq) = ids.iter().filter(|(id, _)| id == WHOLE).map(|(_, s)| *s).next() {
+            let conn = db.conn();
+            let known = state(&conn, c)?;
+            for (id, data) in export(&conn, c, enabled)? {
+                let h = hash(&data);
+                if known.get(&id) != Some(&h) {
+                    out.push(Pending { change: OutgoingChange { collection: c, id, data: Some(data), deleted: false }, hash: Some(h), seq: None });
+                }
+            }
+            for id in known.keys() {
+                if !exists(&conn, c, id)? {
+                    out.push(Pending { change: OutgoingChange { collection: c, id: id.clone(), data: None, deleted: true }, hash: None, seq: None });
+                }
+            }
+            // Tout ce qui est noté pour la collection jusqu'ici est couvert
+            whole.push((c, ids.iter().map(|(_, s)| *s).max().unwrap_or(seq)));
+            continue;
+        }
+        for (id, seq) in ids {
+            let conn = db.conn();
+            match diff_one(&conn, c, &id, enabled)? {
+                Some((change, hash)) => out.push(Pending { change, hash, seq: Some(seq) }),
+                // Inchangé (modification reçue, ou revenue à l'état connu), giveaway trop ancien
+                None => clear_dirty(&conn, c, &id, seq)?,
+            }
+        }
+    }
+    Ok((out, whole))
+}
+
+/// Envois reçus par le serveur : état gardé, modifications notées oubliées
+fn acknowledge(conn: &Connection, sent: Vec<Pending>) -> rusqlite::Result<()> {
+    for p in sent {
+        set_state(conn, p.change.collection, &p.change.id, p.hash.as_deref())?;
+        if let Some(seq) = p.seq {
+            clear_dirty(conn, p.change.collection, &p.change.id, seq)?;
+        }
+    }
+    Ok(())
+}
+
+fn clear_whole(conn: &Connection, whole: &[Whole]) -> rusqlite::Result<()> {
+    for (c, seq) in whole {
+        conn.execute("DELETE FROM sync_dirty WHERE collection = ?1 AND seq <= ?2", params![c, seq])?;
+    }
     Ok(())
 }
 
@@ -737,6 +897,90 @@ struct Outcome {
     received: u64,
 }
 
+/// Document reçu enregistré : empreinte de ce qui est réellement enregistré (l'enregistrement
+/// peut différer un peu du document reçu : espaces, image refusée, lien absent), et modification
+/// notée par les déclencheurs oubliée (rien à renvoyer). Règles de détection : notées en
+/// entier, comparées au prochain envoi
+fn received_state(conn: &Connection, collection: &str, id: &str, data: Option<&Value>, enabled: &[&str]) -> rusqlite::Result<()> {
+    let stored = match data {
+        Some(_) => export_one(conn, collection, id, enabled)?.map(|v| hash(&v)),
+        None => None,
+    };
+    set_state(conn, collection, id, stored.as_deref())?;
+    if collection != "detection" {
+        conn.prepare_cached("DELETE FROM sync_dirty WHERE collection = ?1 AND id = ?2")?.execute(params![collection, id])?;
+    }
+    Ok(())
+}
+
+/// Applique une page de modifications reçues ; rend le nombre de documents appliqués
+fn receive<'a>(
+    conn: &Connection,
+    changes: &[RemoteChange],
+    enabled: &[&'a str],
+    deferred: &mut Vec<(&'a str, String, Value)>,
+    touched: &mut HashSet<&'a str>,
+) -> rusqlite::Result<u64> {
+    let mut received = 0;
+    // État local au moment de la page, documents de la page seulement : une modification
+    // locale pas encore envoyée l'emporte
+    let mut local: HashMap<(&str, &str), Option<String>> = HashMap::new();
+    let mut states: HashMap<&str, HashMap<String, String>> = HashMap::new();
+    for change in changes {
+        let Some(c) = enabled.iter().copied().find(|c| *c == change.collection) else { continue };
+        if !states.contains_key(c) {
+            states.insert(c, state(conn, c)?);
+        }
+        if let std::collections::hash_map::Entry::Vacant(e) = local.entry((c, change.id.as_str())) {
+            e.insert(export_sent(conn, c, &change.id, enabled)?.map(|v| hash(&v)));
+        }
+    }
+    for change in changes {
+        let Some(collection) = enabled.iter().copied().find(|c| *c == change.collection) else { continue };
+        let data = if change.deleted { None } else { change.data.as_ref() };
+        let remote = data.map(hash);
+        let known = states[collection].get(&change.id);
+        // Déjà dans cet état (notre propre envoi qui revient)
+        if remote.as_ref() == known || (remote.is_none() && known.is_none() && !exists(conn, collection, &change.id)?) {
+            continue;
+        }
+        let mine = local[&(collection, change.id.as_str())].as_ref();
+        if known.is_some() && mine.is_some() && mine != known {
+            tracing::info!("synchronisation : {collection}/{} modifié ici, version reçue laissée de côté", change.id);
+            continue;
+        }
+        // Supprimé ici, pas encore envoyé : la suppression l'emporte sur la modification reçue
+        if known.is_some() && mine.is_none() && remote.is_some() && !exists(conn, collection, &change.id)? {
+            tracing::info!("synchronisation : {collection}/{} supprimé ici, version reçue laissée de côté", change.id);
+            continue;
+        }
+        let pending = match data {
+            Some(d) => unresolved(conn, collection, d)?,
+            None => false,
+        };
+        if apply(conn, collection, &change.id, data)? {
+            if pending {
+                deferred.push((collection, change.id.clone(), data.cloned().unwrap_or_default()));
+            } else {
+                received_state(conn, collection, &change.id, data, enabled)?;
+            }
+            received += 1;
+            touched.insert(collection);
+        }
+    }
+    Ok(received)
+}
+
+/// Documents reçus avant le groupe ou les cadeaux qu'ils citent : réappliqués
+fn reapply(conn: &Connection, deferred: &[(&str, String, Value)], enabled: &[&str]) -> rusqlite::Result<()> {
+    for (collection, id, data) in deferred {
+        if apply(conn, collection, id, Some(data))? {
+            received_state(conn, collection, id, Some(data), enabled)?;
+        }
+    }
+    Ok(())
+}
+
 async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
     let info = server_info(&app.http, &cfg.url, &cfg.code).await?;
     let skipped = skipped(&app.db.conn());
@@ -744,6 +988,7 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
     let enabled: Vec<&str> = offered.iter().copied().filter(|c| !skipped.iter().any(|s| s == c)).collect();
 
     let mut cursor: i64;
+    let mut reset = false;
     {
         let conn = app.db.conn();
         assign_ids(&conn).map_err(db_err)?;
@@ -752,6 +997,7 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
         if meta(&conn, "server").as_deref() != Some(cfg.url.as_str()) || info.seq < cursor {
             conn.execute("DELETE FROM sync_state", []).map_err(db_err)?;
             cursor = 0;
+            reset = true;
             set_meta(&conn, "server", &cfg.url).map_err(db_err)?;
             set_meta(&conn, "cursor", "0").map_err(db_err)?;
         }
@@ -761,6 +1007,7 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
         if meta(&conn, "state_format").as_deref() != Some(STATE_FORMAT) {
             conn.execute("DELETE FROM sync_state", []).map_err(db_err)?;
             cursor = 0;
+            reset = true;
             set_meta(&conn, "cursor", "0").map_err(db_err)?;
             set_meta(&conn, "state_format", STATE_FORMAT).map_err(db_err)?;
         }
@@ -769,8 +1016,14 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
         let scope = enabled.join(",");
         if meta(&conn, "scope").as_deref() != Some(scope.as_str()) {
             cursor = 0;
+            reset = true;
             set_meta(&conn, "cursor", "0").map_err(db_err)?;
             set_meta(&conn, "scope", &scope).map_err(db_err)?;
+        }
+        // État oublié, collections changées (les liens envoyés en dépendent) ou première fois
+        // depuis le suivi des modifications : tout est comparé une fois
+        if reset || meta(&conn, "dirty_all").is_some() {
+            mark_all_dirty(&conn).map_err(db_err)?;
         }
     }
 
@@ -786,55 +1039,7 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
             let guard = app.db.conn();
             // Page appliquée d'un bloc (curseur compris) : interrompue, elle sera relue en entier
             let conn = guard.unchecked_transaction().map_err(db_err)?;
-            // Collections de la page seulement : rien à relire pour une page vide
-            let present: HashSet<&str> =
-                page.changes.iter().filter_map(|ch| enabled.iter().copied().find(|c| *c == ch.collection)).collect();
-            // État local au moment de la page : une modification locale pas encore envoyée l'emporte
-            let mut local: HashMap<&str, HashMap<String, String>> = HashMap::new();
-            let mut states: HashMap<&str, HashMap<String, String>> = HashMap::new();
-            for c in &present {
-                local.insert(c, export(&conn, c, &enabled).map_err(db_err)?.into_iter().map(|(id, v)| (id, hash(&v))).collect());
-                states.insert(c, state(&conn, c).map_err(db_err)?);
-            }
-            for change in &page.changes {
-                let Some(collection) = enabled.iter().copied().find(|c| *c == change.collection) else { continue };
-                let data = if change.deleted { None } else { change.data.as_ref() };
-                let remote = data.map(hash);
-                let known = states[collection].get(&change.id);
-                // Déjà dans cet état (notre propre envoi qui revient)
-                if remote.as_ref() == known || (remote.is_none() && known.is_none() && !exists(&conn, collection, &change.id).map_err(db_err)?) {
-                    continue;
-                }
-                let mine = local[collection].get(&change.id);
-                if known.is_some() && mine.is_some() && mine != known {
-                    tracing::info!("synchronisation : {collection}/{} modifié ici, version reçue laissée de côté", change.id);
-                    continue;
-                }
-                // Supprimé ici, pas encore envoyé : la suppression l'emporte sur la modification reçue
-                if known.is_some() && mine.is_none() && remote.is_some() && !exists(&conn, collection, &change.id).map_err(db_err)? {
-                    tracing::info!("synchronisation : {collection}/{} supprimé ici, version reçue laissée de côté", change.id);
-                    continue;
-                }
-                let pending = match data {
-                    Some(d) => unresolved(&conn, collection, d).map_err(db_err)?,
-                    None => false,
-                };
-                if apply(&conn, collection, &change.id, data).map_err(db_err)? {
-                    if pending {
-                        deferred.push((collection, change.id.clone(), data.cloned().unwrap_or_default()));
-                    } else {
-                        // Empreinte de ce qui est réellement enregistré : l'enregistrement peut
-                        // différer un peu du document reçu (espaces, image refusée, lien absent)
-                        let stored = match data {
-                            Some(_) => export_one(&conn, collection, &change.id, &enabled).map_err(db_err)?.map(|v| hash(&v)),
-                            None => None,
-                        };
-                        set_state(&conn, collection, &change.id, stored.as_deref()).map_err(db_err)?;
-                    }
-                    received += 1;
-                    touched.insert(collection);
-                }
-            }
+            received += receive(&conn, &page.changes, &enabled, &mut deferred, &mut touched).map_err(db_err)?;
             // Le curseur n'avance pas tant que des liens restent à résoudre : en cas
             // d'interruption, ces documents seront relus
             cursor = page.seq;
@@ -849,54 +1054,31 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
     }
     if !deferred.is_empty() {
         let conn = app.db.conn();
-        for (collection, id, data) in &deferred {
-            if apply(&conn, collection, id, Some(data)).map_err(db_err)? {
-                let stored = export_one(&conn, collection, id, &enabled).map_err(db_err)?.map(|v| hash(&v));
-                set_state(&conn, collection, id, stored.as_deref()).map_err(db_err)?;
-            }
-        }
+        reapply(&conn, &deferred, &enabled).map_err(db_err)?;
         set_meta(&conn, "cursor", &cursor.to_string()).map_err(db_err)?;
     }
 
-    // 2. Nos modifications : contenus changés, puis suppressions
+    // 2. Nos modifications : documents notés modifiés dont le contenu a changé, et suppressions
     let author = app.db.accounts().ok().and_then(|a| a.into_iter().next()).map(|a| a.login);
-    let mut outgoing: Vec<(OutgoingChange, Option<String>)> = vec![];
-    {
-        let conn = app.db.conn();
-        for c in &enabled {
-            let known = state(&conn, c).map_err(db_err)?;
-            for (id, data) in export(&conn, c, &enabled).map_err(db_err)? {
-                let h = hash(&data);
-                if known.get(&id) != Some(&h) {
-                    outgoing.push((OutgoingChange { collection: c, id, data: Some(data), deleted: false }, Some(h)));
-                }
-            }
-            for id in known.keys() {
-                if !exists(&conn, c, id).map_err(db_err)? {
-                    outgoing.push((OutgoingChange { collection: c, id: id.clone(), data: None, deleted: true }, None));
-                }
-            }
-        }
-    }
+    let (outgoing, whole) = outgoing(&app.db, &enabled).map_err(db_err)?;
     let sent = outgoing.len() as u64;
-    let mut batch: Vec<(OutgoingChange, Option<String>)> = vec![];
+    let mut batch: Vec<Pending> = vec![];
     let mut size = 0;
     let mut pending = outgoing.into_iter().peekable();
     while let Some(item) = pending.next() {
-        size += item.0.data.as_ref().map_or(64, |d| d.to_string().len());
+        size += item.change.data.as_ref().map_or(64, |d| d.to_string().len());
         batch.push(item);
         if batch.len() >= PUSH_BATCH_DOCS || size >= PUSH_BATCH_BYTES || pending.peek().is_none() {
-            let changes: Vec<&OutgoingChange> = batch.iter().map(|(c, _)| c).collect();
+            let changes: Vec<&OutgoingChange> = batch.iter().map(|p| &p.change).collect();
             let _: Value =
                 request(app.http.post(format!("{}/api/v1/changes", cfg.url)).json(&json!({ "author": author, "changes": changes })), &cfg.code)
                     .await?;
-            let conn = app.db.conn();
-            for (c, h) in batch.drain(..) {
-                set_state(&conn, c.collection, &c.id, h.as_deref()).map_err(db_err)?;
-            }
+            acknowledge(&app.db.conn(), std::mem::take(&mut batch)).map_err(db_err)?;
             size = 0;
         }
     }
+    // Collections notées en entier : oubliées une fois tous les envois reçus
+    clear_whole(&app.db.conn(), &whole).map_err(db_err)?;
 
     if !touched.is_empty() {
         app.giveaways.send(MonitorCmd::Reload);
@@ -909,7 +1091,7 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
     {
         let conn = app.db.conn();
         for c in &offered {
-            local_counts.insert(c.to_string(), export(&conn, c, &enabled).map_err(db_err)?.len() as i64);
+            local_counts.insert(c.to_string(), count(&conn, c).map_err(db_err)?);
         }
     }
     let server_counts = server_info(&app.http, &cfg.url, &cfg.code).await.ok().and_then(|i| i.counts);
@@ -1040,6 +1222,7 @@ pub fn sync_resync(app: State<'_, Arc<App>>) -> Result<(), String> {
     let conn = app.db.conn();
     conn.execute("DELETE FROM sync_state", []).map_err(db_err)?;
     set_meta(&conn, "cursor", "0").map_err(db_err)?;
+    mark_all_dirty(&conn).map_err(db_err)?;
     drop(conn);
     tracing::info!("synchronisation : relecture complète demandée");
     app.sync.poke();
@@ -1070,6 +1253,7 @@ pub fn sync_now(app: State<'_, Arc<App>>) {
 mod tests {
     use super::*;
     use crate::db::Db;
+    use std::collections::BTreeSet;
 
     fn docs(db: &Db, c: &str) -> HashMap<String, Value> {
         export(&db.conn(), c, &COLLECTIONS).unwrap().into_iter().collect()
@@ -1258,5 +1442,286 @@ mod tests {
         assert!(apply(&conn, "gifts", "g", Some(&json!({"title": "T", "image": "javascript:alert(1)"}))).unwrap());
         drop(conn);
         assert_eq!(db.gifts().unwrap()[0].image, None);
+    }
+
+    // --- Envois à partir des modifications notées ---
+
+    type Sent = BTreeSet<(String, String, bool)>;
+
+    /// Début de passage (comme `run`) : identifiants donnés, tout noté la première fois
+    fn start(db: &Db) {
+        let conn = db.conn();
+        assign_ids(&conn).unwrap();
+        if meta(&conn, "dirty_all").is_some() {
+            mark_all_dirty(&conn).unwrap();
+        }
+    }
+
+    /// Ce qu'envoyait l'ancienne version : tout relu et comparé à `sync_state`
+    fn full_outgoing(db: &Db, enabled: &[&str]) -> Sent {
+        let conn = db.conn();
+        let mut out = Sent::new();
+        for c in enabled {
+            let known = state(&conn, c).unwrap();
+            for (id, data) in export(&conn, c, enabled).unwrap() {
+                if known.get(&id) != Some(&hash(&data)) {
+                    out.insert((c.to_string(), id, false));
+                }
+            }
+            for id in known.keys() {
+                if !exists(&conn, c, id).unwrap() {
+                    out.insert((c.to_string(), id.clone(), true));
+                }
+            }
+        }
+        out
+    }
+
+    /// Envoi réussi : rend ce qui est parti, sous forme de modifications reçues par les autres
+    fn push(db: &Db, enabled: &[&str]) -> Vec<RemoteChange> {
+        start(db);
+        let (out, whole) = outgoing(db, enabled).unwrap();
+        let changes = out
+            .iter()
+            .map(|p| RemoteChange { collection: p.change.collection.to_owned(), id: p.change.id.clone(), data: p.change.data.clone(), deleted: p.change.deleted })
+            .collect();
+        let conn = db.conn();
+        acknowledge(&conn, out).unwrap();
+        clear_whole(&conn, &whole).unwrap();
+        changes
+    }
+
+    fn sent(changes: &[RemoteChange]) -> Sent {
+        let set: Sent = changes.iter().map(|c| (c.collection.clone(), c.id.clone(), c.deleted)).collect();
+        assert_eq!(set.len(), changes.len(), "document envoyé deux fois");
+        set
+    }
+
+    /// Envoi comparé à l'ancienne version, qui relisait tout
+    fn push_checked(db: &Db, enabled: &[&str]) -> Vec<RemoteChange> {
+        start(db);
+        let expected = full_outgoing(db, enabled);
+        let changes = push(db, enabled);
+        assert_eq!(sent(&changes), expected);
+        assert!(full_outgoing(db, enabled).is_empty());
+        changes
+    }
+
+    fn receive_all(db: &Db, changes: &[RemoteChange], enabled: &[&str]) -> u64 {
+        start(db);
+        let conn = db.conn();
+        let mut deferred = vec![];
+        let mut touched = HashSet::new();
+        let n = receive(&conn, changes, enabled, &mut deferred, &mut touched).unwrap();
+        reapply(&conn, &deferred, enabled).unwrap();
+        n
+    }
+
+    fn gift(title: &str, group_id: Option<i64>) -> crate::db::Gift {
+        crate::db::Gift {
+            id: 0,
+            title: title.into(),
+            image: Some(format!("data:image/png;base64,{}", "A".repeat(4096))),
+            group_id,
+            keywords: vec![],
+            game_id: None,
+            game_name: None,
+            favorite: false,
+        }
+    }
+
+    fn giveaway_input(gift_ids: Vec<i64>) -> crate::db::GiveawayInput {
+        crate::db::GiveawayInput {
+            channel: "lunarsea".into(),
+            kind: "command".into(),
+            command: Some("!join".into()),
+            url: None,
+            gift_ids,
+            details: Default::default(),
+        }
+    }
+
+    /// Un exemplaire de chaque collection ; rend (groupe, cadeau, giveaway)
+    fn populate(db: &Db) -> (i64, i64, i64) {
+        let group = db.ensure_gift_group("Voiles", None, None).unwrap();
+        let gift = db.save_gift(&gift("Obsidian Sails", Some(group))).unwrap();
+        let giveaway = db.insert_manual_giveaway(&giveaway_input(vec![gift]), &chrono::Utc::now().to_rfc3339()).unwrap();
+        db.add_giveaway_channel("lunarsea", "123").unwrap();
+        db.save_streamer(&crate::db::Streamer { login: "lunarsea".into(), notes: Some("note".into()), ..Default::default() }).unwrap();
+        db.set_detection_rules("bot", &["mwetton".into()]).unwrap();
+        (group, gift, giveaway)
+    }
+
+    fn sync_id(db: &Db, table: &str, id: i64) -> String {
+        db.conn().query_row(&format!("SELECT sync_id FROM {table} WHERE id = ?1"), [id], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn hash_matches_previous_format() {
+        // Empreinte d'avant (JSON canonique copié puis converti en texte) : les états déjà
+        // enregistrés restent valables
+        fn canonical(value: &Value) -> Value {
+            match value {
+                Value::Object(map) => Value::Object(
+                    map.iter().map(|(k, v)| (k.clone(), canonical(v))).collect::<BTreeMap<_, _>>().into_iter().collect(),
+                ),
+                Value::Array(list) => Value::Array(list.iter().map(canonical).collect()),
+                v => v.clone(),
+            }
+        }
+        fn previous(value: &Value) -> String {
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in canonical(value).to_string().bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            format!("{h:016x}")
+        }
+        let v = json!({"z": "é\"\n", "a": [1, 2.5, null, {"y": true, "b": "x"}], "m": {"k": -3}});
+        assert_eq!(hash(&v), previous(&v));
+        assert_eq!(hash(&json!("bravo")), previous(&json!("bravo")));
+    }
+
+    #[test]
+    fn unchanged_pass_sends_nothing_and_modified_row_is_sent_once() {
+        let db = Db::memory().unwrap();
+        let (_, gift_id, _) = populate(&db);
+        assert_eq!(push_checked(&db, &COLLECTIONS).len(), 6);
+        assert!(push_checked(&db, &COLLECTIONS).is_empty());
+        // Rien noté une fois tout envoyé
+        let left: i64 = db.conn().query_row("SELECT COUNT(*) FROM sync_dirty", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
+        // Cadeau modifié : lui seul, une fois
+        let mut g = gift("Obsidian Sails 2", None);
+        g.id = gift_id;
+        g.group_id = db.gifts().unwrap()[0].group_id;
+        db.save_gift(&g).unwrap();
+        let changes = push_checked(&db, &COLLECTIONS);
+        assert_eq!(sent(&changes), Sent::from([("gifts".into(), sync_id(&db, "gifts", gift_id), false)]));
+        assert!(push_checked(&db, &COLLECTIONS).is_empty());
+        // Favori (pas envoyé) : noté, comparé, rien ne part
+        db.set_gift_favorite(gift_id, true).unwrap();
+        assert!(push_checked(&db, &COLLECTIONS).is_empty());
+        // Modification revenue à l'état connu : rien ne part
+        db.add_giveaway_channel("other", "9").unwrap();
+        db.conn().execute("DELETE FROM giveaway_channels WHERE login = 'other'", []).unwrap();
+        assert!(push_checked(&db, &COLLECTIONS).is_empty());
+    }
+
+    #[test]
+    fn received_changes_are_not_sent_back() {
+        let a = Db::memory().unwrap();
+        let b = Db::memory().unwrap();
+        let (_, gift_id, giveaway_id) = populate(&a);
+        let changes = push_checked(&a, &COLLECTIONS);
+        assert_eq!(receive_all(&b, &changes, &COLLECTIONS), 6);
+        assert!(push_checked(&b, &COLLECTIONS).is_empty());
+        // Modification reçue plus tard, giveaway reçu avant le cadeau qu'il cite
+        let other = a.save_gift(&gift("Golden Hull", None)).unwrap();
+        a.update_giveaway(giveaway_id, &giveaway_input(vec![gift_id, other])).unwrap();
+        let mut changes = push_checked(&a, &COLLECTIONS);
+        changes.sort_by_key(|c| c.collection != "giveaways");
+        assert_eq!(changes.len(), 2);
+        assert_eq!(receive_all(&b, &changes, &COLLECTIONS), 2);
+        assert_eq!(b.giveaways(10).unwrap()[0].gift_ids.len(), 2);
+        assert!(push_checked(&b, &COLLECTIONS).is_empty());
+        // Notre envoi qui revient : ignoré
+        assert_eq!(receive_all(&a, &changes, &COLLECTIONS), 0);
+        assert!(push_checked(&a, &COLLECTIONS).is_empty());
+        // Suppression reçue : pas renvoyée
+        a.delete_gift(other).unwrap();
+        let changes = push_checked(&a, &COLLECTIONS);
+        receive_all(&b, &changes, &COLLECTIONS);
+        assert_eq!(b.gifts().unwrap().len(), 1);
+        assert!(push_checked(&b, &COLLECTIONS).is_empty());
+        // Modifié ici et là-bas : la version locale part, la reçue est laissée de côté
+        b.save_streamer(&crate::db::Streamer { login: "lunarsea".into(), notes: Some("b".into()), ..Default::default() }).unwrap();
+        a.save_streamer(&crate::db::Streamer { login: "lunarsea".into(), notes: Some("a".into()), ..Default::default() }).unwrap();
+        let changes = push_checked(&a, &COLLECTIONS);
+        assert_eq!(receive_all(&b, &changes, &COLLECTIONS), 0);
+        assert_eq!(sent(&push_checked(&b, &COLLECTIONS)), Sent::from([("streamers".into(), "lunarsea".into(), false)]));
+    }
+
+    #[test]
+    fn deletions_and_linked_documents_are_sent() {
+        let db = Db::memory().unwrap();
+        let (group, gift_id, giveaway_id) = populate(&db);
+        push_checked(&db, &COLLECTIONS);
+        let (gift_sync, giveaway_sync) = (sync_id(&db, "gifts", gift_id), sync_id(&db, "giveaways", giveaway_id));
+        // Cadeau supprimé : sa suppression, et le giveaway qui le citait
+        db.delete_gift(gift_id).unwrap();
+        assert_eq!(
+            sent(&push_checked(&db, &COLLECTIONS)),
+            Sent::from([("gifts".into(), gift_sync, true), ("giveaways".into(), giveaway_sync.clone(), false)])
+        );
+        // Groupe supprimé : les cadeaux qui le citaient changent aussi
+        let other = db.save_gift(&gift("Golden Hull", Some(group))).unwrap();
+        push_checked(&db, &COLLECTIONS);
+        db.delete_gift_group(group).unwrap();
+        assert_eq!(sent(&push_checked(&db, &COLLECTIONS)).len(), 2);
+        // Nouvel identifiant partagé d'un cadeau (doublon fusionné) : les giveaways qui le citent
+        db.update_giveaway(giveaway_id, &giveaway_input(vec![other])).unwrap();
+        push_checked(&db, &COLLECTIONS);
+        db.conn().execute("UPDATE gifts SET sync_id = '0' WHERE id = ?1", [other]).unwrap();
+        assert_eq!(sent(&push_checked(&db, &COLLECTIONS)).len(), 3);
+        // Règle de détection retirée, chaîne retirée, giveaway supprimé
+        db.set_detection_rules("bot", &[]).unwrap();
+        db.conn().execute("DELETE FROM giveaway_channels", []).unwrap();
+        db.delete_giveaway(giveaway_id).unwrap();
+        let changes = push_checked(&db, &COLLECTIONS);
+        assert_eq!(sent(&changes).len(), 3);
+        assert!(changes.iter().all(|c| c.deleted));
+    }
+
+    #[test]
+    fn first_pass_after_upgrade_sends_what_a_full_comparison_would() {
+        for enabled in [&COLLECTIONS[..], &["gifts", "giveaways", "streamers"][..]] {
+            let db = Db::memory().unwrap();
+            let (_, gift_id, giveaway_id) = populate(&db);
+            // Ancien giveaway clos (pas envoyé), ancien ouvert (envoyé)
+            for (status, sid) in [("closed", "old-closed"), ("open", "old-open")] {
+                db.conn()
+                    .execute(
+                        "INSERT INTO giveaways (channel, kind, detected_at, status, sync_id) VALUES ('lunarsea', 'command', '2020-01-01T00:00:00Z', ?1, ?2)",
+                        params![status, sid],
+                    )
+                    .unwrap();
+            }
+            start(&db);
+            // Synchronisé autrefois, puis modifié et supprimé sans suivi des modifications
+            {
+                let conn = db.conn();
+                for c in enabled {
+                    for (id, data) in export(&conn, c, enabled).unwrap() {
+                        set_state(&conn, c, &id, Some(&hash(&data))).unwrap();
+                    }
+                }
+                set_state(&conn, "gifts", "ghost", Some("0")).unwrap();
+                set_state(&conn, "giveaways", "old-closed", Some("0")).unwrap();
+                conn.execute("UPDATE gifts SET title = 'Changé' WHERE id = ?1", [gift_id]).unwrap();
+                conn.execute("UPDATE giveaways SET notes = 'n' WHERE id = ?1", [giveaway_id]).unwrap();
+                conn.execute("UPDATE giveaways SET status = 'closed' WHERE sync_id = 'old-open'", []).unwrap();
+                conn.execute("DELETE FROM sync_dirty", []).unwrap();
+                set_meta(&conn, "dirty_all", "1").unwrap();
+            }
+            let expected = full_outgoing(&db, enabled);
+            assert!(!expected.is_empty());
+            assert_eq!(sent(&push_checked(&db, enabled)), expected);
+            assert!(push_checked(&db, enabled).is_empty());
+        }
+    }
+
+    #[test]
+    fn local_counts_match_export() {
+        let db = Db::memory().unwrap();
+        populate(&db);
+        db.conn()
+            .execute("INSERT INTO giveaways (channel, kind, detected_at, status, sync_id) VALUES ('a', 'command', '2020-01-01T00:00:00Z', 'closed', 'x')", [])
+            .unwrap();
+        start(&db);
+        let conn = db.conn();
+        for c in COLLECTIONS {
+            assert_eq!(count(&conn, c).unwrap(), export(&conn, c, &COLLECTIONS).unwrap().len() as i64, "{c}");
+        }
     }
 }
