@@ -212,13 +212,13 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
     let mut found = filter_streams(streams, &settings);
     found.truncate(MAX_MATCHES);
 
-    // Type du giveaway : giveaway ouvert connu de la chaîne, sinon StreamElements actif
+    // Type du giveaway : giveaway ouvert (ou en pause) connu de la chaîne, sinon StreamElements actif
     let open = app.db.giveaways(200).unwrap_or_default();
     let mut se_ids = app.scanner.lock().unwrap().se_ids.clone();
     // Chaîne → (type, commande, texte du giveaway StreamElements : titre et description)
     let mut kinds: HashMap<String, (String, Option<String>, Option<String>)> = HashMap::new();
     for (s, _) in &found {
-        if let Some(g) = open.iter().find(|g| g.open && g.channel == s.login) {
+        if let Some(g) = open.iter().find(|g| g.status != "closed" && g.channel == s.login) {
             kinds.insert(s.login.clone(), (g.kind.clone(), g.command.clone(), None));
         }
     }

@@ -30,6 +30,11 @@ const MENTION_COOLDOWN: Duration = Duration::from_secs(60);
 const MAX_MENTIONS: usize = 30;
 /// Un giveaway resté ouvert plus longtemps est clos (le tirage a été manqué)
 const AUTO_CLOSE_AFTER: chrono::Duration = chrono::Duration::hours(12);
+/// Giveaway en pause clos : heure de tirage dépassée de tant, ou détecté depuis tant
+const PAUSED_DRAW_GRACE: chrono::Duration = chrono::Duration::hours(24);
+const PAUSED_MAX_AGE: chrono::Duration = chrono::Duration::days(14);
+/// Commande redétectée : giveaway en pause ou clos sans gagnant de cet âge rouvert, pas dupliqué
+const REOPEN_WITHIN: chrono::Duration = chrono::Duration::days(7);
 const RECENT_GIVEAWAYS: usize = 60;
 // Statut live des chaînes surveillées : relu toutes les 2 min, 3 chaînes au plus toutes les 10 s
 const LIVE_CHECK_EVERY: Duration = Duration::from_secs(120);
@@ -304,8 +309,14 @@ impl Monitor {
                 _ = log_tick.tick() => self.flush_chat_log(),
                 _ = tick.tick() => {
                     self.update_anonymous();
-                    let before = (chrono::Utc::now() - AUTO_CLOSE_AFTER).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-                    if self.app.db.close_giveaways_before(&before).unwrap_or(0) > 0 {
+                    let now = chrono::Utc::now();
+                    let at = |d: chrono::Duration| (now - d).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                    let closed = self.app.db.close_giveaways_before(&at(AUTO_CLOSE_AFTER)).unwrap_or(0);
+                    let expired = self.app.db.expire_paused_giveaways(&at(PAUSED_DRAW_GRACE), &at(PAUSED_MAX_AGE)).unwrap_or(0);
+                    if expired > 0 {
+                        self.app.log("giveaways", EventKind::Info, format!("{expired} giveaway(s) en pause expiré(s), clos"));
+                    }
+                    if closed + expired > 0 {
                         self.publish();
                     }
                     self.presence_reminders();
@@ -457,10 +468,22 @@ impl Monitor {
         for (channel, info) in report.results {
             let was_live = self.live.get(&channel).is_some_and(|l| l.info.is_some());
             if was_live && info.is_none() {
-                // Fin du live : le tirage a eu lieu ou n'aura pas lieu (sauf heure de tirage à venir)
-                let closed = self.app.db.close_channel_giveaways(&channel).unwrap_or(0);
-                if closed > 0 {
-                    self.app.log("giveaways", EventKind::Info, format!("{channel} est hors ligne : {closed} giveaway(s) clos"));
+                // Fin du live : le tirage a eu lieu ou n'aura pas lieu, sauf giveaway sur plusieurs
+                // lives (heure de tirage à venir, saisi à la main, StreamElements) : en pause
+                let out = self.app.db.close_channel_giveaways(&channel).unwrap_or_default();
+                if out.closed > 0 {
+                    self.app.log("giveaways", EventKind::Info, format!("{channel} est hors ligne : {} giveaway(s) clos", out.closed));
+                }
+                if out.paused > 0 {
+                    self.app.log("giveaways", EventKind::Info, format!("{channel} est hors ligne : {} giveaway(s) en pause", out.paused));
+                }
+                changed |= out.closed + out.paused > 0;
+            }
+            if !was_live && info.is_some() {
+                // De retour en live : giveaways en pause repris, sans nouvelle alerte
+                for g in self.app.db.resume_channel_giveaways(&channel, &now_rfc3339()).unwrap_or_default() {
+                    let what = g.command.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
+                    self.app.log("giveaways", EventKind::Info, format!("Giveaway de {channel}{what} repris (live)"));
                     changed = true;
                 }
             }
@@ -785,6 +808,21 @@ impl Monitor {
             }
             return;
         }
+        // Même commande en pause ou close sans gagnant depuis peu (giveaway sur plusieurs lives) :
+        // rouvert plutôt que dupliqué
+        let since = (chrono::Utc::now() - REOPEN_WITHIN).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        if let Ok(Some(g)) = self.app.db.reopenable_command_giveaway(channel, &command, &since) {
+            if let Err(e) = self.app.db.reopen_giveaway(g.id, &now_rfc3339()) {
+                tracing::error!("giveaway non rouvert : {e}");
+                return;
+            }
+            self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway de {channel} repris : {command} de nouveau dans le chat"));
+            self.app.notify(Alert::Giveaway, &format!("Giveaway repris sur {channel}"), &format!("Commande {command} de nouveau reprise par le chat"));
+            self.publish();
+            // Comptes déjà inscrits : pas de nouvel envoi
+            schedule_auto_participation(self.app.clone(), g.id);
+            return;
+        }
         let id = match self.app.db.insert_giveaway(&NewGiveaway {
             channel: channel.to_owned(),
             kind: "command".into(),
@@ -865,8 +903,12 @@ impl Monitor {
 
     fn on_winner(&mut self, channel: &str, bot: &str, winner: &str, chance: Option<&str>) {
         let open = self.open_giveaways(channel);
-        // Aucun ouvert : giveaway clos récemment sans gagnant (fin du live juste avant le tirage)
+        // Aucun ouvert : giveaway en pause (même giveaway, tirage d'un live suivant), sinon clos
+        // récemment sans gagnant (fin du live juste avant le tirage)
         let target = winner_target(&open, bot).cloned().or_else(|| {
+            let paused = self.app.db.paused_giveaways(Some(channel)).unwrap_or_default();
+            winner_target(&paused, bot).cloned()
+        }).or_else(|| {
             let since = (chrono::Utc::now() - chrono::Duration::hours(RECENT_UNDRAWN_HOURS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
             let recent = self.app.db.recent_undrawn_giveaways(channel, &since).unwrap_or_default();
             winner_target(&recent, bot).cloned()
@@ -1063,7 +1105,8 @@ pub struct ParticipationResult {
 /// Envoie la commande du giveaway depuis les comptes choisis (une fois par compte)
 pub async fn participate(app: &Arc<App>, giveaway_id: i64, account_ids: &[i64], auto: bool) -> Result<Vec<ParticipationResult>, String> {
     let giveaway = app.db.giveaway(giveaway_id).map_err(|e| e.to_string())?.ok_or("giveaway introuvable")?;
-    if !giveaway.open {
+    // En pause (live terminé) : le chat peut encore être lu, la participation reste permise
+    if giveaway.status == "closed" {
         return Err("Ce giveaway est terminé".into());
     }
     let command = match (giveaway.kind.as_str(), giveaway.command.clone()) {
@@ -1094,7 +1137,7 @@ pub async fn participate(app: &Arc<App>, giveaway_id: i64, account_ids: &[i64], 
         }
         // Relu juste avant l'envoi : clos, ou inscrit entre-temps (depuis le chat, ou un autre envoi)
         match app.db.giveaway(giveaway_id) {
-            Ok(Some(g)) if !g.open => {
+            Ok(Some(g)) if g.status == "closed" => {
                 results.push(ParticipationResult { account_id: *id, login: account.login.clone(), ok: false, message: "giveaway terminé".into() });
                 continue;
             }
@@ -1182,7 +1225,7 @@ fn winner_target<'a>(open: &'a [GiveawayRow], bot: &str) -> Option<&'a GiveawayR
 }
 
 /// Giveaway d'un gagnant désigné à la main : celui choisi (de cette chaîne), sinon le plus
-/// récent ouvert de la chaîne, sinon le plus récent de la chaîne
+/// récent ouvert de la chaîne, sinon en pause, sinon le plus récent de la chaîne
 pub fn manual_target(db: &crate::db::Db, channel: &str, giveaway_id: Option<i64>) -> Option<GiveawayRow> {
     if let Some(id) = giveaway_id {
         return db.giveaway(id).ok().flatten().filter(|g| g.channel == channel);
@@ -1191,15 +1234,21 @@ pub fn manual_target(db: &crate::db::Db, channel: &str, giveaway_id: Option<i64>
     if let Some(g) = open.into_iter().next() {
         return Some(g);
     }
+    if let Some(g) = db.paused_giveaways(Some(channel)).unwrap_or_default().into_iter().next() {
+        return Some(g);
+    }
     db.giveaways(RECENT_GIVEAWAYS).unwrap_or_default().into_iter().find(|g| g.channel == channel)
 }
 
-/// Participation automatique (si activée) : chaque compte après un délai aléatoire
+/// Participation automatique (si activée) : chaque compte pas encore inscrit, après un délai
+/// aléatoire
 fn schedule_auto_participation(app: Arc<App>, giveaway_id: i64) {
     let settings = app.db.settings();
     if !settings.auto_participate {
         return;
     }
+    let entered: Vec<i64> =
+        app.db.giveaway(giveaway_id).ok().flatten().map(|g| g.entries.iter().map(|e| e.account_id).collect()).unwrap_or_default();
     let accounts: Vec<i64> = app
         .db
         .accounts()
@@ -1207,6 +1256,7 @@ fn schedule_auto_participation(app: Arc<App>, giveaway_id: i64) {
         .into_iter()
         .map(|a| a.id)
         .filter(|id| settings.auto_accounts.is_empty() || settings.auto_accounts.contains(id))
+        .filter(|id| !entered.contains(id))
         .collect();
     let (min, max) = (settings.auto_delay_min.min(settings.auto_delay_max), settings.auto_delay_max.max(settings.auto_delay_min));
     for id in accounts {
@@ -1387,7 +1437,13 @@ mod tests {
         // Giveaway d'une autre chaîne : refusé
         assert_eq!(manual_target(&db, "lunarsea", Some(b)), None);
         assert_eq!(manual_target(&db, "lunarsea", None).map(|g| g.id), Some(a));
-        db.close_giveaway(a).unwrap();
+        // Giveaway en pause (live terminé) préféré au plus récent clos
+        let paused = db.insert_giveaway(&new("lunarsea")).unwrap();
+        db.conn().execute("UPDATE giveaways SET manual = 1, detected_at = '2026-10-01T10:00:00Z' WHERE id = ?1", [paused]).unwrap();
+        db.close_channel_giveaways("lunarsea").unwrap();
+        assert_eq!(db.giveaway(a).unwrap().unwrap().status, "closed");
+        assert_eq!(manual_target(&db, "lunarsea", None).map(|g| g.id), Some(paused));
+        db.close_giveaway(paused).unwrap();
         assert_eq!(manual_target(&db, "lunarsea", None).map(|g| g.id), Some(a));
         assert_eq!(manual_target(&db, "nobody", None), None);
     }

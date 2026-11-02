@@ -321,19 +321,20 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                 "SELECT gi.sync_id FROM giveaway_gifts gg JOIN gifts gi ON gi.id = gg.gift_id
                  WHERE gg.giveaway_id = ?1 AND gi.sync_id IS NOT NULL ORDER BY gi.sync_id",
             )?;
-            let rows: Vec<(i64, String, Value)> = conn
+            let rows: Vec<(i64, String, bool, Value)> = conn
                 .prepare_cached(
                     "SELECT id, sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance, drawn_at,
                             ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                             require_follow, require_presence, require_discord, notes,
                             require_greeting, min_chat_minutes, follow_min_days
                      FROM giveaways WHERE sync_id IS NOT NULL
-                         AND (?2 IS NULL OR sync_id = ?2) AND (?3 = 0 OR status = 'open' OR detected_at >= ?1)",
+                         AND (?2 IS NULL OR sync_id = ?2) AND (?3 = 0 OR status IN ('open', 'paused') OR detected_at >= ?1)",
                 )?
                 .query_map(params![since, only, windowed], |r| {
                     Ok((
                         r.get(0)?,
                         r.get(1)?,
+                        r.get::<_, String>(7)? == "paused",
                         json!({
                             "channel": r.get::<_, String>(2)?,
                             "kind": r.get::<_, String>(3)?,
@@ -362,9 +363,14 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                 })?
                 .collect::<rusqlite::Result<_>>()?;
             rows.into_iter()
-                .map(|(id, sync_id, mut data)| {
+                .map(|(id, sync_id, paused, mut data)| {
                     let list: Vec<String> = gifts.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
                     data["gifts"] = json!(list);
+                    // En pause : champ ajouté seulement là (empreinte des autres inchangée) ;
+                    // une version plus ancienne n'y voit qu'un giveaway clos
+                    if paused {
+                        data["status"] = json!("paused");
+                    }
                     Ok((sync_id, data))
                 })
                 .collect()
@@ -486,7 +492,7 @@ fn count(conn: &Connection, collection: &str) -> rusqlite::Result<i64> {
         "gifts" => "SELECT COUNT(*) FROM gifts WHERE sync_id IS NOT NULL",
         "giveaways" => {
             return conn.query_row(
-                "SELECT COUNT(*) FROM giveaways WHERE sync_id IS NOT NULL AND (status = 'open' OR detected_at >= ?1)",
+                "SELECT COUNT(*) FROM giveaways WHERE sync_id IS NOT NULL AND (status IN ('open', 'paused') OR detected_at >= ?1)",
                 [giveaway_since()],
                 |r| r.get(0),
             )
@@ -601,16 +607,28 @@ fn twin(conn: &Connection, collection: &str, id: &str, data: &Value) -> rusqlite
                 row,
             )
             .optional(),
-        // Même giveaway ouvert repéré par deux applications : même chaîne, même type, même commande ou lien
-        "giveaways" if bool_of(data, "open") == Some(true) => conn
+        // Même giveaway ouvert (ou en pause) repéré par deux applications : même chaîne, même type,
+        // même commande ou lien
+        "giveaways" if giveaway_status(data) != "closed" => conn
             .query_row(
-                "SELECT id, sync_id FROM giveaways WHERE status = 'open' AND channel = ?1 AND kind = ?2
+                "SELECT id, sync_id FROM giveaways WHERE status IN ('open', 'paused') AND channel = ?1 AND kind = ?2
                      AND command IS ?3 AND url IS ?4 AND sync_id != ?5",
                 params![str_of(data, "channel"), str_of(data, "kind"), str_of(data, "command"), str_of(data, "url"), id],
                 row,
             )
             .optional(),
         _ => Ok(None),
+    }
+}
+
+/// Statut d'un giveaway reçu : `status` envoyé seulement en pause, sinon `open`
+fn giveaway_status(data: &Value) -> &'static str {
+    if str_of(data, "status").as_deref() == Some("paused") {
+        "paused"
+    } else if bool_of(data, "open") == Some(true) {
+        "open"
+    } else {
+        "closed"
     }
 }
 
@@ -734,8 +752,7 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
             if !valid_login(&channel) || !["command", "ticket", "streamelements", "channelpoints"].contains(&kind.as_str()) {
                 return Ok(false);
             }
-            let open = bool_of(data, "open").unwrap_or(false);
-            let status = if open { "open" } else { "closed" };
+            let status = giveaway_status(data);
             let values = params![
                 id,
                 channel,
@@ -772,13 +789,14 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                     values,
                 )?;
             } else {
-                // Un giveaway ouvert reçu arrive dans la file d'alertes ; un giveaway clos n'y va pas
+                // Un giveaway ouvert (ou en pause, à son retour) reçu arrive dans la file d'alertes ; un
+                // giveaway clos n'y va pas
                 conn.execute(
                     "INSERT INTO giveaways (sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance,
                          drawn_at, ticket_unique, ticket_max, reward_name, reward_cost, draw_at, require_follow, require_presence,
                          require_discord, notes, require_greeting, min_chat_minutes, follow_min_days, handled)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                         ?21, ?22, ?23, ?7 != 'open')",
+                         ?21, ?22, ?23, ?7 = 'closed')",
                     values,
                 )?;
             }
@@ -1712,11 +1730,52 @@ mod tests {
     }
 
     #[test]
+    fn paused_giveaway_status_travels_without_changing_other_documents() {
+        let a = Db::memory().unwrap();
+        let b = Db::memory().unwrap();
+        let (_, _, giveaway_id) = populate(&a);
+        assert_eq!(push_checked(&a, &COLLECTIONS).len(), 6);
+        for c in COLLECTIONS {
+            transfer(&a, &b, c);
+        }
+        let id = sync_id(&a, "giveaways", giveaway_id);
+        // Ouvert : pas de champ « status » (empreinte d'avant inchangée)
+        assert!(docs(&a, "giveaways")[&id].get("status").is_none());
+        // Fin du live : giveaway saisi à la main en pause, noté par les déclencheurs et envoyé seul
+        assert_eq!(a.close_channel_giveaways("lunarsea").unwrap().paused, 1);
+        let changes = push_checked(&a, &COLLECTIONS);
+        assert_eq!(sent(&changes), Sent::from([("giveaways".into(), id.clone(), false)]));
+        let data = changes[0].data.clone().unwrap();
+        assert_eq!((data["status"].as_str(), data["open"].as_bool()), (Some("paused"), Some(false)));
+        // Reçu : en pause de l'autre côté, sans aller dans la file d'alertes avant son retour
+        apply(&b.conn(), "giveaways", &id, Some(&data)).unwrap();
+        let row = &b.giveaways(10).unwrap()[0];
+        assert!(row.status == "paused" && !row.handled);
+        assert_eq!(docs(&b, "giveaways")[&id], data);
+        // Repris : le champ disparaît
+        a.resume_channel_giveaways("lunarsea", &chrono::Utc::now().to_rfc3339()).unwrap();
+        let changes = push_checked(&a, &COLLECTIONS);
+        let data = changes[0].data.clone().unwrap();
+        assert!(data.get("status").is_none() && data["open"].as_bool() == Some(true));
+        apply(&b.conn(), "giveaways", &id, Some(&data)).unwrap();
+        assert_eq!(b.giveaways(10).unwrap()[0].status, "open");
+        // Version plus ancienne (sans « status ») : giveaway clos
+        let mut old = data.clone();
+        old["open"] = json!(false);
+        apply(&b.conn(), "giveaways", &id, Some(&old)).unwrap();
+        assert_eq!(b.giveaways(10).unwrap()[0].status, "closed");
+    }
+
+    #[test]
     fn local_counts_match_export() {
         let db = Db::memory().unwrap();
         populate(&db);
         db.conn()
             .execute("INSERT INTO giveaways (channel, kind, detected_at, status, sync_id) VALUES ('a', 'command', '2020-01-01T00:00:00Z', 'closed', 'x')", [])
+            .unwrap();
+        // Ancien giveaway en pause : toujours d'actualité, envoyé et compté
+        db.conn()
+            .execute("INSERT INTO giveaways (channel, kind, detected_at, status, sync_id) VALUES ('a', 'command', '2020-01-01T00:00:00Z', 'paused', 'y')", [])
             .unwrap();
         start(&db);
         let conn = db.conn();

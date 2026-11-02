@@ -330,6 +330,8 @@ export interface GiveawayView extends GiveawayDetails {
   command: string | null
   url: string | null
   detectedAt: string
+  // Statut : en pause = live terminé, tirage pas encore fait (reprend au prochain live)
+  status: 'open' | 'paused' | 'closed'
   open: boolean
   handled: boolean
   winner: string | null

@@ -932,7 +932,7 @@ pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdRe
         .giveaways(60)
         .map_err(db_err)?
         .into_iter()
-        .find(|g| g.open && g.channel == login && g.kind == "command")
+        .find(|g| g.status != "closed" && g.channel == login && g.kind == "command")
         .and_then(|g| g.command);
     let profile = crate::twitch::gql::channel_profile(&app.http, &login).await.unwrap_or_else(|e| {
         tracing::warn!("fiche de {login} : {e}");

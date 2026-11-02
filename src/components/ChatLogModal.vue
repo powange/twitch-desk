@@ -121,13 +121,14 @@ watch(author, () => {
 })
 
 // Gagnant non détecté : désigné à la main, sur le giveaway de la commande du message (sinon
-// le giveaway ouvert de la chaîne, sinon le plus récent), modifiable avant de valider
+// le giveaway ouvert de la chaîne, sinon en pause, sinon le plus récent), modifiable avant de valider
 const { snapshot } = useSnapshot()
+const STATUS_RANK = { open: 0, paused: 1, closed: 2 } as const
 const channelGiveaways = computed(() => (snapshot.value?.giveaways.giveaways ?? [])
   .filter(g => g.channel === props.channel)
-  .sort((a, b) => Number(b.open) - Number(a.open) || b.detectedAt.localeCompare(a.detectedAt)))
+  .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.detectedAt.localeCompare(a.detectedAt)))
 const giveawayItems = computed(() => channelGiveaways.value.map(g => ({
-  label: `${GIVEAWAY_KIND[g.kind].label}${g.command ? ` ${g.command}` : ''}${g.open ? '' : ' (clos)'}${g.winner ? ` · gagnant : ${g.winner}` : ''}`,
+  label: `${GIVEAWAY_KIND[g.kind].label}${g.command ? ` ${g.command}` : ''}${g.status === 'open' ? '' : g.status === 'paused' ? ' (en pause)' : ' (clos)'}${g.winner ? ` · gagnant : ${g.winner}` : ''}`,
   value: g.id
 })))
 const confirmWinner = ref<string | null>(null)

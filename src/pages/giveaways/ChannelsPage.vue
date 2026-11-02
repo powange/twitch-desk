@@ -30,10 +30,13 @@ const { gifts, byId } = useGiftCatalog()
 // --- Ce qui rend une chaîne intéressante : giveaway en cours, cadeaux repérés ---
 const insightOf = (c: GiveawayChannelView) => (c.live ? snapshot.value?.insights[c.login] : undefined)
 // Giveaway ouvert connu de chaque chaîne (le plus récent : la liste commence par les plus récents),
-// indexé une fois par mise à jour
+// sinon en pause (live terminé, tirage pas encore fait), indexé une fois par mise à jour
 const openByLogin = computed(() => {
   const map = new Map<string, GiveawayView>()
-  for (const g of view.value?.giveaways ?? []) if (g.open && !map.has(g.channel)) map.set(g.channel, g)
+  const list = view.value?.giveaways ?? []
+  for (const status of ['open', 'paused'] as const) {
+    for (const g of list) if (g.status === status && !map.has(g.channel)) map.set(g.channel, g)
+  }
   return map
 })
 function openGiveaway(c: GiveawayChannelView): GiveawayView | undefined {
@@ -42,9 +45,9 @@ function openGiveaway(c: GiveawayChannelView): GiveawayView | undefined {
 // Type en cours : giveaway ouvert connu, sinon giveaway StreamElements actif pas encore ajouté
 function kindOf(c: GiveawayChannelView) {
   const g = openGiveaway(c)
-  if (g) return { kind: g.kind, command: g.command, added: true }
+  if (g) return { kind: g.kind, command: g.command, added: true, paused: g.status === 'paused' }
   const se = insightOf(c)?.streamelements
-  if (se) return { kind: 'streamelements' as const, command: se.command, added: false }
+  if (se) return { kind: 'streamelements' as const, command: se.command, added: false, paused: false }
   return null
 }
 const kindByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, kindOf(c)])))
@@ -336,6 +339,9 @@ async function confirmRemove() {
                   <UBadge :label="GIVEAWAY_KIND[currentKind(c)!.kind].label" :color="GIVEAWAY_KIND[currentKind(c)!.kind].color" variant="subtle" />
                   <UTooltip v-if="!currentKind(c)!.added" text="Giveaway StreamElements actif, pas encore ajouté à tes giveaways">
                     <UIcon name="i-lucide-sparkles" class="size-4 text-primary" />
+                  </UTooltip>
+                  <UTooltip v-if="currentKind(c)!.paused" text="Live terminé, tirage pas encore fait : il reprendra au prochain live">
+                    <UBadge label="En pause" color="warning" variant="subtle" />
                   </UTooltip>
                 </div>
                 <div v-if="currentKind(c)!.command" class="font-mono text-xs mt-0.5">{{ currentKind(c)!.command }}</div>

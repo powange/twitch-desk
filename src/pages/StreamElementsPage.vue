@@ -40,15 +40,16 @@ function knownGiveaway(channel: ChannelView): GiveawayView | null {
   const list = seGiveaways.value.get(channel.login) ?? []
   const active = channel.seGiveaway
   if (active) return list.find(g => g.url?.includes(active.id)) ?? null
-  const recent = list.filter(g => g.open || Date.now() - new Date(g.detectedAt).getTime() < RECENT_MS)
+  const recent = list.filter(g => g.status !== 'closed' || Date.now() - new Date(g.detectedAt).getTime() < RECENT_MS)
   return recent.sort((a, b) => b.detectedAt.localeCompare(a.detectedAt))[0] ?? null
 }
-// État du giveaway : en cours (StreamElements le donne actif), clos, ou rien de connu
-function giveawayState(channel: ChannelView): { label: string, color: 'primary' | 'neutral' | 'success' } | null {
+// État du giveaway : en cours (StreamElements le donne actif), en pause (live terminé), clos, ou rien de connu
+function giveawayState(channel: ChannelView): { label: string, color: 'primary' | 'neutral' | 'success' | 'warning' } | null {
   if (channel.seGiveaway) return { label: 'En cours', color: 'primary' }
   const g = knownGiveaway(channel)
   if (!g) return null
   if (g.winner) return { label: 'Tiré', color: 'success' }
+  if (g.status === 'paused') return { label: 'En pause', color: 'warning' }
   return g.open ? { label: 'Ouvert', color: 'primary' } : { label: 'Clos', color: 'neutral' }
 }
 

@@ -643,6 +643,9 @@ pub struct GiveawayRow {
     #[serde(skip)]
     pub evidence: Option<String>,
     pub detected_at: String,
+    /// Statut : `open`, `paused` (live terminé, tirage pas encore fait) ou `closed`
+    pub status: String,
+    /// Statut `open` (gardé pour l'interface)
     pub open: bool,
     /// Participé ou ignoré : sort de la file d'alertes
     pub handled: bool,
@@ -862,6 +865,17 @@ impl Default for Settings {
 /// Heure du tirage absente, illisible ou passée : le giveaway peut être clos automatiquement
 /// (`draw_at` en RFC 3339, lu par SQLite)
 const DRAW_NOT_AHEAD: &str = "COALESCE(julianday(draw_at) > julianday('now'), 0) = 0";
+/// Fin du live : giveaway mis en pause (tirage plus tard ou au prochain live) plutôt que clos :
+/// heure de tirage à venir, saisi à la main ou StreamElements (giveaways sur plusieurs lives)
+const PAUSE_ON_OFFLINE: &str =
+    "winner IS NULL AND (COALESCE(julianday(draw_at) > julianday('now'), 0) = 1 OR manual = 1 OR kind = 'streamelements')";
+
+/// Fin du live d'une chaîne : giveaways mis en pause et clos
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OfflineOutcome {
+    pub paused: usize,
+    pub closed: usize,
+}
 
 pub struct Db(Mutex<Connection>);
 
@@ -1273,11 +1287,36 @@ impl Db {
         Ok(())
     }
 
-    /// Clôt les giveaways ouverts d'une chaîne (sauf tirage annoncé plus tard) ; renvoie le nombre clos
-    pub fn close_channel_giveaways(&self, channel: &str) -> DbResult<usize> {
-        self.conn().execute(
-            &format!("UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND channel = ?1 AND {DRAW_NOT_AHEAD}"),
+    /// Fin du live d'une chaîne : ses giveaways ouverts sans gagnant passent en pause (tirage à
+    /// venir, saisis à la main, StreamElements), les autres sont clos
+    pub fn close_channel_giveaways(&self, channel: &str) -> DbResult<OfflineOutcome> {
+        let conn = self.conn();
+        let paused = conn.execute(
+            &format!("UPDATE giveaways SET status = 'paused' WHERE status = 'open' AND channel = ?1 AND {PAUSE_ON_OFFLINE}"),
             [channel],
+        )?;
+        let closed = conn.execute("UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND channel = ?1", [channel])?;
+        Ok(OfflineOutcome { paused, closed })
+    }
+
+    /// Retour en live d'une chaîne : ses giveaways en pause rouverts (redétectés à `at` pour ne
+    /// pas être clos aussitôt par l'ancienneté) ; file d'alertes et participations inchangées.
+    /// Renvoie les giveaways rouverts
+    pub fn resume_channel_giveaways(&self, channel: &str, at: &str) -> DbResult<Vec<GiveawayRow>> {
+        let paused = self.paused_giveaways(Some(channel))?;
+        if !paused.is_empty() {
+            self.conn().execute("UPDATE giveaways SET status = 'open', detected_at = ?2 WHERE status = 'paused' AND channel = ?1", [channel, at])?;
+        }
+        Ok(paused)
+    }
+
+    /// Giveaways en pause expirés, clos : tirage passé avant `draw_before`, ou détectés avant
+    /// `detected_before` (dates RFC 3339) ; renvoie le nombre clos
+    pub fn expire_paused_giveaways(&self, draw_before: &str, detected_before: &str) -> DbResult<usize> {
+        self.conn().execute(
+            "UPDATE giveaways SET status = 'closed' WHERE status = 'paused'
+                 AND ((winner IS NULL AND COALESCE(julianday(draw_at) < julianday(?1), 0) = 1) OR detected_at < ?2)",
+            [draw_before, detected_before],
         )
     }
 
@@ -1292,7 +1331,7 @@ impl Db {
 
     /// Giveaways récents (ouverts d'abord), avec leurs participations
     pub fn giveaways(&self, limit: usize) -> DbResult<Vec<GiveawayRow>> {
-        self.select_giveaways("ORDER BY status = 'open' DESC, detected_at DESC LIMIT ?1", [limit as i64])
+        self.select_giveaways("ORDER BY status = 'open' DESC, status = 'paused' DESC, detected_at DESC LIMIT ?1", [limit as i64])
     }
 
     /// Giveaways ouverts (d'une chaîne, ou de toutes), les plus récents d'abord
@@ -1301,6 +1340,26 @@ impl Db {
             Some(c) => self.select_giveaways("WHERE status = 'open' AND channel = ?1 ORDER BY detected_at DESC", [c]),
             None => self.select_giveaways("WHERE status = 'open' ORDER BY detected_at DESC", []),
         }
+    }
+
+    /// Giveaways en pause (d'une chaîne, ou de toutes), les plus récents d'abord
+    pub fn paused_giveaways(&self, channel: Option<&str>) -> DbResult<Vec<GiveawayRow>> {
+        match channel {
+            Some(c) => self.select_giveaways("WHERE status = 'paused' AND channel = ?1 ORDER BY detected_at DESC", [c]),
+            None => self.select_giveaways("WHERE status = 'paused' ORDER BY detected_at DESC", []),
+        }
+    }
+
+    /// Giveaway par commande d'une chaîne en pause ou clos sans gagnant, même commande (sans
+    /// tenir compte de la casse), détecté depuis `since` : à rouvrir plutôt que dupliquer
+    pub fn reopenable_command_giveaway(&self, channel: &str, command: &str, since: &str) -> DbResult<Option<GiveawayRow>> {
+        Ok(self
+            .select_giveaways(
+                "WHERE channel = ?1 AND kind = 'command' AND status IN ('paused', 'closed') AND winner IS NULL
+                     AND command = ?2 COLLATE NOCASE AND detected_at >= ?3 ORDER BY detected_at DESC LIMIT 1",
+                [channel, command, since],
+            )?
+            .pop())
     }
 
     /// Giveaways d'une chaîne clos sans gagnant, détectés depuis `since` (RFC 3339), les plus récents d'abord
@@ -1338,6 +1397,7 @@ impl Db {
         ))?;
         let mut rows: Vec<GiveawayRow> = stmt
             .query_map(params, |r| {
+                let status: String = r.get(7)?;
                 Ok(GiveawayRow {
                     id: r.get(0)?,
                     channel: r.get(1)?,
@@ -1346,7 +1406,8 @@ impl Db {
                     url: r.get(4)?,
                     evidence: r.get(5)?,
                     detected_at: r.get(6)?,
-                    open: r.get::<_, String>(7)? == "open",
+                    open: status == "open",
+                    status,
                     handled: r.get(8)?,
                     winner: r.get(9)?,
                     winner_chance: r.get(10)?,
@@ -2188,12 +2249,14 @@ mod tests {
         assert_eq!(db.giveaway(past).unwrap().unwrap().entries.len(), 1);
         assert!(db.giveaway(ahead).unwrap().unwrap().entries.is_empty());
 
-        // Fin du live et ancienneté : le tirage annoncé plus tard reste ouvert
-        assert_eq!(db.close_channel_giveaways("lunarsea").unwrap(), 1);
-        assert!(!db.giveaway(past).unwrap().unwrap().open);
-        assert!(db.giveaway(ahead).unwrap().unwrap().open);
+        // Fin du live : le tirage annoncé plus tard passe en pause ; l'ancienneté ne le clôt pas
+        assert_eq!(db.close_channel_giveaways("lunarsea").unwrap(), OfflineOutcome { paused: 1, closed: 1 });
+        assert_eq!(db.giveaway(past).unwrap().unwrap().status, "closed");
+        let row = db.giveaway(ahead).unwrap().unwrap();
+        assert!(row.status == "paused" && !row.open);
         assert_eq!(db.close_giveaways_before("2026-11-01T00:00:00Z").unwrap(), 1);
-        assert!(db.giveaway(ahead).unwrap().unwrap().open && !db.giveaway(other).unwrap().unwrap().open);
+        assert_eq!(db.giveaway(ahead).unwrap().unwrap().status, "paused");
+        assert!(!db.giveaway(other).unwrap().unwrap().open);
 
         // Lien StreamElements retrouvé même clos, puis rouvert
         let found = db.giveaway_by_url("kraken_tv", "https://streamelements.com/K/giveaway/ABC1").unwrap().unwrap();
@@ -2203,6 +2266,74 @@ mod tests {
         let row = db.giveaway(other).unwrap().unwrap();
         assert!(row.open && row.detected_at == "2026-11-01T10:00:00Z");
         assert!(db.won_giveaways(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn giveaways_across_lives() {
+        let db = Db::memory().unwrap();
+        let a = db.upsert_account("33", "powange", "dev").unwrap();
+        let new = |kind: &str, command: Option<&str>, at: &str| NewGiveaway {
+            channel: "lunarsea".into(),
+            kind: kind.into(),
+            command: command.map(Into::into),
+            url: (kind == "streamelements").then(|| "https://streamelements.com/l/giveaway/abc1".into()),
+            evidence: None,
+            detected_at: at.into(),
+        };
+        let input = |kind: &str, draw_at: Option<&str>| GiveawayInput {
+            channel: "lunarsea".into(),
+            kind: kind.into(),
+            command: Some(if kind == "ticket" { "!join" } else { "!coffre" }.into()),
+            url: None,
+            gift_ids: vec![],
+            details: GiveawayDetails { draw_at: draw_at.map(Into::into), ..Default::default() },
+        };
+        let now = "2026-11-01T10:00:00Z";
+        let plain = db.insert_giveaway(&new("command", Some("!join"), now)).unwrap();
+        let se = db.insert_giveaway(&new("streamelements", None, now)).unwrap();
+        let manual = db.insert_manual_giveaway(&input("ticket", None), now).unwrap();
+        let ahead = db.insert_giveaway(&new("command", Some("!coffre"), now)).unwrap();
+        db.update_giveaway(ahead, &input("command", Some("2099-01-01T20:00:00Z"))).unwrap();
+        let drawn = db.insert_giveaway(&new("streamelements", None, now)).unwrap();
+        db.set_giveaway_winner(drawn, "x", None, now).unwrap();
+        db.conn().execute("UPDATE giveaways SET status = 'open' WHERE id = ?1", [drawn]).unwrap();
+        db.add_giveaway_entry(se, a, now, true).unwrap();
+        db.set_giveaway_handled(se).unwrap();
+        let other = db.insert_giveaway(&NewGiveaway { channel: "kraken_tv".into(), ..new("streamelements", None, now) }).unwrap();
+
+        // Fin du live : en pause sans gagnant (tirage à venir, à la main, StreamElements), clos sinon
+        assert_eq!(db.close_channel_giveaways("lunarsea").unwrap(), OfflineOutcome { paused: 3, closed: 2 });
+        let status = |id: i64| db.giveaway(id).unwrap().unwrap().status;
+        assert_eq!([status(plain), status(se), status(manual), status(ahead), status(drawn)], ["closed", "paused", "paused", "paused", "closed"]);
+        assert_eq!(status(other), "open");
+        assert_eq!(db.paused_giveaways(Some("lunarsea")).unwrap().len(), 3);
+        assert!(db.open_giveaways(Some("lunarsea")).unwrap().is_empty());
+        // L'ancienneté ne touche que les ouverts
+        assert_eq!(db.close_giveaways_before("2099-01-01T00:00:00Z").unwrap(), 1);
+        assert_eq!(status(se), "paused");
+
+        // Retour en live : rouverts, file d'alertes et participations inchangées
+        let resumed = db.resume_channel_giveaways("lunarsea", "2026-11-02T18:00:00Z").unwrap();
+        assert_eq!(resumed.len(), 3);
+        let row = db.giveaway(se).unwrap().unwrap();
+        assert!(row.open && row.handled && row.entries.len() == 1 && row.detected_at == "2026-11-02T18:00:00Z");
+        assert!(db.resume_channel_giveaways("lunarsea", now).unwrap().is_empty());
+
+        // Expiration des giveaways en pause : tirage passé de plus de 24 h, ou détecté il y a plus de 14 jours
+        db.close_channel_giveaways("lunarsea").unwrap();
+        db.update_giveaway(ahead, &input("command", Some("2026-11-03T20:00:00Z"))).unwrap();
+        assert_eq!(db.expire_paused_giveaways("2026-11-03T19:00:00Z", "2026-10-20T00:00:00Z").unwrap(), 0);
+        assert_eq!(db.expire_paused_giveaways("2026-11-03T21:00:00Z", "2026-10-20T00:00:00Z").unwrap(), 1);
+        assert_eq!(status(ahead), "closed");
+        assert_eq!(db.expire_paused_giveaways("2026-11-03T21:00:00Z", "2026-11-03T00:00:00Z").unwrap(), 2);
+        assert!(db.paused_giveaways(None).unwrap().is_empty());
+
+        // Même commande en pause ou close sans gagnant, détectée depuis peu : à rouvrir
+        assert_eq!(db.reopenable_command_giveaway("lunarsea", "!JOIN", "2026-10-25T00:00:00Z").unwrap().map(|g| g.id), Some(plain));
+        assert!(db.reopenable_command_giveaway("lunarsea", "!join", "2026-11-01T11:00:00Z").unwrap().is_none());
+        assert!(db.reopenable_command_giveaway("kraken_tv", "!join", "2026-10-25T00:00:00Z").unwrap().is_none());
+        db.set_giveaway_winner(plain, "x", None, now).unwrap();
+        assert!(db.reopenable_command_giveaway("lunarsea", "!join", "2026-10-25T00:00:00Z").unwrap().is_none());
     }
 
     #[test]

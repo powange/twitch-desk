@@ -30,8 +30,8 @@ const giveaways = computed(() => view.value?.giveaways ?? [])
 const liveByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, c.live])))
 const liveOf = (channel: string) => liveByLogin.value.get(channel) ?? null
 
-// Conditions : follow, bonjour, Discord (giveaways ouverts seulement : rien à faire sur un giveaway clos)
-const cond = useConditionActions(() => giveaways.value.filter(g => g.open))
+// Conditions : follow, bonjour, Discord (giveaways ouverts ou en pause : rien à faire sur un giveaway clos)
+const cond = useConditionActions(() => giveaways.value.filter(g => g.status !== 'closed'))
 
 // Ignorer, Vu, Clore, Supprimer : erreur affichée, bouton occupé pendant l'action
 const { run, busy } = useAction()
@@ -78,7 +78,7 @@ async function saveCommand(g: GiveawayView) {
 }
 
 const mentions = computed(() => view.value?.mentions ?? [])
-// File d'alertes : giveaways ouverts pas encore traités, et mentions
+// File d'alertes : giveaways ouverts (pas en pause) pas encore traités, et mentions
 const alerts = computed(() => giveaways.value.filter(g => g.open && !g.handled))
 
 // Rafraîchit les « il y a … »
@@ -378,12 +378,16 @@ function share(g: GiveawayView) {
                 <span v-else class="text-muted">—</span>
               </td>
               <td class="px-3 py-2">
-                <UBadge :label="g.open ? 'Ouvert' : 'Terminé'" :color="g.open ? 'primary' : 'neutral'" variant="subtle" />
+                <UBadge v-if="g.status === 'open'" label="Ouvert" color="primary" variant="subtle" />
+                <UTooltip v-else-if="g.status === 'paused'" text="Live terminé, tirage pas encore fait : il reprendra au prochain live">
+                  <UBadge label="En pause" color="warning" variant="subtle" />
+                </UTooltip>
+                <UBadge v-else label="Terminé" color="neutral" variant="subtle" />
               </td>
               <td class="px-3 py-2">
                 <div class="flex justify-end gap-1">
                   <UButton
-                    v-if="g.open && (g.kind === 'command' || g.kind === 'ticket') && g.command && accounts.some(a => !entered(g, a.id))"
+                    v-if="g.status !== 'closed' && (g.kind === 'command' || g.kind === 'ticket') && g.command && accounts.some(a => !entered(g, a.id))"
                     label="Participer"
                     size="xs"
                     :loading="participating === g.id"
@@ -391,7 +395,7 @@ function share(g: GiveawayView) {
                   />
                   <UButton icon="i-lucide-scroll-text" size="xs" color="neutral" variant="ghost" :aria-label="`Journal du chat de ${g.channel}`" title="Journal du chat" @click="openLog(g.channel)" />
                   <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
-                  <UButton v-if="g.open" label="Clore" size="xs" color="neutral" variant="ghost" :loading="busy(`close-${g.id}`)" @click="closeGiveaway(g)" />
+                  <UButton v-if="g.status !== 'closed'" label="Clore" size="xs" color="neutral" variant="ghost" :loading="busy(`close-${g.id}`)" @click="closeGiveaway(g)" />
                   <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" aria-label="Supprimer" @click="toDelete = g" />
                 </div>
               </td>
