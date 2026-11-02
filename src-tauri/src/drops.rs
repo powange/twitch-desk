@@ -241,6 +241,11 @@ pub fn merge(primary: &Value, secondary: &Value) -> Value {
 /// Ce que Twitch renvoie pour un compte : campagnes et récompenses déjà obtenues
 pub struct DropsSnapshot {
     pub campaigns: Vec<Campaign>,
+    /// Données brutes par campagne (inventaire + tableau), pour y fusionner les détails lus ensuite
+    raw: HashMap<String, Value>,
+    claimed: HashSet<String>,
+    /// Campagnes dont le détail reste à lire, hors du passage
+    background: Vec<String>,
 }
 
 /// Stream en live d'un jeu, drops activés (annuaire du jeu)
@@ -311,23 +316,56 @@ impl Gql {
         self.request("ViewerDropsDashboard", json!({ "fetchRewardCampaigns": false })).await
     }
 
-    pub async fn drop_campaign_details(&self, user_id: &str, campaign_id: &str) -> Result<Value> {
-        self.request("DropCampaignDetails", json!({ "channelLogin": user_id, "dropID": campaign_id })).await
+    /// Détail de plusieurs campagnes, en requêtes groupées ; un résultat par campagne, dans l'ordre
+    pub async fn drop_campaign_details(&self, user_id: &str, campaign_ids: &[String]) -> Vec<Result<Value>> {
+        let vars = campaign_ids.iter().map(|id| json!({ "channelLogin": user_id, "dropID": id })).collect();
+        self.request_batch("DropCampaignDetails", vars).await
     }
 }
 
 /// Détails de campagnes déjà lus, par identifiant
 pub type DetailsCache = HashMap<String, (Value, Instant)>;
 
-/// Campagnes à détailler : commencées (inventaire) ou d'un jeu suivi pour ses drops. Les autres
-/// campagnes du tableau (des centaines) restent sans détail : une requête chacune bloquerait
-/// le superviseur plusieurs minutes
+/// Détails lus en tâche de fond : (identifiant de campagne, détail si Twitch l'a donné)
+type DetailsBatch = Vec<(String, Option<Value>)>;
+
+/// Campagnes à détailler : commencées (inventaire) ou d'un jeu suivi pour ses drops
 fn needs_details(id: &str, game_id: Option<&str>, in_inventory: &HashSet<String>, wanted_games: &HashSet<String>) -> bool {
     in_inventory.contains(id) || game_id.is_some_and(|g| wanted_games.contains(g))
 }
 
-/// Campagnes du compte : commencées (inventaire) + en cours ou à venir (tableau) ; celles qui
-/// comptent (voir `needs_details`) sont détaillées, une requête par campagne absente du cache
+/// Campagnes sans détail en cache (ou périmé), en deux listes triées : celles qui comptent pour
+/// le minage (`needs_details`), lues tout de suite, et les autres (des centaines), lues en tâche
+/// de fond pour la page Drops
+fn details_to_fetch(
+    campaigns: &[(String, Option<String>)],
+    cache: &DetailsCache,
+    in_inventory: &HashSet<String>,
+    wanted_games: &HashSet<String>,
+    now: Instant,
+) -> (Vec<String>, Vec<String>) {
+    let (mut urgent, mut later): (Vec<String>, Vec<String>) = (vec![], vec![]);
+    let fresh = |id: &String| cache.get(id).is_some_and(|(_, at)| now.duration_since(*at) < DETAILS_TTL);
+    for (id, game_id) in campaigns.iter().filter(|(id, _)| !fresh(id)) {
+        if needs_details(id, game_id.as_deref(), in_inventory, wanted_games) {
+            urgent.push(id.clone());
+        } else {
+            later.push(id.clone());
+        }
+    }
+    urgent.sort();
+    later.sort();
+    (urgent, later)
+}
+
+/// Détail utile d'une réponse DropCampaignDetails
+fn campaign_details(data: &Value) -> Option<Value> {
+    data.pointer("/user/dropCampaign").filter(|c| !c.is_null()).cloned()
+}
+
+/// Campagnes du compte : commencées (inventaire) + en cours ou à venir (tableau). Les détails
+/// absents du cache des campagnes qui comptent sont lus ici (requêtes groupées) ; les autres
+/// sont renvoyés dans `background`, à lire hors du passage
 pub async fn fetch_campaigns(
     gql: &Gql,
     user_id: &str,
@@ -368,36 +406,71 @@ pub async fn fetch_campaigns(
     }
 
     let now = Instant::now();
-    cache.retain(|id, (_, at)| raw.contains_key(id) && now.duration_since(*at) < DETAILS_TTL);
-    let mut campaigns = vec![];
-    for (id, value) in raw {
-        let game_id = value.get("game").and_then(|g| str_of(g, "id"));
-        let detailed = if !needs_details(&id, game_id.as_deref(), &in_inventory, wanted_games) {
-            value
-        } else if let Some((details, _)) = cache.get(&id) {
-            merge(&value, details)
-        } else {
-            match gql.drop_campaign_details(user_id, &id).await {
-                Ok(d) => match d.pointer("/user/dropCampaign").filter(|c| !c.is_null()) {
-                    Some(details) => {
-                        cache.insert(id.clone(), (details.clone(), now));
-                        merge(&value, details)
+    // Détail périmé gardé pour l'affichage jusqu'à sa relecture (pas de liste de drops qui
+    // disparaît le temps de la tâche de fond)
+    cache.retain(|id, _| raw.contains_key(id));
+    let listed: Vec<(String, Option<String>)> =
+        raw.iter().map(|(id, v)| (id.clone(), v.get("game").and_then(|g| str_of(g, "id")))).collect();
+    let (urgent, background) = details_to_fetch(&listed, cache, &in_inventory, wanted_games, now);
+    if !urgent.is_empty() {
+        for (id, res) in urgent.iter().zip(gql.drop_campaign_details(user_id, &urgent).await) {
+            match res {
+                Ok(d) => {
+                    if let Some(details) = campaign_details(&d) {
+                        cache.insert(id.clone(), (details, now));
                     }
-                    None => value,
-                },
-                Err(TwitchError::Unauthorized) => return Err(TwitchError::Unauthorized),
-                Err(e) => {
-                    tracing::warn!("drops : détail de la campagne {id} indisponible ({e})");
-                    value
                 }
+                Err(TwitchError::Unauthorized) => return Err(TwitchError::Unauthorized),
+                Err(e) => tracing::warn!("drops : détail de la campagne {id} indisponible ({e})"),
             }
-        };
-        if let Some(c) = parse_campaign(&detailed, &claimed) {
-            campaigns.push(c);
         }
     }
+
+    let mut campaigns: Vec<Campaign> = raw
+        .iter()
+        .filter_map(|(id, value)| match cache.get(id) {
+            Some((details, _)) => parse_campaign(&merge(value, details), &claimed),
+            None => parse_campaign(value, &claimed),
+        })
+        .collect();
     campaigns.sort_by(|a, b| a.ends_at.cmp(&b.ends_at));
-    Ok(DropsSnapshot { campaigns })
+    Ok(DropsSnapshot { campaigns, raw, claimed, background })
+}
+
+/// Lit en tâche de fond le détail des campagnes `ids` (requêtes groupées), sans bloquer le passage
+fn spawn_details(gql: &Gql, user_id: &str, ids: Vec<String>) -> tokio::task::JoinHandle<DetailsBatch> {
+    let (gql, user_id) = (gql.clone(), user_id.to_owned());
+    tokio::spawn(async move {
+        let results = gql.drop_campaign_details(&user_id, &ids).await;
+        let mut failed = 0;
+        let mut batch = DetailsBatch::new();
+        for (id, res) in ids.into_iter().zip(results) {
+            let details = match res {
+                Ok(d) => campaign_details(&d),
+                // Jeton refusé : les requêtes du passage le verront et reconnecteront le compte
+                Err(TwitchError::Unauthorized) => None,
+                Err(_) => {
+                    failed += 1;
+                    None
+                }
+            };
+            batch.push((id, details));
+        }
+        if failed > 0 {
+            tracing::warn!("drops : {failed} détail(s) de campagne indisponible(s)");
+        }
+        batch
+    })
+}
+
+/// Garde la progression connue en direct (PubSub, réclamation) quand une campagne est relue
+fn keep_live_progress(fresh: &mut Campaign, old: &Campaign) {
+    for d in &mut fresh.drops {
+        if let Some(o) = old.drops.iter().find(|o| o.id == d.id) {
+            d.current_minutes = d.current_minutes.max(o.current_minutes);
+            d.claimed |= o.claimed;
+        }
+    }
 }
 
 fn directory_vars(slug: &str) -> Value {
@@ -542,6 +615,11 @@ pub struct DropsEngine {
     /// Dernière relecture forcée par la progression d'un drop inconnu
     unknown_progress_at: Option<Instant>,
     details: DetailsCache,
+    /// Dernières données brutes des campagnes, pour y fusionner les détails lus en tâche de fond
+    raw: HashMap<String, Value>,
+    claimed: HashSet<String>,
+    /// Lecture en cours du détail des campagnes qui ne servent qu'à la page Drops
+    details_task: Option<tokio::task::JoinHandle<DetailsBatch>>,
     target: Option<Target>,
     failed: HashMap<String, Instant>,
     claim_attempts: HashMap<String, Instant>,
@@ -597,12 +675,49 @@ impl DropsEngine {
         }
     }
 
+    /// Range les détails lus en tâche de fond : cache, puis campagne affichée mise à jour
+    fn apply_details(&mut self, batch: DetailsBatch) {
+        let now = Instant::now();
+        let mut added = false;
+        for (id, details) in batch {
+            let (Some(details), Some(value)) = (details, self.raw.get(&id)) else { continue };
+            let Some(mut fresh) = parse_campaign(&merge(value, &details), &self.claimed) else { continue };
+            self.details.insert(id.clone(), (details, now));
+            match self.campaigns.iter_mut().find(|c| c.id == id) {
+                Some(old) => {
+                    keep_live_progress(&mut fresh, old);
+                    *old = fresh;
+                }
+                None => {
+                    self.campaigns.push(fresh);
+                    added = true;
+                }
+            }
+        }
+        if added {
+            self.campaigns.sort_by(|a, b| a.ends_at.cmp(&b.ends_at));
+        }
+    }
+
+    /// Détails de fond arrivés depuis le dernier passage
+    async fn collect_details(&mut self) {
+        if !self.details_task.as_ref().is_some_and(|t| t.is_finished()) {
+            return;
+        }
+        let Some(task) = self.details_task.take() else { return };
+        match task.await {
+            Ok(batch) => self.apply_details(batch),
+            Err(e) => tracing::warn!("drops : lecture des détails de campagnes interrompue ({e})"),
+        }
+    }
+
     fn campaign_for(&self, game_id: &str) -> Option<&Campaign> {
         self.campaigns.iter().find(|c| c.game.id == game_id && c.active())
     }
 
     pub async fn step(&mut self, app: &App, account: &Account, gql: &Gql, active: bool) -> Result<()> {
         let now = Instant::now();
+        self.collect_details().await;
         if !active || !account.drops_enabled {
             self.target = None;
             return Ok(());
@@ -619,6 +734,13 @@ impl DropsEngine {
             match fetch_campaigns(gql, &account.user_id, &wanted, &mut self.details).await {
                 Ok(snapshot) => {
                     self.campaigns = snapshot.campaigns;
+                    self.raw = snapshot.raw;
+                    self.claimed = snapshot.claimed;
+                    // Une seule lecture de fond à la fois ; les campagnes restantes attendent la
+                    // relecture suivante de l'inventaire
+                    if self.details_task.is_none() && !snapshot.background.is_empty() {
+                        self.details_task = Some(spawn_details(gql, &account.user_id, snapshot.background));
+                    }
                     self.inventory_wall = Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
                     self.error = None;
                 }
@@ -1005,6 +1127,52 @@ mod tests {
         assert!(needs_details("c2", Some("263490"), &inv, &wanted));
         assert!(!needs_details("c3", Some("999"), &inv, &wanted));
         assert!(!needs_details("c4", None, &inv, &wanted));
+    }
+
+    #[test]
+    fn details_selection_splits_urgent_and_background() {
+        let now = Instant::now();
+        let inv: HashSet<String> = ["c1".to_owned()].into();
+        let wanted: HashSet<String> = ["263490".to_owned()].into();
+        let mut cache = DetailsCache::new();
+        cache.insert("c2".into(), (json!({}), now));
+        cache.insert("c5".into(), (json!({}), now - DETAILS_TTL - Duration::from_secs(1)));
+        cache.insert("c6".into(), (json!({}), now));
+        let listed: Vec<(String, Option<String>)> = vec![
+            ("c4".into(), None),
+            ("c1".into(), Some("999".into())),
+            ("c2".into(), Some("263490".into())),
+            ("c3".into(), Some("263490".into())),
+            ("c5".into(), Some("999".into())),
+            ("c6".into(), Some("999".into())),
+        ];
+        let (urgent, background) = details_to_fetch(&listed, &cache, &inv, &wanted, now);
+        // c2 et c6 : détail récent en cache ; c5 : périmé, relu
+        assert_eq!(urgent, vec!["c1", "c3"]);
+        assert_eq!(background, vec!["c4", "c5"]);
+    }
+
+    #[test]
+    fn background_details_fill_campaign_and_keep_progress() {
+        let mut bare = sample();
+        bare.as_object_mut().unwrap().remove("timeBasedDrops");
+        let claimed = HashSet::new();
+        let mut e = DropsEngine {
+            raw: [("c1".to_owned(), bare.clone())].into(),
+            campaigns: vec![parse_campaign(&bare, &claimed).unwrap()],
+            ..Default::default()
+        };
+        assert!(e.campaigns[0].drops.is_empty());
+        let details = json!({ "id": "c1", "timeBasedDrops": sample()["timeBasedDrops"] });
+        e.apply_details(vec![("c1".into(), Some(details.clone())), ("absente".into(), Some(json!({}))), ("c9".into(), None)]);
+        assert_eq!(e.campaigns.len(), 1);
+        assert_eq!(e.campaigns[0].drops.len(), 2);
+        assert!(e.details.contains_key("c1") && !e.details.contains_key("absente"));
+
+        // Progression reçue en direct entre-temps : pas écrasée par une relecture plus ancienne
+        e.on_progress("d1", 100);
+        e.apply_details(vec![("c1".into(), Some(details))]);
+        assert_eq!(e.campaigns[0].drops[0].current_minutes, 100);
     }
 
     #[test]

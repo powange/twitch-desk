@@ -24,6 +24,8 @@ const CLIENT_VERSION_FALLBACK: &str = "ef928475-9403-42f2-8a34-55784bd08e16";
 const CLIENT_VERSION_TTL: Duration = Duration::from_secs(3600);
 // Twitch casse tout au-delà de quelques requêtes par seconde : 250 ms minimum entre deux
 const MIN_REQUEST_GAP: Duration = Duration::from_millis(250);
+// Opérations par POST groupé : Twitch en accepte une trentaine, 20 laisse de la marge
+const BATCH_SIZE: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationsFile {
@@ -234,29 +236,7 @@ impl Gql {
         }
         let version = client_version(&self.http).await;
         for hash in &hashes {
-            self.throttle().await;
-            let body = json!({
-                "operationName": name,
-                "variables": variables,
-                "extensions": { "persistedQuery": { "version": 1, "sha256Hash": hash } }
-            });
-            let res = self
-                .http
-                .post(GQL_URL)
-                .header("Client-Id", CLIENT_ID)
-                .header("Authorization", format!("OAuth {}", self.token()))
-                .header("Client-Session-Id", &self.session_id)
-                .header("Client-Version", &version)
-                .header("X-Device-Id", &self.device_id)
-                .header("Origin", CLIENT_ORIGIN)
-                .header("Referer", format!("{CLIENT_ORIGIN}/"))
-                .json(&body)
-                .send()
-                .await?;
-            if res.status() == reqwest::StatusCode::UNAUTHORIZED {
-                return Err(TwitchError::Unauthorized);
-            }
-            let value: Value = res.json().await?;
+            let value = self.post_persisted(&version, &operation_body(name, &variables, hash)).await?;
             match classify_response(value) {
                 Outcome::Data(data, errors) => {
                     remember_hash(name, hash);
@@ -269,6 +249,46 @@ impl Gql {
         }
         OPERATIONS_STALE.notify_one();
         Err(TwitchError::PersistedQueryNotFound(name.to_owned()))
+    }
+
+    /// POST d'un corps GQL (une opération ou un lot), après l'attente entre deux requêtes
+    async fn post_persisted(&self, version: &str, body: &Value) -> Result<Value> {
+        self.throttle().await;
+        let res = self
+            .http
+            .post(GQL_URL)
+            .header("Client-Id", CLIENT_ID)
+            .header("Authorization", format!("OAuth {}", self.token()))
+            .header("Client-Session-Id", &self.session_id)
+            .header("Client-Version", version)
+            .header("X-Device-Id", &self.device_id)
+            .header("Origin", CLIENT_ORIGIN)
+            .header("Referer", format!("{CLIENT_ORIGIN}/"))
+            .json(body)
+            .send()
+            .await?;
+        if res.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(TwitchError::Unauthorized);
+        }
+        Ok(res.json().await?)
+    }
+
+    /// Exécute l'opération `name` une fois par jeu de variables, par lots de `BATCH_SIZE` dans un
+    /// seul POST (une attente entre deux requêtes par lot) ; résultats dans l'ordre des variables
+    pub async fn request_batch(&self, name: &str, variables: Vec<Value>) -> Vec<Result<Value>> {
+        if variables.is_empty() {
+            return vec![];
+        }
+        let version = client_version(&self.http).await;
+        run_batch(name, &hashes_for(name), &variables, BATCH_SIZE, |hash, vars| {
+            let body = batch_body(name, &hash, &vars);
+            let version = version.clone();
+            async move {
+                let value = self.post_persisted(&version, &body).await?;
+                Ok(split_batch(value, vars.len()))
+            }
+        })
+        .await
     }
 
     // --- Opérations utilisées par les points de chaîne ---
@@ -746,6 +766,7 @@ pub struct PointsContext {
     pub claim_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 enum Outcome {
     /// Données, avec les erreurs partielles éventuelles
     Data(Value, Vec<String>),
@@ -771,6 +792,112 @@ fn check_claim(data: &Value, errors: &[String]) -> Result<()> {
         return Err(TwitchError::Gql(format!("bonus refusé : {}", errors.join(", "))));
     }
     Ok(())
+}
+
+/// Corps d'une opération persistée
+fn operation_body(name: &str, variables: &Value, hash: &str) -> Value {
+    json!({
+        "operationName": name,
+        "variables": variables,
+        "extensions": { "persistedQuery": { "version": 1, "sha256Hash": hash } }
+    })
+}
+
+/// Lot d'opérations : un tableau, que Twitch traite et renvoie dans l'ordre
+fn batch_body(name: &str, hash: &str, variables: &[Value]) -> Value {
+    Value::Array(variables.iter().map(|v| operation_body(name, v, hash)).collect())
+}
+
+/// Réponse d'un lot : un résultat par opération, dans l'ordre. Réponse unique (jeton refusé,
+/// erreur globale) : appliquée à toutes ; résultats manquants : en erreur
+fn split_batch(value: Value, expected: usize) -> Vec<Outcome> {
+    match value {
+        Value::Array(items) => {
+            let mut out: Vec<Outcome> = items.into_iter().take(expected).map(classify_response).collect();
+            while out.len() < expected {
+                out.push(Outcome::Error("réponse absente du lot".into()));
+            }
+            out
+        }
+        other => {
+            let outcome = match classify_response(other) {
+                Outcome::Data(..) => Outcome::Error("réponse du lot inattendue".into()),
+                o => o,
+            };
+            vec![outcome; expected]
+        }
+    }
+}
+
+/// Copie d'une erreur pour chaque opération d'un lot en échec (une erreur réseau n'est pas copiable)
+fn copy_error(e: &TwitchError) -> TwitchError {
+    match e {
+        TwitchError::Unauthorized => TwitchError::Unauthorized,
+        TwitchError::PersistedQueryNotFound(s) => TwitchError::PersistedQueryNotFound(s.clone()),
+        TwitchError::Gql(s) => TwitchError::Gql(s.clone()),
+        TwitchError::Unexpected(s) => TwitchError::Unexpected(s.clone()),
+        TwitchError::Http(_) => TwitchError::Unexpected(e.to_string()),
+    }
+}
+
+/// Cœur de `request_batch`, séparé du réseau : `send(empreinte, variables)` envoie un lot.
+/// Empreinte préférée d'abord ; les opérations qui répondent PersistedQueryNotFound repartent
+/// en lots avec l'empreinte suivante, comme `request` pour une seule
+async fn run_batch<F, Fut>(name: &str, hashes: &[String], variables: &[Value], size: usize, mut send: F) -> Vec<Result<Value>>
+where
+    F: FnMut(String, Vec<Value>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<Outcome>>>,
+{
+    let mut results: Vec<Option<Result<Value>>> = variables.iter().map(|_| None).collect();
+    let mut pending: Vec<usize> = (0..variables.len()).collect();
+    'hashes: for hash in hashes {
+        if pending.is_empty() {
+            break;
+        }
+        let mut unknown = vec![];
+        for chunk in pending.chunks(size.max(1)) {
+            let vars: Vec<Value> = chunk.iter().map(|&i| variables[i].clone()).collect();
+            match send(hash.clone(), vars).await {
+                Ok(outcomes) => {
+                    for (&i, outcome) in chunk.iter().zip(outcomes) {
+                        results[i] = match outcome {
+                            Outcome::Data(data, _) => {
+                                remember_hash(name, hash);
+                                Some(Ok(data))
+                            }
+                            Outcome::UnknownHash => {
+                                unknown.push(i);
+                                None
+                            }
+                            Outcome::Unauthorized => Some(Err(TwitchError::Unauthorized)),
+                            Outcome::Error(e) => Some(Err(TwitchError::Gql(format!("{name} : {e}")))),
+                        };
+                    }
+                }
+                // Jeton refusé : inutile d'envoyer la suite
+                Err(TwitchError::Unauthorized) => {
+                    for r in results.iter_mut().filter(|r| r.is_none()) {
+                        *r = Some(Err(TwitchError::Unauthorized));
+                    }
+                    break 'hashes;
+                }
+                Err(e) => {
+                    for &i in chunk {
+                        results[i] = Some(Err(copy_error(&e)));
+                    }
+                }
+            }
+        }
+        pending = unknown;
+    }
+    // Opérations restées sans réponse : aucune empreinte connue de Twitch
+    if results.iter().any(Option::is_none) {
+        OPERATIONS_STALE.notify_one();
+    }
+    results
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|| Err(TwitchError::PersistedQueryNotFound(name.to_owned()))))
+        .collect()
 }
 
 fn classify_response(value: Value) -> Outcome {
@@ -987,4 +1114,109 @@ mod tests {
         assert_eq!(parse_points_context(&json!({"community":{"channel":null}})), None);
     }
 
+    #[test]
+    fn batch_body_and_split() {
+        let body = batch_body("Op", "h", &[json!({"a":1}), json!({"a":2})]);
+        assert_eq!(body.as_array().unwrap().len(), 2);
+        assert_eq!(body[1]["variables"]["a"], 2);
+        assert_eq!(body[0]["extensions"]["persistedQuery"]["sha256Hash"], "h");
+        assert_eq!(body[0]["operationName"], "Op");
+
+        let res = json!([
+            {"data":{"n":1}},
+            {"errors":[{"message":"PersistedQueryNotFound"}]},
+            {"errors":[{"message":"boom"}],"data":null}
+        ]);
+        let out = split_batch(res, 4);
+        assert_eq!(out[0], Outcome::Data(json!({"n":1}), vec![]));
+        assert_eq!(out[1], Outcome::UnknownHash);
+        assert_eq!(out[2], Outcome::Error("boom".into()));
+        assert!(matches!(out[3], Outcome::Error(_)), "résultat manquant");
+        assert_eq!(split_batch(json!({"error":"Unauthorized","status":401}), 2), vec![Outcome::Unauthorized; 2]);
+        assert!(matches!(split_batch(json!({"data":{}}), 1)[0], Outcome::Error(_)));
+    }
+
+    fn n_of(v: &Value) -> i64 {
+        v["n"].as_i64().unwrap()
+    }
+
+    #[tokio::test]
+    async fn batch_chunks_keep_order_and_retry_unknown_hash() {
+        let vars: Vec<Value> = (0..45).map(|n| json!({ "n": n })).collect();
+        let hashes = vec!["h1".to_owned(), "h2".to_owned()];
+        let mut calls: Vec<(String, Vec<i64>)> = vec![];
+        let results = run_batch("TestBatchOp", &hashes, &vars, 20, |hash, chunk| {
+            calls.push((hash.clone(), chunk.iter().map(n_of).collect()));
+            let out = chunk
+                .iter()
+                .map(|v| match (n_of(v), hash.as_str()) {
+                    (3, _) => Outcome::Error("x".into()),
+                    (7, "h1") => Outcome::UnknownHash,
+                    (n, _) => Outcome::Data(json!({ "n": n, "hash": hash }), vec![]),
+                })
+                .collect();
+            std::future::ready(Ok(out))
+        })
+        .await;
+        let sizes: Vec<(&str, usize)> = calls.iter().map(|(h, c)| (h.as_str(), c.len())).collect();
+        assert_eq!(sizes, vec![("h1", 20), ("h1", 20), ("h1", 5), ("h2", 1)]);
+        assert_eq!(calls[3].1, vec![7]);
+        assert_eq!(results.len(), 45);
+        for (n, r) in results.iter().enumerate() {
+            match n {
+                3 => assert!(matches!(r, Err(TwitchError::Gql(e)) if e.contains("TestBatchOp"))),
+                7 => assert_eq!(r.as_ref().unwrap()["hash"], "h2"),
+                _ => assert_eq!(n_of(r.as_ref().unwrap()), n as i64),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_errors_per_chunk() {
+        let vars: Vec<Value> = (0..5).map(|n| json!({ "n": n })).collect();
+        let hashes = vec!["h".to_owned()];
+
+        // Échec réseau d'un lot : ses opérations seulement
+        let mut call = 0;
+        let results = run_batch("TestBatchOp", &hashes, &vars, 2, |_, chunk| {
+            call += 1;
+            let out = if call == 2 {
+                Err(TwitchError::Gql("lot perdu".into()))
+            } else {
+                Ok(chunk.iter().map(|v| Outcome::Data(v.clone(), vec![])).collect())
+            };
+            std::future::ready(out)
+        })
+        .await;
+        assert!(results[0].is_ok() && results[1].is_ok() && results[4].is_ok());
+        assert!(matches!(&results[2], Err(TwitchError::Gql(e)) if e == "lot perdu"));
+        assert!(results[3].is_err());
+
+        // Jeton refusé : on arrête d'envoyer, tout le reste est refusé
+        let mut call = 0;
+        let results = run_batch("TestBatchOp", &hashes, &vars, 2, |_, chunk| {
+            call += 1;
+            let out = if call == 1 {
+                Ok(chunk.iter().map(|v| Outcome::Data(v.clone(), vec![])).collect())
+            } else {
+                Err(TwitchError::Unauthorized)
+            };
+            std::future::ready(out)
+        })
+        .await;
+        assert_eq!(call, 2);
+        assert!(results[0].is_ok() && results[1].is_ok());
+        assert!(results[2..].iter().all(|r| matches!(r, Err(TwitchError::Unauthorized))));
+
+        // Aucune empreinte acceptée
+        let results = run_batch("TestBatchOp", &hashes, &vars, 2, |_, chunk| {
+            std::future::ready(Ok(vec![Outcome::UnknownHash; chunk.len()]))
+        })
+        .await;
+        assert!(results.iter().all(|r| matches!(r, Err(TwitchError::PersistedQueryNotFound(_)))));
+        assert!(run_batch("TestBatchOp", &[], &vars, 2, |_, _| std::future::ready(Ok(vec![])))
+            .await
+            .iter()
+            .all(|r| matches!(r, Err(TwitchError::PersistedQueryNotFound(_)))));
+    }
 }
