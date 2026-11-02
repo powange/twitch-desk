@@ -276,6 +276,119 @@ const MIGRATIONS: &[&str] = &[r#"
         value TEXT NOT NULL,
         PRIMARY KEY (kind, value)
     );
+"#, r#"
+    -- Synchronisation : documents modifiés ici depuis le dernier passage, notés par des
+    -- déclencheurs ; seuls ceux-là sont relus et comparés à `sync_state`. Numéro croissant
+    -- (jamais réutilisé) : une entrée n'est effacée que si elle n'a pas changé entre-temps.
+    -- Règles de détection : identifiant calculé côté Rust, toute la collection est notée ('*')
+    CREATE TABLE sync_dirty (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        collection TEXT NOT NULL,
+        id TEXT NOT NULL
+    );
+    CREATE INDEX sync_dirty_doc ON sync_dirty (collection, id);
+    -- Noter un document : INSERT INTO sync_touch (sans conflit possible, quelle que soit la
+    -- politique ON CONFLICT de l'instruction qui déclenche)
+    CREATE VIEW sync_touch AS SELECT collection, id FROM sync_dirty;
+    CREATE TRIGGER sync_touch_insert INSTEAD OF INSERT ON sync_touch WHEN NEW.id IS NOT NULL BEGIN
+        DELETE FROM sync_dirty WHERE collection = NEW.collection AND id = NEW.id;
+        INSERT INTO sync_dirty (collection, id) VALUES (NEW.collection, NEW.id);
+    END;
+
+    CREATE TRIGGER sync_groups_insert AFTER INSERT ON gift_groups BEGIN
+        INSERT INTO sync_touch VALUES ('groups', NEW.sync_id);
+    END;
+    CREATE TRIGGER sync_groups_update AFTER UPDATE ON gift_groups BEGIN
+        INSERT INTO sync_touch VALUES ('groups', OLD.sync_id);
+        INSERT INTO sync_touch VALUES ('groups', NEW.sync_id);
+    END;
+    -- Les cadeaux citent l'identifiant partagé de leur groupe
+    CREATE TRIGGER sync_groups_relink AFTER UPDATE OF sync_id ON gift_groups WHEN OLD.sync_id IS NOT NEW.sync_id BEGIN
+        INSERT INTO sync_touch SELECT 'gifts', sync_id FROM gifts WHERE group_id = NEW.id;
+    END;
+    CREATE TRIGGER sync_groups_unlink BEFORE DELETE ON gift_groups BEGIN
+        INSERT INTO sync_touch SELECT 'gifts', sync_id FROM gifts WHERE group_id = OLD.id;
+    END;
+    CREATE TRIGGER sync_groups_delete AFTER DELETE ON gift_groups BEGIN
+        INSERT INTO sync_touch VALUES ('groups', OLD.sync_id);
+    END;
+
+    CREATE TRIGGER sync_gifts_insert AFTER INSERT ON gifts BEGIN
+        INSERT INTO sync_touch VALUES ('gifts', NEW.sync_id);
+    END;
+    CREATE TRIGGER sync_gifts_update AFTER UPDATE ON gifts BEGIN
+        INSERT INTO sync_touch VALUES ('gifts', OLD.sync_id);
+        INSERT INTO sync_touch VALUES ('gifts', NEW.sync_id);
+    END;
+    -- Les giveaways citent l'identifiant partagé de leurs cadeaux
+    CREATE TRIGGER sync_gifts_relink AFTER UPDATE OF sync_id ON gifts WHEN OLD.sync_id IS NOT NEW.sync_id BEGIN
+        INSERT INTO sync_touch SELECT 'giveaways', g.sync_id FROM giveaways g JOIN giveaway_gifts gg ON gg.giveaway_id = g.id
+            WHERE gg.gift_id = NEW.id;
+    END;
+    CREATE TRIGGER sync_gifts_unlink BEFORE DELETE ON gifts BEGIN
+        INSERT INTO sync_touch SELECT 'giveaways', g.sync_id FROM giveaways g JOIN giveaway_gifts gg ON gg.giveaway_id = g.id
+            WHERE gg.gift_id = OLD.id;
+    END;
+    CREATE TRIGGER sync_gifts_delete AFTER DELETE ON gifts BEGIN
+        INSERT INTO sync_touch VALUES ('gifts', OLD.sync_id);
+    END;
+
+    CREATE TRIGGER sync_giveaways_insert AFTER INSERT ON giveaways BEGIN
+        INSERT INTO sync_touch VALUES ('giveaways', NEW.sync_id);
+    END;
+    CREATE TRIGGER sync_giveaways_update AFTER UPDATE ON giveaways BEGIN
+        INSERT INTO sync_touch VALUES ('giveaways', OLD.sync_id);
+        INSERT INTO sync_touch VALUES ('giveaways', NEW.sync_id);
+    END;
+    CREATE TRIGGER sync_giveaways_delete AFTER DELETE ON giveaways BEGIN
+        INSERT INTO sync_touch VALUES ('giveaways', OLD.sync_id);
+    END;
+    -- Cadeaux d'un giveaway : partie du document du giveaway
+    CREATE TRIGGER sync_giveaway_gifts_insert AFTER INSERT ON giveaway_gifts BEGIN
+        INSERT INTO sync_touch SELECT 'giveaways', sync_id FROM giveaways WHERE id = NEW.giveaway_id;
+    END;
+    CREATE TRIGGER sync_giveaway_gifts_update AFTER UPDATE ON giveaway_gifts BEGIN
+        INSERT INTO sync_touch SELECT 'giveaways', sync_id FROM giveaways WHERE id IN (OLD.giveaway_id, NEW.giveaway_id);
+    END;
+    CREATE TRIGGER sync_giveaway_gifts_delete AFTER DELETE ON giveaway_gifts BEGIN
+        INSERT INTO sync_touch SELECT 'giveaways', sync_id FROM giveaways WHERE id = OLD.giveaway_id;
+    END;
+
+    CREATE TRIGGER sync_channels_insert AFTER INSERT ON giveaway_channels BEGIN
+        INSERT INTO sync_touch VALUES ('channels', NEW.login);
+    END;
+    CREATE TRIGGER sync_channels_update AFTER UPDATE ON giveaway_channels BEGIN
+        INSERT INTO sync_touch VALUES ('channels', OLD.login);
+        INSERT INTO sync_touch VALUES ('channels', NEW.login);
+    END;
+    CREATE TRIGGER sync_channels_delete AFTER DELETE ON giveaway_channels BEGIN
+        INSERT INTO sync_touch VALUES ('channels', OLD.login);
+    END;
+
+    CREATE TRIGGER sync_streamers_insert AFTER INSERT ON streamers BEGIN
+        INSERT INTO sync_touch VALUES ('streamers', NEW.login);
+    END;
+    CREATE TRIGGER sync_streamers_update AFTER UPDATE ON streamers BEGIN
+        INSERT INTO sync_touch VALUES ('streamers', OLD.login);
+        INSERT INTO sync_touch VALUES ('streamers', NEW.login);
+    END;
+    CREATE TRIGGER sync_streamers_delete AFTER DELETE ON streamers BEGIN
+        INSERT INTO sync_touch VALUES ('streamers', OLD.login);
+    END;
+
+    CREATE TRIGGER sync_detection_insert AFTER INSERT ON detection_rules BEGIN
+        INSERT INTO sync_touch VALUES ('detection', '*');
+    END;
+    CREATE TRIGGER sync_detection_update AFTER UPDATE ON detection_rules BEGIN
+        INSERT INTO sync_touch VALUES ('detection', '*');
+    END;
+    CREATE TRIGGER sync_detection_delete AFTER DELETE ON detection_rules BEGIN
+        INSERT INTO sync_touch VALUES ('detection', '*');
+    END;
+
+    -- Modifications d'avant ces déclencheurs inconnues : au premier passage, tout est comparé
+    INSERT INTO sync_meta (key, value) VALUES ('dirty_all', '1')
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 "#];
 
 /// Types de giveaway
