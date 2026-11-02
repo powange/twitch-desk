@@ -1093,7 +1093,7 @@ impl Miner {
                         format!("+{gain} sur {login} ({})", reason_label(&reason)),
                     );
                 }
-                self.app.touch();
+                self.app.touch_domain(crate::app::Domain::Accounts);
             }
             PubSubEvent::ClaimAvailable { channel_id, claim_id } => {
                 if let (Some(i), Some(gql)) = (self.index_of(&channel_id), self.gql.clone()) {
@@ -1127,7 +1127,7 @@ impl Miner {
             }
             PubSubEvent::DropProgress { drop_id, current } => {
                 self.drops.on_progress(&drop_id, current);
-                self.app.touch();
+                self.app.touch_domain(crate::app::Domain::Accounts);
             }
             PubSubEvent::DropClaim { instance_id } => {
                 if let Some(gql) = self.gql.clone() {
