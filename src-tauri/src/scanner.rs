@@ -61,11 +61,45 @@ pub struct ScannerView {
     pub error: Option<String>,
 }
 
+/// Live ignoré : son début (None : inconnu) et le moment où il a été ignoré (secondes Unix)
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Ignored {
+    started: Option<String>,
+    at: i64,
+}
+
+/// Clé de l'état gardé en base (table app_state)
+const IGNORED_KEY: &str = "scanner_ignored";
+/// Un live ignoré absent des résultats (filtres changés, relevé incomplet) est oublié après ce délai
+const IGNORED_MAX_SECS: i64 = 48 * 3600;
+
+/// Chaînes ignorées gardées en base, relues au démarrage
+fn load_ignored(app: &App) -> HashMap<String, Ignored> {
+    app.db.get_state(IGNORED_KEY).and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+}
+
+fn save_ignored(app: &App, ignored: &HashMap<String, Ignored>) {
+    if let Ok(v) = serde_json::to_string(ignored) {
+        if let Err(e) = app.db.set_state(IGNORED_KEY, &v) {
+            tracing::warn!("scanner : chaînes ignorées non enregistrées ({e})");
+        }
+    }
+}
+
+/// Garde un live ignoré tant qu'il continue : même début s'il est dans les résultats, sinon
+/// jusqu'à `IGNORED_MAX_SECS` (il peut manquer d'un relevé sans être terminé)
+fn still_ignored(entry: &Ignored, live: Option<&Option<String>>, now: i64) -> bool {
+    match live {
+        Some(started) => *started == entry.started,
+        None => now - entry.at < IGNORED_MAX_SECS,
+    }
+}
+
 #[derive(Default)]
 pub struct ScannerState {
     view: ScannerView,
-    /// Ignorés jusqu'à la fin du live : login → début du live ignoré
-    ignored: HashMap<String, Option<String>>,
+    /// Ignorés jusqu'à la fin du live : login → live ignoré (gardé en base : survit à un redémarrage)
+    ignored: HashMap<String, Ignored>,
     /// Déjà signalés par une notification : (login, début du live)
     alerted: HashSet<(String, Option<String>)>,
     last_scan: Option<Instant>,
@@ -137,6 +171,7 @@ pub fn filter_streams(streams: Vec<CategoryStream>, settings: &Settings) -> Vec<
 }
 
 pub fn spawn(app: Arc<App>) {
+    app.scanner.lock().unwrap().ignored = load_ignored(&app);
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
@@ -263,7 +298,12 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
         let mut state = app.scanner.lock().unwrap();
         // Un streamer ignoré l'est jusqu'à la fin de ce live : nouveau live, il revient
         let live: HashMap<String, Option<String>> = found.iter().map(|(s, _)| (s.login.clone(), s.started_at.clone())).collect();
-        state.ignored.retain(|login, started| live.get(login).is_some_and(|s| s == started));
+        let now = chrono::Utc::now().timestamp();
+        let before = state.ignored.len();
+        state.ignored.retain(|login, entry| still_ignored(entry, live.get(login), now));
+        if state.ignored.len() != before {
+            save_ignored(app, &state.ignored);
+        }
         state.alerted.retain(|(login, started)| live.get(login).is_some_and(|s| s == started));
         let matches: Vec<ScanMatch> = found
             .into_iter()
@@ -345,10 +385,11 @@ pub fn scanner_ignore(app: State<'_, Arc<App>>, login: String, ignore: bool) {
     let mut state = app.scanner.lock().unwrap();
     let started = state.view.matches.iter().find(|m| m.stream.login == login).and_then(|m| m.stream.started_at.clone());
     if ignore {
-        state.ignored.insert(login.clone(), started);
+        state.ignored.insert(login.clone(), Ignored { started, at: chrono::Utc::now().timestamp() });
     } else {
         state.ignored.remove(&login);
     }
+    save_ignored(&app, &state.ignored);
     for m in &mut state.view.matches {
         if m.stream.login == login {
             m.ignored = ignore;
@@ -420,5 +461,20 @@ mod tests {
         settings.scanner_keywords_off = vec![];
         settings.scanner_games_off = vec!["490377".into()];
         assert!(filter_streams(list, &settings).is_empty());
+    }
+
+    #[test]
+    fn ignored_live_rules() {
+        let entry = Ignored { started: Some("2026-11-02T10:00:00Z".into()), at: 1_000 };
+        // Même live dans les résultats : gardé ; nouveau live : oublié
+        assert!(still_ignored(&entry, Some(&Some("2026-11-02T10:00:00Z".into())), 999_999));
+        assert!(!still_ignored(&entry, Some(&Some("2026-11-03T10:00:00Z".into())), 2_000));
+        // Absent des résultats : gardé 48 h
+        assert!(still_ignored(&entry, None, 1_000 + IGNORED_MAX_SECS - 1));
+        assert!(!still_ignored(&entry, None, 1_000 + IGNORED_MAX_SECS));
+        // Relu tel quel depuis la base
+        let json = serde_json::to_string(&HashMap::from([("abc".to_string(), entry.clone())])).unwrap();
+        let back: HashMap<String, Ignored> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.get("abc"), Some(&entry));
     }
 }
