@@ -1,6 +1,6 @@
 [package]
 name = "twitch-desk"
-version = "0.38.1"
+version = "0.38.2"
 description = "Giveaways, points de chaîne et drops Twitch, sur plusieurs comptes"
 authors = ["powange"]
 license = "MIT"
@@ -50,7 +50,9 @@ sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 webview2-com = "0.39"
 windows-core = "0.62"
 # Fichier de secrets de secours chiffré pour la session Windows (DPAPI)
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+# et notifications ouvertes sur une page de l'application (activation par protocole)
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Data_Xml_Dom", "UI_Notifications"] }
+windows-registry = "0.6"
 
 [profile.release]
 codegen-units = 1

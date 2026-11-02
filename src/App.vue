@@ -83,11 +83,14 @@ void listen<string>('open-streamer', async (e) => {
   streamerOpen.value = true
 })
 
-// Clic sur une notification Windows : page de l'alerte (scanner, gains, giveaways)
+// Clic sur une notification Windows : page de l'alerte (scanner, gains, giveaways), aussi
+// quand c'est lui qui a démarré l'application
 const router = useRouter()
-void listen<string>('navigate', (e) => {
-  if (e.payload.startsWith('/') && router.currentRoute.value.path !== e.payload) void router.push(e.payload)
-})
+function navigate(page: string | null) {
+  if (page?.startsWith('/') && router.currentRoute.value.path !== page) void router.push(page)
+}
+void listen<string>('navigate', e => navigate(e.payload))
+void invoke<string | null>('take_start_page').then(navigate)
 
 onMounted(async () => {
   version.value = await getVersion()

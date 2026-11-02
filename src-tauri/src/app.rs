@@ -167,7 +167,8 @@ impl Alert {
     }
 }
 
-/// Clic sur une notification Windows : fenêtre principale affichée, sur la page de l'alerte
+/// Clic sur une notification encore à l'écran (Linux, et Windows en développement) : fenêtre
+/// principale affichée, sur la page de l'alerte
 pub fn on_notification_click(handle: &AppHandle) {
     use tauri_plugin_notification::NotificationExt;
     let app = handle.clone();
@@ -178,11 +179,9 @@ pub fn on_notification_click(handle: &AppHandle) {
         let page = action.notification().and_then(|n| n.extra().get("page")).and_then(|p| p.as_str()).map(str::to_owned);
         let app = app.clone();
         // Fenêtre manipulée depuis le fil principal (le gestionnaire tourne sur un autre fil)
-        let _ = app.clone().run_on_main_thread(move || {
-            crate::tray::show_main(&app);
-            if let Some(page) = page {
-                let _ = app.emit_to("main", "navigate", page);
-            }
+        let _ = app.clone().run_on_main_thread(move || match page {
+            Some(page) => crate::toast::open_page(&app, &page),
+            None => crate::tray::show_main(&app),
         });
     });
 }
@@ -606,6 +605,10 @@ impl App {
             }
         }
         if !settings.notifications {
+            return;
+        }
+        // Windows : notification ouverte sur sa page même depuis le Centre de notifications
+        if crate::toast::show(&self.handle.config().identifier, title, body, alert.page()) {
             return;
         }
         if let Err(e) = self.handle.notification().builder().title(title).body(body).extra("page", alert.page()).show() {

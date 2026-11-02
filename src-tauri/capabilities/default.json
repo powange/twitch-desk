@@ -92,6 +92,7 @@
     "allow-save-sync-config",
     "allow-test-sync",
     "allow-sync-now",
+    "allow-take-start-page",
     "allow-set-sync-skipped",
     "allow-sync-resync",
     "allow-save-sync-instance",

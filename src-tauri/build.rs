@@ -93,6 +93,7 @@ const COMMANDS: &[&str] = &[
     "update_giveaway",
     "add_giveaway_game",
     "remove_giveaway_game",
+    "take_start_page",
 ];
 
 fn main() {

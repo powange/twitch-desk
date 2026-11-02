@@ -10,6 +10,7 @@ mod scanner;
 mod secrets;
 mod streamelements;
 mod sync;
+mod toast;
 mod tray;
 mod usage;
 mod viewer;
@@ -137,7 +138,12 @@ async fn fetch_operations(http: &reqwest::Client, cache: &Path) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show_main(app)))
+        // Deuxième lancement : la fenêtre ouverte revient au premier plan ; lancé par un clic sur une
+        // notification (lien twitch-desk://), sur la page de l'alerte
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| match toast::start_page(args) {
+            Some(page) => toast::open_page(app, &page),
+            None => tray::show_main(app),
+        }))
         // Taille, position et plein écran des fenêtres retenus ; la visibilité au démarrage
         // dépend du réglage « Démarrer réduit »
         .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(window_flags()).build())
@@ -219,6 +225,8 @@ pub fn run() {
             sync::spawn(state.clone());
             usage::set_enabled(app.handle(), settings.show_usage);
             app::on_notification_click(app.handle());
+            toast::register_scheme();
+            app.manage(toast::StartPage(std::sync::Mutex::new(toast::start_page(std::env::args()))));
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -326,6 +334,7 @@ pub fn run() {
             commands::update_giveaway,
             commands::add_giveaway_game,
             commands::remove_giveaway_game,
+            toast::take_start_page,
         ])
         .run(tauri::generate_context!())
         .expect("démarrage de Twitch Desk");
