@@ -180,3 +180,38 @@ export function openEvents(token: string, h: StreamHandlers): { close: () => voi
     }
   }
 }
+
+// --- Notifications push (serveur 0.7 et plus) ---
+
+export interface PushInfo {
+  // Clé publique VAPID du serveur (applicationServerKey)
+  publicKey: string
+  // Abonnement enregistré pour cet appareil (null : aucun)
+  endpoint: string | null
+  // Alertes choisies
+  events: string[]
+  // Alertes possibles
+  alerts: string[]
+}
+
+export function getPush(token: string): Promise<PushInfo> {
+  return call<PushInfo>('/app/push', { headers: authHeader(token) })
+}
+
+export function savePush(token: string, subscription: PushSubscriptionJSON, events: string[]): Promise<PushInfo> {
+  return call<PushInfo>('/app/push', {
+    method: 'PUT',
+    headers: { ...authHeader(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint: subscription.endpoint, keys: subscription.keys, events })
+  })
+}
+
+export async function deletePush(token: string): Promise<void> {
+  let res: Response
+  try {
+    res = await fetch(`${API}/app/push`, { method: 'DELETE', headers: authHeader(token), cache: 'no-store' })
+  } catch {
+    throw new ApiError('Serveur injoignable : vérifie ta connexion', 0)
+  }
+  if (!res.ok) throw await errorOf(res)
+}

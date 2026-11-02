@@ -2,9 +2,10 @@
 // Coquille de l'application gardée en cache : la page s'ouvre même sans réseau (les données
 // viennent toujours du serveur). Les fichiers /app/assets/… sont nommés par leur empreinte :
 // gardés tels quels ; index.html est relu sur le réseau d'abord. L'API n'est jamais mise en cache.
-// Prochaine étape : notifications push (événements « push » et « notificationclick » ici).
+// Notifications push : envoyées par le serveur (alertes de l'application du PC), affichées
+// même web app fermée ; un appui ouvre la web app.
 
-const CACHE = 'twitch-desk-v1'
+const CACHE = 'twitch-desk-v2'
 const SHELL = ['/app/', '/app/manifest.webmanifest', '/app/icon-192.png', '/app/icon-512.png', '/app/icon.svg']
 
 self.addEventListener('install', (event) => {
@@ -50,4 +51,33 @@ self.addEventListener('fetch', (event) => {
       }))
     )
   }
+})
+
+self.addEventListener('push', (event) => {
+  let data = {}
+  try {
+    data = event.data ? event.data.json() : {}
+  } catch {
+    data = { body: event.data ? event.data.text() : '' }
+  }
+  const title = data.title || 'Twitch Desk'
+  event.waitUntil(self.registration.showNotification(title, {
+    body: data.body || '',
+    icon: '/app/icon-192.png',
+    lang: 'fr',
+    data: { url: '/app/' }
+  }))
+})
+
+// Appui sur une notification : web app déjà ouverte mise au premier plan, sinon ouverte
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const url = (event.notification.data && event.notification.data.url) || '/app/'
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      const client = list.find(c => new URL(c.url).pathname.startsWith('/app/'))
+      if (client) return client.focus()
+      return self.clients.openWindow(url)
+    })
+  )
 })

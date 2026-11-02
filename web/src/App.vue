@@ -6,6 +6,8 @@ import type { Overview } from './types'
 import { timeAgo } from './format'
 import PairScreen from './components/PairScreen.vue'
 import GiveawayCard from './components/GiveawayCard.vue'
+import NotificationsModal from './components/NotificationsModal.vue'
+import { active as pushActive, disable as disablePush, refresh as refreshPush, serverTooOld, support as pushSupport } from './push'
 
 // Lien d'association scanné alors que l'appareil est déjà associé : nouvelle association
 const device = ref<Device | null>(/pair=\d{6}/.test(location.hash) ? null : loadDevice())
@@ -29,6 +31,8 @@ const connection = computed(() => {
 })
 
 function forget(message: string | null) {
+  // Plus de notifications pour un appareil oublié
+  void disablePush(null)
   events?.close()
   events = null
   saveDevice(null)
@@ -76,6 +80,7 @@ watch(device, (d) => {
   if (d) {
     void load()
     connect(d)
+    void refreshPush(d.token)
   }
 }, { immediate: true })
 
@@ -98,9 +103,22 @@ function paired(d: Device) {
   device.value = d
 }
 
+// Notifications : réglages, et invitation tant qu'elles ne sont pas activées (masquable)
+const notificationsOpen = ref(false)
+const HINT_KEY = 'twitch-desk:push-hint-hidden'
+const hintHidden = ref((() => { try { return localStorage.getItem(HINT_KEY) === '1' } catch { return false } })())
+const showHint = computed(() => !pushActive.value && !hintHidden.value && !serverTooOld.value && pushSupport() !== 'unsupported')
+function hideHint() {
+  hintHidden.value = true
+  try { localStorage.setItem(HINT_KEY, '1') } catch { /* stockage indisponible */ }
+}
+
 const logoutOpen = ref(false)
 const menu = computed<DropdownMenuItem[][]>(() => [
-  [{ label: 'Actualiser', icon: 'i-lucide-refresh-cw', onSelect: () => { void load() } }],
+  [
+    { label: 'Notifications', icon: pushActive.value ? 'i-lucide-bell-ring' : 'i-lucide-bell', onSelect: () => { notificationsOpen.value = true } },
+    { label: 'Actualiser', icon: 'i-lucide-refresh-cw', onSelect: () => { void load() } }
+  ],
   [{ label: 'Se déconnecter de cet appareil', icon: 'i-lucide-log-out', color: 'error', onSelect: () => { logoutOpen.value = true } }]
 ])
 </script>
@@ -125,6 +143,17 @@ const menu = computed<DropdownMenuItem[][]>(() => [
 
       <main class="flex-1 w-full max-w-2xl mx-auto px-4 py-4 flex flex-col gap-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :description="error" />
+        <UAlert
+          v-if="showHint"
+          color="primary"
+          variant="subtle"
+          icon="i-lucide-bell"
+          title="Recevoir les alertes sur ce téléphone"
+          description="Giveaway détecté, gain, rappel de tirage… même web app fermée."
+          :actions="[{ label: 'Activer', onClick: () => { notificationsOpen = true } }]"
+          close
+          @update:open="hideHint"
+        />
         <div v-if="!data && loading" class="flex justify-center py-12">
           <UIcon name="i-lucide-loader" class="size-6 animate-spin text-muted" />
         </div>
@@ -148,6 +177,8 @@ const menu = computed<DropdownMenuItem[][]>(() => [
         </template>
       </main>
     </div>
+
+    <NotificationsModal v-if="device" v-model:open="notificationsOpen" :token="device.token" />
 
     <UModal v-model:open="logoutOpen" title="Se déconnecter de cet appareil ?">
       <template #body>
