@@ -1115,7 +1115,7 @@ pub fn spawn(app: Arc<App>) {
                     if v.status != "off" || v.url != url {
                         *v = SyncView { status: "off".into(), url, revision: v.revision, ..SyncView::default() };
                         drop(v);
-                        app.touch();
+                        app.touch_domain(crate::app::Domain::Sync);
                     }
                 }
                 app.sync.wake.notified().await;
@@ -1128,7 +1128,7 @@ pub fn spawn(app: Arc<App>) {
                 v.url = cfg.url.clone();
                 v.status = "syncing".into();
             }
-            app.touch();
+            app.touch_domain(crate::app::Domain::Sync);
             let result = run(&app, &cfg).await;
             {
                 let mut v = app.sync.view.lock().unwrap();
@@ -1154,7 +1154,7 @@ pub fn spawn(app: Arc<App>) {
                     }
                 }
             }
-            app.touch();
+            app.touch_domain(crate::app::Domain::Sync);
             tokio::select! {
                 _ = tokio::time::sleep(EVERY) => {}
                 _ = app.sync.wake.notified() => tokio::time::sleep(DEBOUNCE).await,
@@ -1239,7 +1239,7 @@ pub fn set_sync_skipped(app: State<'_, Arc<App>>, skipped: Vec<String>) -> Resul
         let mut v = app.sync.view.lock().unwrap();
         v.collections = v.server_collections.iter().filter(|c| !list.contains(&c.as_str())).cloned().collect();
     }
-    app.touch();
+    app.touch_domain(crate::app::Domain::Sync);
     app.sync.poke();
     Ok(())
 }
