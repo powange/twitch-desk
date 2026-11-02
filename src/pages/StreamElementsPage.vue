@@ -9,16 +9,39 @@ import { formatNumber } from '../utils/format'
 import type { ChannelView, GiveawayView } from '../types'
 import ChannelFlag from '../components/ChannelFlag.vue'
 import AccountPicker from '../components/AccountPicker.vue'
+import { stringList, usePersisted } from '../composables/usePersisted'
 
 const openExternal = useOpenExternal()
 const { accounts, account, channels, newLogin, adding, addChannel, setOptions, optionsOf, toRemove, removing, confirmRemove } = useChannelList('se')
 
-// Filtre par streamer (choix multiple) ; « ?channels=a,b » le préremplit (lien depuis les alertes)
+// Filtre par streamer (choix multiple), retenu sur ce poste ; « ?channels=a,b » le préremplit
+// pour cette visite (lien depuis les alertes) sans remplacer le filtre retenu
 const route = useRoute()
-const streamerFilter = ref<string[]>([])
+const savedFilter = usePersisted('se.streamers', [] as string[], { sanitize: stringList })
+const streamerFilter = ref<string[]>([...savedFilter.value])
+// Filtre venu du lien, pas encore modifié à la main : pas retenu
+let fromUrl: string | null = null
 watch(() => route.query.channels, (q) => {
   const value = Array.isArray(q) ? q.join(',') : (q ?? '')
-  if (value) streamerFilter.value = value.toLowerCase().split(',').map(s => s.trim()).filter(Boolean)
+  if (value) {
+    streamerFilter.value = value.toLowerCase().split(',').map(s => s.trim()).filter(Boolean)
+    fromUrl = streamerFilter.value.join(',')
+  }
+}, { immediate: true })
+watch(streamerFilter, (v) => {
+  if (fromUrl !== null && v.join(',') === fromUrl) return
+  fromUrl = null
+  savedFilter.value = [...v]
+}, { deep: true })
+// Streamer retenu qui n'est plus dans la liste : retiré du filtre (une fois le compte chargé)
+let pruned = false
+watch(account, (a) => {
+  if (!a || pruned) return
+  pruned = true
+  if (fromUrl !== null) return
+  const logins = new Set(channels.value.map(c => c.login))
+  const kept = streamerFilter.value.filter(l => logins.has(l))
+  if (kept.length !== streamerFilter.value.length) streamerFilter.value = kept
 }, { immediate: true })
 const streamerItems = computed(() => channels.value.map(c => c.login).sort())
 const shown = computed(() => streamerFilter.value.length ? channels.value.filter(c => streamerFilter.value.includes(c.login)) : channels.value)

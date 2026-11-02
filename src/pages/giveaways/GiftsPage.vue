@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
 import GiftFormModal from '../../components/GiftFormModal.vue'
@@ -9,13 +9,16 @@ import { boxArt } from '../../utils/format'
 import type { Gift } from '../../types'
 import SolidIcon from '../../components/SolidIcon.vue'
 import { useAction } from '../../composables/useAction'
+import { isBoolean, usePersisted } from '../../composables/usePersisted'
 
-const { gifts, groups, usage, refresh } = useGiftCatalog()
+const { catalog, gifts, groups, usage, refresh } = useGiftCatalog()
 const toast = useToast()
 
 const search = ref('')
-// Catégorie : null = toutes, '' = sans catégorie
-const categoryFilter = ref<string | null>(null)
+// Catégorie : null = toutes, '' = sans catégorie (retenue sur ce poste)
+const categoryFilter = usePersisted<string | null>('gifts.category', null, {
+  sanitize: v => v === null || typeof v === 'string' ? v : undefined
+})
 const groupsOpen = ref(false)
 
 // Catégories présentes dans le catalogue
@@ -26,12 +29,18 @@ const categories = computed(() => {
     .sort((a, b) => a.name.localeCompare(b.name))
 })
 const uncategorized = computed(() => gifts.value.filter(g => !g.gameId).length)
+// Catégorie retenue qui n'a plus de cadeau : retour à toutes (une fois le catalogue chargé)
+watch([catalog, categories, uncategorized], () => {
+  const id = categoryFilter.value
+  if (!catalog.value || id === null) return
+  if (id === '' ? !uncategorized.value : !categories.value.some(c => c.id === id)) categoryFilter.value = null
+}, { immediate: true })
 function selectCategory(id: string | null) {
   categoryFilter.value = id
 }
 
-// Favoris : cadeaux recherchés, propres à ce poste
-const favoritesOnly = ref(false)
+// Favoris : cadeaux recherchés, propres à ce poste (le filtre aussi est retenu)
+const favoritesOnly = usePersisted('gifts.favoritesOnly', false, { sanitize: isBoolean })
 const favoriteCount = computed(() => gifts.value.filter(g => g.favorite).length)
 async function toggleFavorite(g: Gift) {
   const value = !g.favorite

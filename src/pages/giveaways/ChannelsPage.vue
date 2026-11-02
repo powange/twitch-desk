@@ -9,7 +9,7 @@ import type { Gift, GiveawayChannelView, GiveawayView } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
-import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
+import { suggestGifts, useGiftCatalog, useKnownCategories } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
 import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
@@ -17,6 +17,7 @@ import ConditionCells from '../../components/conditions/ConditionCells.vue'
 import { useConditionActions } from '../../composables/useConditionActions'
 import type { ConditionTarget } from '../../composables/useConditionActions'
 import { useAction } from '../../composables/useAction'
+import { numberList, stringList, usePersisted } from '../../composables/usePersisted'
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
@@ -25,7 +26,8 @@ const watchStream = useWatchStream()
 
 const view = computed(() => snapshot.value?.giveaways)
 const hasCategories = computed(() => (view.value?.games.length ?? 0) > 0)
-const { gifts, byId } = useGiftCatalog()
+const { catalog, gifts, byId } = useGiftCatalog()
+const knownCategories = useKnownCategories()
 
 // --- Ce qui rend une chaîne intéressante : giveaway en cours, cadeaux repérés ---
 const insightOf = (c: GiveawayChannelView) => (c.live ? snapshot.value?.insights[c.login] : undefined)
@@ -77,10 +79,16 @@ function rank(c: GiveawayChannelView): number {
   if (c.live) return 2
   return c.liveChecked ? 3 : 4
 }
-// --- Filtres : catégorie du live et cadeaux (rien de choisi : tout) ---
+// --- Filtres : catégorie du live et cadeaux (rien de choisi : tout), retenus sur ce poste ---
 const OFFLINE = 'offline'
-const categoryFilter = ref<string[]>([])
-const giftFilter = ref<number[]>([])
+const categoryFilter = usePersisted('channels.categories', [] as string[], { sanitize: stringList })
+const giftFilter = usePersisted('channels.gifts', [] as number[], { sanitize: numberList })
+// Cadeau retenu retiré du catalogue : plus filtré (une fois le catalogue chargé)
+watch(byId, (all) => {
+  if (!catalog.value) return
+  const kept = giftFilter.value.filter(id => all.has(id))
+  if (kept.length !== giftFilter.value.length) giftFilter.value = kept
+}, { immediate: true })
 // Catégories des lives en cours, plus « Hors ligne »
 const categoryItems = computed(() => {
   const map = new Map<string, { name: string, count: number }>()
@@ -96,8 +104,14 @@ const categoryItems = computed(() => {
     map.set(id, entry)
   }
   const items = [...map].map(([id, e]) => ({ label: `${e.name} (${e.count})`, value: id, gameId: id }))
-    .sort((a, b) => a.label.localeCompare(b.label))
-  if (offline) items.push({ label: `Hors ligne (${offline})`, value: OFFLINE, gameId: '' })
+  // Catégorie retenue sans live en ce moment : gardée dans la liste pour rester visible
+  for (const id of categoryFilter.value) {
+    if (id === OFFLINE || map.has(id)) continue
+    const name = knownCategories.value.find(k => k.id === id)?.name ?? (id ? 'Autre catégorie' : 'Sans catégorie')
+    items.push({ label: `${name} (0)`, value: id, gameId: id })
+  }
+  items.sort((a, b) => a.label.localeCompare(b.label))
+  if (offline || categoryFilter.value.includes(OFFLINE)) items.push({ label: `Hors ligne (${offline})`, value: OFFLINE, gameId: '' })
   return items
 })
 // Cadeaux repérés ou rattachés sur au moins une chaîne
@@ -109,6 +123,11 @@ const giftItems = computed(() => {
       entry.count++
       map.set(gift.id, entry)
     }
+  }
+  // Cadeau retenu repéré nulle part en ce moment : gardé dans la liste pour rester visible
+  for (const id of giftFilter.value) {
+    const gift = byId.value.get(id)
+    if (gift && !map.has(id)) map.set(id, { gift, count: 0 })
   }
   return [...map.values()]
     .sort((a, b) => b.count - a.count || a.gift.title.localeCompare(b.gift.title))

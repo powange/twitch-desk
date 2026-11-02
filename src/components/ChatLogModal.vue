@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../composables/useSnapshot'
 import { GIVEAWAY_KIND } from '../utils/giveaways'
+import { usePersisted } from '../composables/usePersisted'
 
 // Journal du chat d'une chaîne : commandes des spectateurs, nos messages, annonces de gagnant
 // et réponses des bots aux commandes d'information (!giveaway…), gardés 14 jours
@@ -35,7 +36,11 @@ const kindItems = [
 const entries = ref<ChatLogEntry[]>([])
 const commands = ref<[string, number][]>([])
 const replies = ref<BotReply[]>([])
-const kinds = ref<Kind[]>([])
+// Types de message retenus sur ce poste, pour toutes les chaînes ; les commandes non : elles
+// changent d'un giveaway à l'autre (un filtre « !join » retenu cacherait le « !gw » suivant)
+const kinds = usePersisted('chatLog.kinds', [] as Kind[], {
+  sanitize: v => Array.isArray(v) ? v.filter((k): k is Kind => typeof k === 'string' && k in KINDS) : undefined
+})
 const selectedCommands = ref<string[]>([])
 const author = ref('')
 const loading = ref(false)
@@ -99,12 +104,12 @@ watch(open, (isOpen) => {
   if (authorTimer) clearTimeout(authorTimer)
   // Réponses d'une ouverture précédente ignorées
   loadSeq++
-  kinds.value = []
   selectedCommands.value = []
   author.value = ''
   entries.value = []
   more.value = false
-  // Filtres remis à zéro : leurs observateurs ne relancent pas de lecture, refresh() en fait une seule
+  // Filtres remis à zéro (types de message retenus gardés) : leurs observateurs ne relancent
+  // pas de lecture, refresh() en fait une seule
   requestedKey = filterKey()
   void refresh()
 })

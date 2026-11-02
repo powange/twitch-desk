@@ -11,6 +11,7 @@ import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import type { Gift, ScanMatch } from '../../types'
 import SolidIcon from '../../components/SolidIcon.vue'
 import { useSettings } from '../../composables/useSettings'
+import { isBoolean, oneOf, usePersisted } from '../../composables/usePersisted'
 
 const { snapshot } = useSnapshot()
 const toast = useToast()
@@ -28,11 +29,13 @@ const giftsByMatch = computed(() => new Map((scanner.value?.matches ?? []).map(m
 ])))
 const giftsOf = (m: ScanMatch): Gift[] => giftsByMatch.value.get(m) ?? []
 const games = computed(() => snapshot.value?.giveaways.games ?? [])
-const showIgnored = ref(false)
+// Choix d'affichage retenus sur ce poste
+const showIgnored = usePersisted('scanner.showIgnored', false, { sanitize: isBoolean })
 // Tri par colonne (le titre n'en a pas) : spectateurs décroissants par défaut
-type SortKey = 'channel' | 'game' | 'type' | 'gifts' | 'viewers' | 'live' | 'status'
-const sortKey = ref<SortKey>('viewers')
-const sortDesc = ref(true)
+const SORT_KEYS = ['channel', 'game', 'type', 'gifts', 'viewers', 'live', 'status'] as const
+type SortKey = typeof SORT_KEYS[number]
+const sortKey = usePersisted<SortKey>('scanner.sortKey', 'viewers', { sanitize: oneOf(SORT_KEYS) })
+const sortDesc = usePersisted('scanner.sortDesc', true, { sanitize: isBoolean })
 // Premier clic : du plus grand au plus petit pour les nombres, de A à Z pour les textes
 const DESC_FIRST: SortKey[] = ['gifts', 'viewers', 'live']
 function sortBy(key: SortKey) {
