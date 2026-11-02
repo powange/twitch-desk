@@ -13,6 +13,11 @@
 //! chaque modification enregistrée ; un passage est lancé tout de suite et le passage régulier
 //! s'espace tant que le flux est ouvert. Sans flux (serveur plus ancien, proxy qui le bloque),
 //! le passage reste toutes les 30 s.
+//!
+//! Web app mobile (serveur 0.6 et plus) : l'application s'enregistre sous un identifiant tiré
+//! une fois pour toutes et un nom choisi, associe des téléphones (code à 6 chiffres) et publie
+//! un petit état (participations de ses comptes, statut live des chaînes) que les téléphones
+//! lisent.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -52,6 +57,13 @@ const PUSH_BATCH_DOCS: usize = 100;
 /// Version de `sync_state` (2 : empreinte de ce qui est enregistré après réception)
 const STATE_FORMAT: &str = "2";
 const PUSH_BATCH_BYTES: usize = 8 * 1024 * 1024;
+/// État publié pour la web app : regroupé sur ce délai, republié au moins à ce rythme
+const STATE_DEBOUNCE: Duration = Duration::from_secs(3);
+const STATE_REFRESH: Duration = Duration::from_secs(30 * 60);
+/// Serveur d'avant la 0.6 (pas de web app) : nouvel essai bien plus tard
+const STATE_UNSUPPORTED_PAUSE: Duration = Duration::from_secs(30 * 60);
+const NOT_SYNC_SERVER: &str = "Ce n'est pas un serveur de synchronisation Twitch Desk";
+const OLD_SERVER: &str = "Mets à jour le serveur de synchronisation (version 0.6 ou plus) pour connecter un téléphone";
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +101,10 @@ pub struct SyncHandle {
     reconfigure: tokio::sync::Notify,
     /// État du flux temps réel (voir `SyncView::live`), vide : « off »
     live: Mutex<&'static str>,
+    /// Giveaways, comptes ou statut live changés : état de l'application à republier
+    state_changed: tokio::sync::Notify,
+    /// Application enregistrée sur le serveur : « adresse|nom » (réenregistrée s'il change)
+    registered: Mutex<Option<String>>,
 }
 
 impl SyncHandle {
@@ -108,6 +124,12 @@ impl SyncHandle {
     /// Données modifiées ou réglages changés : synchroniser bientôt
     pub fn poke(&self) {
         self.wake.notify_one();
+    }
+
+    /// Giveaways, comptes ou statut live changés : état publié pour la web app mobile
+    /// (regroupé, STATE_DEBOUNCE)
+    pub fn state_changed(&self) {
+        self.state_changed.notify_one();
     }
 }
 
@@ -919,7 +941,8 @@ fn db_err(e: rusqlite::Error) -> String {
     format!("base locale : {e}")
 }
 
-async fn request<T: serde::de::DeserializeOwned>(req: reqwest::RequestBuilder, code: &str) -> Result<T, String> {
+/// Requête avec le code ; réponse en erreur : message du serveur
+async fn send(req: reqwest::RequestBuilder, code: &str) -> Result<reqwest::Response, String> {
     let res = req
         .bearer_auth(code)
         .timeout(Duration::from_secs(60))
@@ -927,15 +950,33 @@ async fn request<T: serde::de::DeserializeOwned>(req: reqwest::RequestBuilder, c
         .await
         .map_err(|e| if e.is_timeout() { "Le serveur ne répond pas".to_owned() } else { format!("Serveur injoignable : {e}") })?;
     match res.status() {
-        reqwest::StatusCode::UNAUTHORIZED => return Err("Code refusé par le serveur".into()),
-        reqwest::StatusCode::NOT_FOUND => return Err("Ce n'est pas un serveur de synchronisation Twitch Desk".into()),
+        reqwest::StatusCode::UNAUTHORIZED => Err("Code refusé par le serveur".into()),
         s if !s.is_success() => {
             let body: Value = res.json().await.unwrap_or_default();
-            return Err(str_of(&body, "error").unwrap_or_else(|| format!("Erreur du serveur ({s})")));
+            // 404 sans message : route inconnue (autre serveur, ou serveur plus ancien)
+            Err(str_of(&body, "error").unwrap_or_else(|| {
+                if matches!(s, reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED) {
+                    NOT_SYNC_SERVER.to_owned()
+                } else {
+                    format!("Erreur du serveur ({s})")
+                }
+            }))
         }
-        _ => {}
+        _ => Ok(res),
     }
-    res.json::<T>().await.map_err(|_| "Ce n'est pas un serveur de synchronisation Twitch Desk".to_owned())
+}
+
+async fn request<T: serde::de::DeserializeOwned>(req: reqwest::RequestBuilder, code: &str) -> Result<T, String> {
+    send(req, code).await?.json::<T>().await.map_err(|_| NOT_SYNC_SERVER.to_owned())
+}
+
+/// Route de la web app (serveur 0.6 et plus) : route inconnue, serveur à mettre à jour
+fn web_app_err(e: String) -> String {
+    if e == NOT_SYNC_SERVER {
+        OLD_SERVER.to_owned()
+    } else {
+        e
+    }
 }
 
 async fn server_info(http: &reqwest::Client, url: &str, code: &str) -> Result<ServerInfo, String> {
@@ -1149,6 +1190,7 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
         }
     }
     let server_counts = server_info(&app.http, &cfg.url, &cfg.code).await.ok().and_then(|i| i.counts);
+    register(app, cfg).await;
     Ok(Outcome {
         server_collections: offered.iter().map(|c| c.to_string()).collect(),
         collections: enabled.iter().map(|c| c.to_string()).collect(),
@@ -1340,6 +1382,7 @@ fn spawn_live(app: Arc<App>) {
 
 pub fn spawn(app: Arc<App>) {
     spawn_live(app.clone());
+    spawn_state(app.clone());
     tauri::async_runtime::spawn(async move {
         loop {
             let Some(cfg) = config(&app) else {
@@ -1408,6 +1451,232 @@ pub fn spawn(app: Arc<App>) {
     });
 }
 
+// --- Web app mobile ---
+
+/// Identifiant de cette application, tiré une fois pour toutes
+fn instance_id(conn: &Connection) -> rusqlite::Result<String> {
+    if let Some(id) = meta(conn, "instance_id").filter(|id| !id.is_empty()) {
+        return Ok(id);
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    set_meta(conn, "instance_id", &id)?;
+    Ok(id)
+}
+
+/// Nom de cette application choisi par l'utilisateur, sinon « PC <premier compte> », sinon
+/// le nom de la machine
+fn instance_name(app: &App) -> String {
+    if let Some(name) = meta(&app.db.conn(), "instance_name").filter(|n| !n.trim().is_empty()) {
+        return name;
+    }
+    default_instance_name(app.db.accounts().ok().and_then(|a| a.into_iter().next()).map(|a| a.login))
+}
+
+fn default_instance_name(first_login: Option<String>) -> String {
+    if let Some(login) = first_login {
+        return format!("PC {login}");
+    }
+    let host = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|h| h.trim().to_owned())
+        .filter(|h| !h.is_empty());
+    host.unwrap_or_else(|| "Twitch Desk".to_owned())
+}
+
+/// Adresse de la web app : celle choisie, sinon celle du serveur suivie de /app
+fn web_app_url(conn: &Connection, server_url: &str) -> String {
+    match meta(conn, "web_url").filter(|u| !u.is_empty()) {
+        Some(u) => u,
+        None => format!("{server_url}/app"),
+    }
+}
+
+/// Enregistre l'application sur le serveur (nom compris) quand l'adresse ou le nom change ;
+/// serveur d'avant la 0.6 : sans effet
+async fn register(app: &App, cfg: &Config) {
+    let name = instance_name(app);
+    let key = format!("{}|{name}", cfg.url);
+    if app.sync.registered.lock().unwrap().as_deref() == Some(key.as_str()) {
+        return;
+    }
+    let Ok(id) = instance_id(&app.db.conn()) else { return };
+    let req = app.http.put(format!("{}/api/v1/instances/{id}", cfg.url)).json(&json!({ "name": name }));
+    match send(req, &cfg.code).await {
+        Ok(_) => *app.sync.registered.lock().unwrap() = Some(key),
+        Err(e) if e == NOT_SYNC_SERVER => *app.sync.registered.lock().unwrap() = Some(key),
+        Err(e) => tracing::debug!("enregistrement de l'application : {e}"),
+    }
+}
+
+/// État publié pour les téléphones : pour chaque giveaway ouvert ou en pause (par identifiant
+/// partagé), nos comptes qui ont participé et s'il est traité ; statut live de ses chaînes ;
+/// nos comptes
+fn instance_state(view: &crate::giveaways::GiveawaysView, sync_ids: &HashMap<i64, String>, accounts: &[String]) -> Value {
+    let mut giveaways = serde_json::Map::new();
+    let mut channels: Vec<&str> = vec![];
+    for g in &view.giveaways {
+        if !matches!(g.row.status.as_str(), "open" | "paused") {
+            continue;
+        }
+        let Some(id) = sync_ids.get(&g.row.id) else { continue };
+        let mut participated: Vec<&str> = g.entries_view.iter().map(|e| e.login.as_str()).filter(|l| !l.is_empty()).collect();
+        participated.sort_unstable();
+        participated.dedup();
+        giveaways.insert(id.clone(), json!({ "participated": participated, "handled": g.row.handled }));
+        if !channels.contains(&g.row.channel.as_str()) {
+            channels.push(&g.row.channel);
+        }
+    }
+    let mut live = serde_json::Map::new();
+    for login in channels {
+        let Some(c) = view.channels.iter().find(|c| c.login.eq_ignore_ascii_case(login)) else { continue };
+        if !c.live_checked {
+            continue;
+        }
+        let info = match &c.live {
+            Some(s) => json!({ "live": true, "viewers": s.viewers, "category": s.game_name, "title": s.title }),
+            None => json!({ "live": false }),
+        };
+        live.insert(login.to_owned(), info);
+    }
+    json!({ "accounts": accounts, "giveaways": giveaways, "live": live })
+}
+
+/// Giveaways ouverts ou en pause : identifiant local → identifiant partagé
+fn open_sync_ids(conn: &Connection) -> rusqlite::Result<HashMap<i64, String>> {
+    conn.prepare_cached("SELECT id, sync_id FROM giveaways WHERE sync_id IS NOT NULL AND status IN ('open', 'paused')")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect()
+}
+
+/// Publie l'état de l'application quand il change (regroupé sur STATE_DEBOUNCE), et au moins
+/// toutes les STATE_REFRESH
+fn spawn_state(app: Arc<App>) {
+    tauri::async_runtime::spawn(async move {
+        // (adresse, empreinte) du dernier état publié, et quand
+        let mut last: Option<(String, String, std::time::Instant)> = None;
+        let mut unsupported: Option<(String, std::time::Instant)> = None;
+        app.sync.state_changed();
+        loop {
+            tokio::select! {
+                _ = app.sync.state_changed.notified() => {}
+                _ = tokio::time::sleep(STATE_REFRESH) => {}
+            }
+            tokio::time::sleep(STATE_DEBOUNCE).await;
+            let Some(cfg) = config(&app) else { continue };
+            if unsupported.as_ref().is_some_and(|(url, at)| *url == cfg.url && at.elapsed() < STATE_UNSUPPORTED_PAUSE) {
+                continue;
+            }
+            let accounts: Vec<String> = app.db.accounts().unwrap_or_default().into_iter().map(|a| a.login).collect();
+            let (id, sync_ids) = {
+                let conn = app.db.conn();
+                match (instance_id(&conn), open_sync_ids(&conn)) {
+                    (Ok(id), Ok(ids)) => (id, ids),
+                    _ => continue,
+                }
+            };
+            let state = instance_state(&app.giveaways.view(), &sync_ids, &accounts);
+            let digest = hash(&state);
+            if last.as_ref().is_some_and(|(url, h, at)| *url == cfg.url && *h == digest && at.elapsed() < STATE_REFRESH) {
+                continue;
+            }
+            register(&app, &cfg).await;
+            let req = app.http.put(format!("{}/api/v1/instances/{id}/state", cfg.url)).json(&state);
+            match send(req, &cfg.code).await {
+                Ok(_) => {
+                    last = Some((cfg.url.clone(), digest, std::time::Instant::now()));
+                    unsupported = None;
+                }
+                Err(e) if e == NOT_SYNC_SERVER => unsupported = Some((cfg.url.clone(), std::time::Instant::now())),
+                Err(e) => {
+                    tracing::debug!("état pour la web app : {e}");
+                    // Nouvel essai un peu plus tard
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        handle.sync.state_changed();
+                    });
+                }
+            }
+        }
+    });
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingView {
+    code: String,
+    expires_at: String,
+    /// Lien à ouvrir sur le téléphone (QR code)
+    #[serde(default)]
+    link: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceView {
+    id: String,
+    name: String,
+    created_at: String,
+    last_seen: Option<String>,
+}
+
+/// Adresse et code du serveur enregistrés (synchronisation activée ou non)
+fn saved_server(app: &App) -> Result<(String, String, String), String> {
+    let conn = app.db.conn();
+    let url = meta(&conn, "url").filter(|u| !u.is_empty()).ok_or("Indique d'abord l'adresse du serveur de synchronisation")?;
+    let id = instance_id(&conn).map_err(db_err)?;
+    drop(conn);
+    let code = app.secrets.load_raw(CODE_KEY).filter(|c| !c.is_empty()).ok_or("Indique d'abord le code du serveur")?;
+    Ok((url, code, id))
+}
+
+/// Code d'association à 6 chiffres (valable 5 min) et lien de la web app qui le contient
+#[tauri::command]
+pub async fn sync_pair_start(app: State<'_, Arc<App>>) -> Result<PairingView, String> {
+    let (url, code, id) = saved_server(&app)?;
+    let req = app.http.post(format!("{url}/api/v1/pair/start")).json(&json!({ "instance": id, "name": instance_name(&app) }));
+    let mut pairing: PairingView = request(req, &code).await.map_err(web_app_err)?;
+    pairing.link = format!("{}/#pair={}", web_app_url(&app.db.conn(), &url), pairing.code);
+    Ok(pairing)
+}
+
+/// Téléphones associés à cette application
+#[tauri::command]
+pub async fn sync_devices(app: State<'_, Arc<App>>) -> Result<Vec<DeviceView>, String> {
+    let (url, code, id) = saved_server(&app)?;
+    request(app.http.get(format!("{url}/api/v1/instances/{id}/devices")), &code).await.map_err(web_app_err)
+}
+
+/// Révoque un téléphone : son accès est refusé aussitôt
+#[tauri::command]
+pub async fn sync_revoke_device(app: State<'_, Arc<App>>, device_id: String) -> Result<(), String> {
+    let (url, code, id) = saved_server(&app)?;
+    if device_id.is_empty() || !device_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("Appareil inconnu".into());
+    }
+    send(app.http.delete(format!("{url}/api/v1/instances/{id}/devices/{device_id}")), &code).await.map_err(web_app_err)?;
+    Ok(())
+}
+
+/// Nom de cette application (vide : nom par défaut) et adresse de la web app (vide : celle du
+/// serveur suivie de /app)
+#[tauri::command]
+pub fn save_sync_instance(app: State<'_, Arc<App>>, name: String, web_url: String) -> Result<(), String> {
+    let name: String = name.trim().chars().filter(|c| !c.is_control()).take(60).collect();
+    let web_url = if web_url.trim().is_empty() { String::new() } else { normalize_url(&web_url).map_err(|_| "Adresse de la web app invalide (http:// ou https://)".to_owned())? };
+    let conn = app.db.conn();
+    set_meta(&conn, "instance_name", &name).map_err(db_err)?;
+    set_meta(&conn, "web_url", &web_url).map_err(db_err)?;
+    drop(conn);
+    // Nouveau nom : réenregistrée au prochain passage
+    *app.sync.registered.lock().unwrap() = None;
+    app.sync.poke();
+    Ok(())
+}
+
 // --- Commandes ---
 
 #[derive(Serialize)]
@@ -1416,15 +1685,24 @@ pub struct SyncConfigView {
     url: String,
     enabled: bool,
     has_code: bool,
+    /// Nom de cette application (vide : `default_name`)
+    instance_name: String,
+    default_name: String,
+    /// Adresse de la web app choisie (vide : celle du serveur suivie de /app)
+    web_url: String,
 }
 
 #[tauri::command]
 pub fn get_sync_config(app: State<'_, Arc<App>>) -> SyncConfigView {
+    let default_name = default_instance_name(app.db.accounts().ok().and_then(|a| a.into_iter().next()).map(|a| a.login));
     let conn = app.db.conn();
     SyncConfigView {
         url: meta(&conn, "url").unwrap_or_default(),
         enabled: meta(&conn, "enabled").as_deref() == Some("1"),
         has_code: app.secrets.load_raw(CODE_KEY).is_some_and(|c| !c.is_empty()),
+        instance_name: meta(&conn, "instance_name").unwrap_or_default(),
+        default_name,
+        web_url: meta(&conn, "web_url").unwrap_or_default(),
     }
 }
 
@@ -2025,5 +2303,59 @@ mod tests {
         for c in COLLECTIONS {
             assert_eq!(count(&conn, c).unwrap(), export(&conn, c, &COLLECTIONS).unwrap().len() as i64, "{c}");
         }
+    }
+
+    #[test]
+    fn instance_id_is_drawn_once() {
+        let db = Db::memory().unwrap();
+        let id = instance_id(&db.conn()).unwrap();
+        assert_eq!(id.len(), 36);
+        assert_eq!(instance_id(&db.conn()).unwrap(), id);
+        // Changement de serveur ou relecture complète : l'identifiant reste
+        set_meta(&db.conn(), "server", "https://autre.exemple").unwrap();
+        db.conn().execute("DELETE FROM sync_state", []).unwrap();
+        assert_eq!(instance_id(&db.conn()).unwrap(), id);
+        assert_ne!(instance_id(&Db::memory().unwrap().conn()).unwrap(), id);
+        assert_eq!(default_instance_name(Some("alice".into())), "PC alice");
+        assert!(!default_instance_name(None).is_empty());
+    }
+
+    #[test]
+    fn instance_state_lists_our_participations_and_live_channels() {
+        use crate::giveaways::{GiveawayChannelView, GiveawayEntryView, GiveawayView, GiveawaysView};
+        let db = Db::memory().unwrap();
+        let (_, _, giveaway) = populate(&db);
+        assign_ids(&db.conn()).unwrap();
+        let ids = open_sync_ids(&db.conn()).unwrap();
+        let shared = sync_id(&db, "giveaways", giveaway);
+        assert_eq!(ids.get(&giveaway), Some(&shared));
+        let row = db.giveaways(10).unwrap().into_iter().find(|g| g.id == giveaway).unwrap();
+        let entry = |login: &str| GiveawayEntryView { account_id: 1, login: login.into(), at: String::new(), auto: false, tickets: None };
+        let view = GiveawaysView {
+            giveaways: vec![GiveawayView { row, evidence: None, entries_view: vec![entry("bob"), entry("alice"), entry("bob")], winner_ours: None }],
+            channels: vec![GiveawayChannelView {
+                id: 1,
+                login: "lunarsea".into(),
+                reader: None,
+                live_checked: true,
+                live: Some(crate::twitch::gql::StreamInfo {
+                    broadcast_id: "1".into(),
+                    title: "Tirage ce soir".into(),
+                    game_id: None,
+                    game_name: Some("Sea of Thieves".into()),
+                    viewers: 42,
+                }),
+                in_category: true,
+            }],
+            ..Default::default()
+        };
+        let state = instance_state(&view, &ids, &["alice".into(), "bob".into()]);
+        assert_eq!(state["accounts"], json!(["alice", "bob"]));
+        assert_eq!(state["giveaways"][&shared], json!({ "participated": ["alice", "bob"], "handled": true }));
+        assert_eq!(state["live"]["lunarsea"], json!({ "live": true, "viewers": 42, "category": "Sea of Thieves", "title": "Tirage ce soir" }));
+        // Giveaway sans identifiant partagé (pas encore synchronisé) : absent
+        let state = instance_state(&view, &HashMap::new(), &[]);
+        assert_eq!(state["giveaways"], json!({}));
+        assert_eq!(state["live"], json!({}));
     }
 }

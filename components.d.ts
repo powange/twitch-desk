@@ -26,6 +26,7 @@ declare module 'vue' {
     GiveawayFormModal: typeof import('./src/components/GiveawayFormModal.vue')['default']
     IgnoredCommandsEditor: typeof import('./src/components/IgnoredCommandsEditor.vue')['default']
     LogViewer: typeof import('./src/components/LogViewer.vue')['default']
+    PhonePairing: typeof import('./src/components/PhonePairing.vue')['default']
     PointsChannelSettings: typeof import('./src/components/PointsChannelSettings.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

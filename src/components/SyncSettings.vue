@@ -200,6 +200,9 @@ async function save(value = wanted.value) {
       </div>
       <div class="text-xs text-muted">Depuis le démarrage : {{ syncView.sent }} modification(s) envoyée(s), {{ syncView.received }} reçue(s).</div>
     </div>
+    <div v-if="wanted && enabled" class="px-4 py-3">
+      <PhonePairing :server-url="url" />
+    </div>
     <UModal v-model:open="resyncOpen" title="Tout relire depuis le serveur ?">
       <template #body>
         <p class="text-sm">Tout le contenu du serveur est relu. Pour ce qui est déjà partagé, la version du serveur remplace celle de ce poste ; ce qui n'existe qu'ici est envoyé au serveur.</p>
