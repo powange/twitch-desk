@@ -211,6 +211,13 @@ async function checkUpdates() {
 
         <section v-if="section === 'logs'" class="flex flex-col gap-2">
           <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">Journaux</h2>
+          <div v-if="settings" class="border border-default rounded-lg flex items-center justify-between gap-4 px-4 py-3 max-w-3xl">
+            <div>
+              <div class="font-medium">Afficher les ressources de l'application</div>
+              <div class="text-sm text-muted">Processeur, mémoire et trafic estimé de Twitch Desk (fenêtre des streams comprise), en bas à gauche. Désactivé, rien n'est mesuré.</div>
+            </div>
+            <USwitch v-model="settings.showUsage" aria-label="Afficher les ressources de l'application" />
+          </div>
           <LogViewer />
         </section>
       </div>

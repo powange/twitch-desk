@@ -9,6 +9,7 @@
 //! portent que sur le disque, le trafic n'est donc pas donné.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -71,7 +72,27 @@ fn measure(sys: &System, root: Pid, cores: f32, elapsed: f32) -> AppUsage {
     }
 }
 
-pub fn spawn(app: AppHandle) {
+/// Relevé en cours (réglage « Afficher les ressources de l'application »)
+static ENABLED: AtomicBool = AtomicBool::new(false);
+/// Numéro du fil de relevé en cours : un fil plus ancien s'arrête de lui-même
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Démarre ou arrête le relevé : arrêté, aucun processus n'est parcouru
+pub fn set_enabled(app: &AppHandle, enabled: bool) {
+    if ENABLED.swap(enabled, Ordering::SeqCst) == enabled {
+        return;
+    }
+    if enabled {
+        let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        spawn(app.clone(), generation);
+    }
+}
+
+fn running(generation: u64) -> bool {
+    ENABLED.load(Ordering::SeqCst) && GENERATION.load(Ordering::SeqCst) == generation
+}
+
+fn spawn(app: AppHandle, generation: u64) {
     let Ok(root) = sysinfo::get_current_pid() else {
         tracing::warn!("ressources de l'application : processus courant introuvable");
         return;
@@ -85,6 +106,9 @@ pub fn spawn(app: AppHandle) {
         let mut last = Instant::now();
         loop {
             std::thread::sleep(EVERY);
+            if !running(generation) {
+                return;
+            }
             sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
             let now = Instant::now();
             let usage = measure(&sys, root, cores, now.duration_since(last).as_secs_f32());

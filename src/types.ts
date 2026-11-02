@@ -190,6 +190,8 @@ export interface Settings {
   // Page multi-stream : intégrée à l'application, ou page GitHub (secours)
   // Fenêtre « Streams » : bloqueur de publicités Twitch dans les lecteurs
   viewerAdblock: boolean
+  // Processeur, mémoire et trafic de l'application affichés en bas à gauche
+  showUsage: boolean
   // Phrases pour dire bonjour dans le chat, par langue (code ISO 639-1)
   greetings: Record<string, string[]>
   // Langue des phrases quand celle de la chaîne est inconnue ou sans phrases

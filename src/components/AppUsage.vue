@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { useSettings } from '../composables/useSettings'
 
 // Ressources de l'application (fenêtre des streams comprise), relevées toutes les 2 s par le cœur
 interface AppUsage { cpu: number, memory: number, processes: number, down: number | null, up: number | null }
 const usage = ref<AppUsage | null>(null)
+// Réglage désactivé : relevé arrêté côté cœur, dernière mesure oubliée
+const { settings } = useSettings()
+watch(() => settings.value?.showUsage, (on) => { if (!on) usage.value = null })
 
 let unlisten: UnlistenFn | null = null
 onMounted(async () => {
@@ -22,7 +26,7 @@ const rate = (n: number) => `${bytes(n)}/s`
 </script>
 
 <template>
-  <div v-if="usage" class="flex flex-col gap-0.5 tabular-nums">
+  <div v-if="usage && settings?.showUsage" class="flex flex-col gap-0.5 tabular-nums">
     <UTooltip :text="`Twitch Desk et ses ${usage.processes} processus (fenêtre des streams comprise)`">
       <div class="flex items-center gap-1.5" tabindex="0">
         <UIcon name="i-lucide-cpu" class="size-3.5 shrink-0" />

@@ -696,6 +696,8 @@ pub struct Settings {
     pub greeting_default_lang: String,
     /// Fenêtre « Streams » : bloqueur de publicités Twitch (vaft) dans les lecteurs
     pub viewer_adblock: bool,
+    /// Processeur, mémoire et trafic de l'application affichés en bas à gauche (relevé arrêté sinon)
+    pub show_usage: bool,
 }
 
 pub const DEFAULT_SCANNER_KEYWORDS: &[&str] =
@@ -739,6 +741,7 @@ impl Default for Settings {
             .collect(),
             greeting_default_lang: "en".into(),
             viewer_adblock: false,
+            show_usage: false,
         }
     }
 }

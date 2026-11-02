@@ -302,6 +302,7 @@ pub fn get_settings(app: AppState) -> Settings {
 #[tauri::command]
 pub fn save_settings(app: AppState, settings: Settings) -> CmdResult<()> {
     app.db.save_settings(&settings).map_err(db_err)?;
+    crate::usage::set_enabled(app.handle(), settings.show_usage);
     app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();
     Ok(())
