@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{Emitter, State};
 
-use crate::app::{App, EventKind, Snapshot};
+use crate::app::{App, EventKind};
 use crate::db::{ChannelList, Settings};
 use crate::giveaways::MonitorCmd;
 use crate::miner::MinerCommand;
@@ -31,7 +31,7 @@ async fn blocking<T: Send + 'static>(app: &AppState<'_>, f: impl FnOnce(&App) ->
 }
 
 #[tauri::command]
-pub fn get_snapshot(app: AppState) -> Snapshot {
+pub fn get_snapshot(app: AppState) -> Box<serde_json::value::RawValue> {
     app.snapshot()
 }
 

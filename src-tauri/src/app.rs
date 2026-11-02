@@ -1,8 +1,8 @@
 //! État partagé de l'application et vue envoyée à l'interface.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -56,6 +56,9 @@ pub struct ChannelView {
     pub live: Option<StreamInfo>,
     pub state: ChannelState,
     pub error: Option<String>,
+    /// Renseigné par le superviseur mais pas affiché : non envoyé à l'interface
+    #[serde(skip_serializing)]
+    #[allow(dead_code)]
     pub last_bonus_at: Option<String>,
     pub in_points: bool,
     pub in_se: bool,
@@ -155,21 +158,95 @@ impl Alert {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Snapshot {
-    pub paused: bool,
-    pub accounts: Vec<AccountView>,
-    pub events: Vec<LogEvent>,
-    pub operations_version: u32,
-    pub operations_updated: String,
-    pub giveaways: crate::giveaways::GiveawaysView,
-    /// Langue de diffusion des chaînes (login → code ISO 639-1), pour les drapeaux
-    pub languages: HashMap<String, String>,
-    pub scanner: crate::scanner::ScannerView,
-    /// Chaînes surveillées en live : giveaway StreamElements actif, description, message épinglé
-    pub insights: HashMap<String, crate::insights::ChannelInsight>,
-    pub sync: crate::sync::SyncView,
+/// Parties de l'état envoyées séparément à l'interface. Chaque partie n'est reconstruite
+/// que si elle a été signalée modifiée, et n'est envoyée que si son JSON a changé.
+///
+/// Clés envoyées (forme de `Snapshot` côté interface) :
+/// - `Misc` : `paused`, `operationsVersion`, `operationsUpdated`
+/// - `Accounts` : `accounts` (chaînes et drops compris)
+/// - `Events` : `events` (ajouts seulement dans les mises à jour)
+/// - `Giveaways` : `giveaways.channels`, `giveaways.games`, `giveaways.giveaways`,
+///   `giveaways.mentions`, `giveaways.botReplies`
+/// - `Languages` : `languages` (login → code ISO 639-1, pour les drapeaux)
+/// - `Scanner` : `scanner`
+/// - `Insights` : `insights` (giveaway StreamElements actif, description, message épinglé)
+/// - `Sync` : `sync`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Domain {
+    Misc,
+    Accounts,
+    Events,
+    Giveaways,
+    Languages,
+    Scanner,
+    Insights,
+    Sync,
+}
+
+impl Domain {
+    const ALL: u32 = (1 << 8) - 1;
+
+    fn bit(self) -> u32 {
+        1 << self as u32
+    }
+}
+
+/// Fil d'événements, le plus récent d'abord ; `seq` compte tous les événements ajoutés
+struct EventLog {
+    list: VecDeque<LogEvent>,
+    seq: u64,
+}
+
+/// Dernier état envoyé à l'interface, partie par partie (JSON déjà sérialisé)
+#[derive(Default)]
+struct Emitted {
+    /// Augmente à chaque mise à jour envoyée : l'interface repère un trou et relit tout
+    version: u64,
+    parts: BTreeMap<&'static str, String>,
+    /// Valeur de `EventLog::seq` au dernier envoi
+    events_seq: u64,
+}
+
+fn to_json(value: &impl Serialize) -> String {
+    serde_json::to_string(value).unwrap_or_else(|e| {
+        tracing::warn!("état illisible : {e}");
+        "null".into()
+    })
+}
+
+/// Mémorise les parties fraîches ; rend les clés de celles qui ont changé depuis le dernier envoi
+fn diff_parts(sent: &mut BTreeMap<&'static str, String>, fresh: Vec<(&'static str, String)>) -> Vec<&'static str> {
+    let mut changed = vec![];
+    for (key, json) in fresh {
+        if sent.get(key) != Some(&json) {
+            sent.insert(key, json);
+            changed.push(key);
+        }
+    }
+    changed
+}
+
+/// Objet JSON des clés données ; une clé `a.b` est rangée sous l'objet `a` si `nest`
+fn compose(parts: &BTreeMap<&'static str, String>, keys: &[&'static str], nest: bool) -> String {
+    let mut top: Vec<(String, String)> = vec![];
+    let mut groups: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+    for key in keys {
+        let Some(json) = parts.get(key) else { continue };
+        match key.split_once('.') {
+            Some((group, sub)) if nest => groups.entry(group).or_default().push((sub, json)),
+            _ => top.push((to_json(key), json.clone())),
+        }
+    }
+    for (group, subs) in groups {
+        let inner: Vec<String> = subs.iter().map(|(k, v)| format!("{}:{v}", to_json(k))).collect();
+        top.push((to_json(&group), format!("{{{}}}", inner.join(","))));
+    }
+    let fields: Vec<String> = top.into_iter().map(|(k, v)| format!("{k}:{v}")).collect();
+    format!("{{{}}}", fields.join(","))
+}
+
+fn raw(json: String) -> Box<serde_json::value::RawValue> {
+    serde_json::value::RawValue::from_string(json).expect("JSON produit par serde_json")
 }
 
 struct MinerHandle {
@@ -185,9 +262,12 @@ pub struct App {
     handle: AppHandle,
     miners: Mutex<HashMap<i64, MinerHandle>>,
     views: RwLock<HashMap<i64, AccountView>>,
-    events: Mutex<VecDeque<LogEvent>>,
+    events: Mutex<EventLog>,
     paused: AtomicBool,
     dirty: Notify,
+    /// Parties de l'état modifiées depuis le dernier envoi (bits de `Domain`)
+    dirty_domains: AtomicU32,
+    emitted: Mutex<Emitted>,
     pub login_task: Mutex<Option<JoinHandle<()>>>,
     pub giveaways: crate::giveaways::GiveawayHandle,
     /// Chaînes à regarder en premier pour les points : giveaway par points de chaîne ouvert
@@ -210,9 +290,11 @@ impl App {
             miners: Mutex::new(HashMap::new()),
             views: RwLock::new(HashMap::new()),
             // Fil d'événements gardé d'un lancement (et d'une mise à jour) à l'autre
-            events: Mutex::new(events.into()),
+            events: Mutex::new(EventLog { list: events.into(), seq: 0 }),
             paused: AtomicBool::new(false),
             dirty: Notify::new(),
+            dirty_domains: AtomicU32::new(Domain::ALL),
+            emitted: Mutex::new(Emitted::default()),
             login_task: Mutex::new(None),
             giveaways: crate::giveaways::GiveawayHandle::default(),
             point_priority: RwLock::new(std::collections::HashSet::new()),
@@ -265,7 +347,7 @@ impl App {
             handle.task.abort();
         }
         self.views.write().unwrap().remove(&account_id);
-        self.touch();
+        self.touch_domain(Domain::Accounts);
     }
 
     pub fn send(&self, account_id: i64, command: MinerCommand) {
@@ -289,13 +371,13 @@ impl App {
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
         self.broadcast(MinerCommand::Wake);
-        self.touch();
+        self.touch_domain(Domain::Misc);
         let _ = self.handle.emit("paused", paused);
     }
 
     pub fn set_view(&self, view: AccountView) {
         self.views.write().unwrap().insert(view.id, view);
-        self.touch();
+        self.touch_domain(Domain::Accounts);
     }
 
     pub fn log(&self, account: &str, kind: EventKind, message: impl Into<String>) {
@@ -310,17 +392,17 @@ impl App {
             tracing::warn!("fil d'événements : {e}");
         }
         let mut events = self.events.lock().unwrap();
-        events.push_front(event);
-        events.truncate(MAX_EVENTS);
+        events.list.push_front(event);
+        events.list.truncate(MAX_EVENTS);
+        events.seq += 1;
         drop(events);
-        self.touch();
+        self.touch_domain(Domain::Events);
     }
 
-    pub fn snapshot(&self) -> Snapshot {
+    /// Comptes dans l'ordre de la base ; un compte sans superviseur apparaît quand même
+    fn account_views(&self) -> Vec<AccountView> {
         let views = self.views.read().unwrap();
-        // Ordre des comptes = ordre en base ; un compte sans superviseur apparaît quand même
-        let accounts = self
-            .db
+        self.db
             .accounts()
             .unwrap_or_default()
             .into_iter()
@@ -339,20 +421,97 @@ impl App {
                     channels: vec![],
                 })
             })
-            .collect();
-        let (operations_version, operations_updated) = gql::operations_info();
-        Snapshot {
-            paused: self.is_paused(),
-            accounts,
-            events: self.events.lock().unwrap().iter().cloned().collect(),
-            operations_version,
-            operations_updated,
-            giveaways: self.giveaways.view(),
-            languages: self.languages.read().unwrap().clone(),
-            scanner: self.scanner.lock().unwrap().view(),
-            insights: self.insights.lock().unwrap().view(),
-            sync: self.sync.view(),
+            .collect()
+    }
+
+    /// Parties à jour des domaines demandés (bits de `Domain`), fil d'événements à part
+    fn build_parts(&self, mask: u32) -> Vec<(&'static str, String)> {
+        let wants = |d: Domain| mask & d.bit() != 0;
+        let mut parts = vec![];
+        if wants(Domain::Misc) {
+            let (operations_version, operations_updated) = gql::operations_info();
+            parts.push(("paused", to_json(&self.is_paused())));
+            parts.push(("operationsVersion", to_json(&operations_version)));
+            parts.push(("operationsUpdated", to_json(&operations_updated)));
         }
+        if wants(Domain::Accounts) {
+            parts.push(("accounts", to_json(&self.account_views())));
+        }
+        if wants(Domain::Giveaways) {
+            let g = self.giveaways.view();
+            parts.push(("giveaways.channels", to_json(&g.channels)));
+            parts.push(("giveaways.games", to_json(&g.games)));
+            parts.push(("giveaways.giveaways", to_json(&g.giveaways)));
+            parts.push(("giveaways.mentions", to_json(&g.mentions)));
+            parts.push(("giveaways.botReplies", to_json(&g.bot_replies)));
+        }
+        if wants(Domain::Languages) {
+            parts.push(("languages", to_json(&*self.languages.read().unwrap())));
+        }
+        if wants(Domain::Scanner) {
+            parts.push(("scanner", to_json(&self.scanner.lock().unwrap().view())));
+        }
+        if wants(Domain::Insights) {
+            parts.push(("insights", to_json(&self.insights.lock().unwrap().view())));
+        }
+        if wants(Domain::Sync) {
+            parts.push(("sync", to_json(&self.sync.view())));
+        }
+        parts
+    }
+
+    /// Reconstruit les parties signalées modifiées et envoie à l'interface celles dont le JSON
+    /// a changé (événement « snapshot-patch ») : `{ version, domains: { clé: valeur },
+    /// eventsAppend?, eventsMax? }`. Le fil d'événements n'envoie que ses nouveaux éléments
+    /// (`eventsAppend`, les plus récents d'abord), ou tout le fil (`domains.events`) au besoin.
+    fn flush(&self, emitted: &mut Emitted) {
+        let mask = self.dirty_domains.swap(0, Ordering::AcqRel);
+        if mask == 0 {
+            return;
+        }
+        let mut changed = diff_parts(&mut emitted.parts, self.build_parts(mask));
+        let mut append = None;
+        if mask & Domain::Events.bit() != 0 {
+            let log = self.events.lock().unwrap();
+            let fresh = log.seq.saturating_sub(emitted.events_seq) as usize;
+            let known = emitted.parts.contains_key("events");
+            if fresh > 0 || !known {
+                emitted.parts.insert("events", to_json(&log.list));
+                emitted.events_seq = log.seq;
+                if known && fresh < log.list.len() {
+                    append = Some(to_json(&log.list.iter().take(fresh).collect::<Vec<_>>()));
+                } else {
+                    changed.push("events");
+                }
+            }
+        }
+        if changed.is_empty() && append.is_none() {
+            return;
+        }
+        emitted.version += 1;
+        let mut payload =
+            format!("{{\"version\":{},\"domains\":{}", emitted.version, compose(&emitted.parts, &changed, false));
+        if let Some(items) = append {
+            payload.push_str(&format!(",\"eventsAppend\":{items},\"eventsMax\":{MAX_EVENTS}"));
+        }
+        payload.push('}');
+        if let Err(e) = self.handle.emit("snapshot-patch", raw(payload)) {
+            tracing::warn!("envoi de l'état : {e}");
+        }
+    }
+
+    /// État complet (forme `Snapshot` de l'interface) et sa version, pour le chargement de
+    /// l'interface : les mises à jour suivantes (« snapshot-patch ») s'appliquent par-dessus
+    pub fn snapshot(&self) -> Box<serde_json::value::RawValue> {
+        let mut emitted = self.emitted.lock().unwrap();
+        // Modifications en attente envoyées d'abord : l'état rendu est exactement celui de la version
+        self.flush(&mut emitted);
+        let keys: Vec<&'static str> = emitted.parts.keys().copied().collect();
+        let mut parts = emitted.parts.clone();
+        parts.insert("version", emitted.version.to_string());
+        let mut keys = keys;
+        keys.push("version");
+        raw(compose(&parts, &keys, true))
     }
 
     /// Toutes les chaînes affichées : listes des comptes, chaînes surveillées, chaîne des drops
@@ -386,7 +545,7 @@ impl App {
                     match crate::twitch::gql::channel_languages(&app.http, &wanted).await {
                         Ok(found) if !found.is_empty() => {
                             app.languages.write().unwrap().extend(found);
-                            app.touch();
+                            app.touch_domain(Domain::Languages);
                             if full {
                                 full_at = Some(std::time::Instant::now());
                             }
@@ -420,19 +579,78 @@ impl App {
         }
     }
 
+    /// État modifié sans préciser quoi : tout est reconstruit (seul ce qui a changé part)
     pub fn touch(&self) {
+        self.dirty_domains.fetch_or(Domain::ALL, Ordering::AcqRel);
         self.dirty.notify_one();
     }
 
-    /// Envoie l'état à l'interface au plus toutes les 250 ms
+    /// Une partie de l'état a changé : elle seule est reconstruite au prochain envoi
+    pub fn touch_domain(&self, domain: Domain) {
+        self.dirty_domains.fetch_or(domain.bit(), Ordering::AcqRel);
+        self.dirty.notify_one();
+    }
+
+    /// Envoie à l'interface les parties modifiées de l'état, au plus toutes les 250 ms
     pub fn spawn_emitter(self: &Arc<Self>) {
         let app = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 app.dirty.notified().await;
                 tokio::time::sleep(EMIT_DEBOUNCE).await;
-                let _ = app.handle.emit("snapshot", app.snapshot());
+                app.flush(&mut app.emitted.lock().unwrap());
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_parts_ne_garde_que_ce_qui_change() {
+        let mut sent = BTreeMap::new();
+        let first = diff_parts(&mut sent, vec![("accounts", "[]".into()), ("sync", "{\"a\":1}".into())]);
+        assert_eq!(first, vec!["accounts", "sync"]);
+        // Même JSON : rien à envoyer
+        assert!(diff_parts(&mut sent, vec![("accounts", "[]".into()), ("sync", "{\"a\":1}".into())]).is_empty());
+        // Une seule partie change ; les absentes (non reconstruites) restent mémorisées
+        assert_eq!(diff_parts(&mut sent, vec![("sync", "{\"a\":2}".into())]), vec!["sync"]);
+        assert_eq!(sent.get("accounts").map(String::as_str), Some("[]"));
+        assert_eq!(sent.get("sync").map(String::as_str), Some("{\"a\":2}"));
+    }
+
+    #[test]
+    fn compose_range_les_sous_cles() {
+        let mut parts = BTreeMap::new();
+        parts.insert("paused", "false".to_string());
+        parts.insert("giveaways.games", "[]".to_string());
+        parts.insert("giveaways.mentions", "[1]".to_string());
+        let keys: Vec<&'static str> = parts.keys().copied().collect();
+        let nested: serde_json::Value = serde_json::from_str(&compose(&parts, &keys, true)).unwrap();
+        assert_eq!(nested, serde_json::json!({ "paused": false, "giveaways": { "games": [], "mentions": [1] } }));
+        let flat: serde_json::Value = serde_json::from_str(&compose(&parts, &["giveaways.games"], false)).unwrap();
+        assert_eq!(flat, serde_json::json!({ "giveaways.games": [] }));
+        assert_eq!(compose(&parts, &[], false), "{}");
+    }
+
+    #[test]
+    fn domaines_distincts() {
+        let all = [
+            Domain::Misc,
+            Domain::Accounts,
+            Domain::Events,
+            Domain::Giveaways,
+            Domain::Languages,
+            Domain::Scanner,
+            Domain::Insights,
+            Domain::Sync,
+        ];
+        let mask = all.iter().fold(0, |m, d| {
+            assert_eq!(m & d.bit(), 0);
+            m | d.bit()
+        });
+        assert_eq!(mask, Domain::ALL);
     }
 }

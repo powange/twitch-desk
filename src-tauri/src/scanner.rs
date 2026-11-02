@@ -159,7 +159,7 @@ async fn run_scan(app: &Arc<App>, notify: bool, fetch: bool) {
         }
         state.view.scanning = true;
     }
-    app.touch();
+    app.touch_domain(crate::app::Domain::Scanner);
     let mut fetch = fetch;
     loop {
         scan_once(app, notify, fetch).await;
@@ -170,7 +170,7 @@ async fn run_scan(app: &Arc<App>, notify: bool, fetch: bool) {
         }
         fetch = false;
     }
-    app.touch();
+    app.touch_domain(crate::app::Domain::Scanner);
 }
 
 async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
@@ -309,7 +309,7 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
             },
         };
     }
-    app.touch();
+    app.touch_domain(crate::app::Domain::Scanner);
 
     if notify && !fresh.is_empty() {
         for m in fresh.iter().take(MAX_NOTIFICATIONS) {
@@ -355,7 +355,7 @@ pub fn scanner_ignore(app: State<'_, Arc<App>>, login: String, ignore: bool) {
         }
     }
     drop(state);
-    app.touch();
+    app.touch_domain(crate::app::Domain::Scanner);
 }
 
 #[cfg(test)]

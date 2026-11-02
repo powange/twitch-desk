@@ -94,7 +94,6 @@ pub struct MentionView {
 pub struct GiveawayChannelView {
     pub id: i64,
     pub login: String,
-    pub excluded: Vec<String>,
     /// Qui lit ce chat : « anonyme », le pseudo d'un compte, ou rien (pas encore rejoint)
     pub reader: Option<String>,
     /// Statut live déjà relu au moins une fois
@@ -112,6 +111,7 @@ pub struct GiveawaysView {
     pub games: Vec<GiveawayGame>,
     pub giveaways: Vec<GiveawayView>,
     pub mentions: Vec<MentionView>,
+    #[serde(skip_serializing)]
     pub anonymous_connected: bool,
     /// Réponses des bots aux commandes d'information (!giveaway…), par chaîne
     pub bot_replies: HashMap<String, Vec<crate::db::BotReply>>,
@@ -928,7 +928,6 @@ impl Monitor {
             .map(|c| GiveawayChannelView {
                 id: c.id,
                 login: c.login.clone(),
-                excluded: c.excluded.clone(),
                 reader: self.reader(&c.login).map(|src| match src {
                     ANONYMOUS => "anonyme".to_owned(),
                     id => self.account_login(id).unwrap_or("compte").to_owned(),
@@ -944,7 +943,7 @@ impl Monitor {
         let channels = self.channel_views();
         self.view.write().unwrap().channels = channels;
         self.view.write().unwrap().anonymous_connected = self.anon_connected;
-        self.app.touch();
+        self.app.touch_domain(crate::app::Domain::Giveaways);
     }
 
     fn publish(&mut self) {
@@ -966,7 +965,7 @@ impl Monitor {
             },
         };
         *self.view.write().unwrap() = view;
-        self.app.touch();
+        self.app.touch_domain(crate::app::Domain::Giveaways);
     }
 }
 
@@ -1034,7 +1033,7 @@ pub fn refresh_view(app: &App) {
         app.db.accounts().unwrap_or_default().into_iter().map(|a| (a.id, a.login.to_lowercase())).collect();
     let giveaways = build_views(app, &accounts);
     app.giveaways.view.write().unwrap().giveaways = giveaways;
-    app.touch();
+    app.touch_domain(crate::app::Domain::Giveaways);
 }
 
 /// Chaînes prioritaires pour les points : un giveaway par points de chaîne y est ouvert

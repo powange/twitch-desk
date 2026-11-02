@@ -78,6 +78,7 @@ pub struct Giveaway {
     pub total_tickets: i64,
     pub total_users: i64,
     /// Le bot annonce-t-il les achats dans le chat ? Sinon, nos tickets restent inconnus
+    #[serde(skip_serializing)]
     pub bot_responses: bool,
 }
 
