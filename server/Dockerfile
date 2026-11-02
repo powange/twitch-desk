@@ -4,7 +4,7 @@
 # cargo-chef : les dépendances sont compilées dans une couche à part, gardée en cache tant
 # qu'elles ne changent pas (un changement de version du serveur ne les recompile pas)
 # Images de base à version fixe (mises à jour par Dependabot : .github/dependabot.yml)
-FROM node:24.22.1-slim AS web
+FROM node:26.13.0-slim AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
