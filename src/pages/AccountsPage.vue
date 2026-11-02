@@ -180,7 +180,7 @@ async function confirmRemove() {
       </table>
     </div>
 
-    <p class="text-xs text-muted max-w-[75ch]">
+    <p class="text-xs text-muted">
       Les jetons de connexion sont rangés dans le Gestionnaire d'identification de Windows, jamais en clair dans les fichiers de l'application.
       Pour reconnecter un compte, utilise « Connecter un compte » avec le même compte Twitch.
       Le compte StreamElements sert à lire tes tickets exacts et à en acheter depuis l'application ; sans lui, les tickets sont lus dans les réponses du bot.
