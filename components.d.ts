@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AccountPicker: typeof import('./src/components/AccountPicker.vue')['default']
+    AppUsage: typeof import('./src/components/AppUsage.vue')['default']
     CategorySearchInput: typeof import('./src/components/CategorySearchInput.vue')['default']
     ChannelFlag: typeof import('./src/components/ChannelFlag.vue')['default']
     ChannelProfileCard: typeof import('./src/components/ChannelProfileCard.vue')['default']
@@ -20,6 +21,7 @@ declare module 'vue' {
     ConditionHeaders: typeof import('./src/components/conditions/ConditionHeaders.vue')['default']
     GiftFormModal: typeof import('./src/components/GiftFormModal.vue')['default']
     GiftGroupsModal: typeof import('./src/components/GiftGroupsModal.vue')['default']
+    GiftPreviewModal: typeof import('./src/components/GiftPreviewModal.vue')['default']
     GiveawayConditions: typeof import('./src/components/GiveawayConditions.vue')['default']
     GiveawayFormModal: typeof import('./src/components/GiveawayFormModal.vue')['default']
     IgnoredCommandsEditor: typeof import('./src/components/IgnoredCommandsEditor.vue')['default']
