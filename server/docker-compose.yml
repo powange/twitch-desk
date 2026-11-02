@@ -25,6 +25,8 @@ services:
       # Web app mobile servie sous /app sur le port de l'API ; un numéro de port ici la sert
       # aussi (et seulement elle) sur ce port : le proxy joint alors twitch-desk-sync:<port>
       SYNC_WEB_PORT: ${SYNC_WEB_PORT:-}
+      # Contact donné aux services de push (notifications des téléphones) : mailto:… ou https://…
+      SYNC_PUSH_CONTACT: ${SYNC_PUSH_CONTACT:-https://github.com/powange/twitch-desk}
     volumes:
       - twitch-desk-sync:/data
     # Port publié sur l'hôte en HTTP simple : limité à l'hôte lui-même par défaut (le proxy

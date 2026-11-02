@@ -27,6 +27,7 @@
 //! publié par son application ; il n'écrit rien.
 
 mod mobile;
+mod push;
 mod web;
 
 use std::collections::{BTreeSet, HashMap};
@@ -98,11 +99,15 @@ struct Server {
     notices: broadcast::Sender<mobile::Notice>,
     /// Fichiers de la web app (`SYNC_WEB_DIR`)
     web_dir: PathBuf,
+    /// Notifications push : clé VAPID et envoi
+    push: push::Push,
 }
 
 impl Server {
     fn new(code: String, collections: BTreeSet<String>, conn: Connection, proxy_hops: usize) -> rusqlite::Result<Self> {
         let seq = last_seq(&conn)?;
+        let contact = std::env::var("SYNC_PUSH_CONTACT").ok().map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+        let push = push::Push::load(&conn, contact.unwrap_or_else(|| push::DEFAULT_CONTACT.to_owned()))?;
         Ok(Server {
             code,
             collections,
@@ -115,6 +120,7 @@ impl Server {
             pairings: Mutex::new(HashMap::new()),
             notices: broadcast::channel(64).0,
             web_dir: PathBuf::from(web::DEFAULT_WEB_DIR),
+            push,
         })
     }
 
@@ -718,7 +724,21 @@ fn open_db(path: &str) -> rusqlite::Result<Connection> {
              created_at TEXT NOT NULL,
              last_seen TEXT
          );
-         CREATE INDEX IF NOT EXISTS devices_instance ON devices (instance);",
+         CREATE INDEX IF NOT EXISTS devices_instance ON devices (instance);
+         -- Notifications push (0.7) : réglages du serveur (clé VAPID), abonnement de chaque
+         -- appareil et alertes choisies (liste JSON)
+         CREATE TABLE IF NOT EXISTS meta (
+             key TEXT PRIMARY KEY,
+             value TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS push_subscriptions (
+             device TEXT PRIMARY KEY,
+             endpoint TEXT NOT NULL,
+             p256dh TEXT NOT NULL,
+             auth TEXT NOT NULL,
+             events TEXT NOT NULL,
+             created_at TEXT NOT NULL
+         );",
     )?;
     // Bases d'avant la 0.4 : l'historique gardait le contenu de chaque version (lu par
     // personne) ; il est vidé de ce contenu et la place libérée au fil des ménages
@@ -787,11 +807,14 @@ fn app(server: Shared) -> Router {
         .route("/api/v1/instances/{id}/devices", get(mobile::list_devices))
         .route("/api/v1/instances/{id}/devices/{device}", delete(mobile::revoke_device))
         .route("/api/v1/pair/start", post(mobile::pair_start))
+        .route("/api/v1/instances/{id}/notify", post(push::notify))
         // Code vérifié avant la lecture du corps (route_layer : routes connues seulement)
         .route_layer(middleware::from_fn_with_state(server.clone(), require_code));
-    // Code partagé ou jeton d'appareil : lecture seule
+    // Code partagé ou jeton d'appareil : lecture seule, et abonnement aux notifications de
+    // l'appareil lui-même
     let read = Router::new()
         .route("/api/v1/app/overview", get(mobile::overview))
+        .route("/api/v1/app/push", get(push::get_push).put(push::put_push).delete(push::delete_push))
         .route_layer(middleware::from_fn_with_state(server.clone(), require_access));
     // Association : sans code, limitée par adresse dans la route
     let open = Router::new().route("/api/v1/pair/claim", post(mobile::pair_claim));
@@ -1366,6 +1389,49 @@ mod tests {
         assert_eq!(status(&s, request("DELETE", &revoke, Some("code-secret"), "8.8.8.2", "")).await, StatusCode::NOT_FOUND);
         // L'appareil de l'autre application reste associé
         assert_eq!(status(&s, request_auth("GET", "/api/v1/app/overview", &format!("Device {other_token}"), "8.8.8.3", "")).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn phones_subscribe_to_the_alerts_they_choose() {
+        let s = server(&["giveaways"]);
+        let (token, device) = paired_device(&s, INSTANCE).await;
+        let (token2, _) = paired_device(&s, INSTANCE).await;
+        let (auth, auth2) = (format!("Device {token}"), format!("Device {token2}"));
+        let (status_code, v) = json_of(&s, request_auth("GET", "/api/v1/app/push", &auth, "7.7.7.1", "")).await;
+        assert_eq!(status_code, StatusCode::OK);
+        assert_eq!(v["publicKey"], s.push.public_key.as_str());
+        assert!(v["endpoint"].is_null());
+        // Clés d'un navigateur (point de la courbe P-256 valide)
+        let p256dh = "BLn9b-VR0ca83knDNZ32dCHGyjJp-1riX9ZTN40MqV8K_LpQmLqxC_DoHvqvFXO_nGdAB4W9dogZb_sM-uV4JbY";
+        let sub = |endpoint: &str, events: &str| {
+            format!(r#"{{"endpoint":"{endpoint}","keys":{{"p256dh":"{p256dh}","auth":"_ordMnz7uTCmrpBTeUV4Bw"}},"events":{events}}}"#)
+        };
+        let local = sub("https://127.0.0.1/x", r#"["win"]"#);
+        assert_eq!(status(&s, request_auth("PUT", "/api/v1/app/push", &auth, "7.7.7.1", &local)).await, StatusCode::BAD_REQUEST);
+        let body = sub("https://push.example.com/a", r#"["win","giveaway","inconnue","win"]"#);
+        let (status_code, v) = json_of(&s, request_auth("PUT", "/api/v1/app/push", &auth, "7.7.7.1", &body)).await;
+        assert_eq!(status_code, StatusCode::OK);
+        assert_eq!(v["events"], serde_json::json!(["giveaway", "win"]));
+        let body2 = sub("https://push.example.com/b", r#"["win"]"#);
+        assert_eq!(status(&s, request_auth("PUT", "/api/v1/app/push", &auth2, "7.7.7.1", &body2)).await, StatusCode::OK);
+        // Le code partagé n'a pas d'abonnement ; un appareil n'envoie pas d'alerte
+        assert_eq!(status(&s, request("PUT", "/api/v1/app/push", Some("code-secret"), "7.7.7.1", &body)).await, StatusCode::BAD_REQUEST);
+        let notify_uri = format!("/api/v1/instances/{INSTANCE}/notify");
+        let alert = |a: &str| format!(r#"{{"alert":"{a}","title":"Titre","body":"Texte"}}"#);
+        assert_eq!(status(&s, request_auth("POST", &notify_uri, &auth, "7.7.7.1", &alert("win"))).await, StatusCode::UNAUTHORIZED);
+        let targets = |a: &str| push::targets(&s.db.lock().unwrap(), INSTANCE, a).unwrap().len();
+        assert_eq!((targets("win"), targets("giveaway"), targets("scanner")), (2, 1, 0));
+        assert_eq!(push::targets(&s.db.lock().unwrap(), "autre-application-1", "win").unwrap().len(), 0);
+        let (status_code, v) = json_of(&s, request("POST", &notify_uri, Some("code-secret"), "7.7.7.1", &alert("scanner"))).await;
+        assert_eq!((status_code, v["devices"].as_u64()), (StatusCode::OK, Some(0)));
+        assert_eq!(status(&s, request("POST", &notify_uri, Some("code-secret"), "7.7.7.1", &alert("autre"))).await, StatusCode::BAD_REQUEST);
+        // Appareil révoqué : son abonnement part avec lui
+        let revoke_uri = format!("/api/v1/instances/{INSTANCE}/devices/{device}");
+        assert_eq!(status(&s, request("DELETE", &revoke_uri, Some("code-secret"), "7.7.7.1", "")).await, StatusCode::NO_CONTENT);
+        assert_eq!((targets("win"), targets("giveaway")), (1, 0));
+        // Désabonnement
+        assert_eq!(status(&s, request_auth("DELETE", "/api/v1/app/push", &auth2, "7.7.7.1", "")).await, StatusCode::NO_CONTENT);
+        assert_eq!(targets("win"), 0);
     }
 
     #[tokio::test]

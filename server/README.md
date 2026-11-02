@@ -8,7 +8,7 @@ Ce qui reste propre à chacun : comptes Twitch, participations, gains et lots re
 
 Dans l'application, chacun choisit parmi les données proposées par le serveur celles qu'il synchronise (Paramètres → Synchronisation). Les chaînes surveillées sont décochées par défaut : chacun garde sa liste tant qu'il ne coche pas la case.
 
-Depuis la 0.6, le serveur sert aussi une **web app mobile** (`/app`) : sur le téléphone, les giveaways ouverts et en pause, la commande à copier, les lots, les conditions, l'heure du tirage, le statut live de la chaîne et les comptes de *ton* PC qui ont déjà participé. Elle ne modifie rien (lecture seule).
+Depuis la 0.6, le serveur sert aussi une **web app mobile** (`/app`) : sur le téléphone, les giveaways ouverts et en pause, la commande à copier, les lots, les conditions, l'heure du tirage, le statut live de la chaîne et les comptes de *ton* PC qui ont déjà participé. Elle ne modifie rien (lecture seule). Depuis la 0.7, elle reçoit aussi les alertes du PC en **notifications push**.
 
 ## Installation (Portainer)
 
@@ -53,7 +53,7 @@ Sans temps réel (serveur d'avant la 0.5 ou proxy qui bloque le flux), l'applica
 Dans l'application : Paramètres → Synchronisation → « Connecter un téléphone ». Un code à 6 chiffres s'affiche avec un QR code (lien `https://<serveur>/app/#pair=<code>`) : le scanner avec l'appareil photo ouvre la web app, qui se connecte seule ; sinon ouvrir `https://<serveur>/app/` et taper le code. Le téléphone apparaît alors dans la liste « Téléphones connectés », d'où on peut le déconnecter. Sur le téléphone, « Ajouter à l'écran d'accueil » l'installe comme une application.
 
 - Le code vaut 5 minutes, une seule fois ; un nouveau code remplace le précédent. Après 5 codes incorrects en 10 minutes, une adresse est refusée pendant 10 minutes.
-- Le téléphone reçoit son propre jeton (le code du serveur ne quitte jamais le PC). Le serveur n'en garde que l'empreinte (SHA-256). Ce jeton ne permet que de lire les giveaways ouverts et l'état publié par le PC qui l'a associé : aucune écriture.
+- Le téléphone reçoit son propre jeton (le code du serveur ne quitte jamais le PC). Le serveur n'en garde que l'empreinte (SHA-256). Ce jeton ne permet que de lire les giveaways ouverts et l'état publié par le PC qui l'a associé, et de gérer son propre abonnement aux notifications : rien d'autre.
 - Déconnecter un téléphone depuis le PC refuse son jeton aussitôt et ferme sa connexion temps réel.
 - Chaque PC publie un petit état (comptes, participations aux giveaways ouverts, statut live de leurs chaînes) quelques secondes après un changement : le téléphone se met à jour en temps réel.
 
@@ -80,6 +80,16 @@ Si la web app est publiée à une autre adresse que celle du serveur, l'indiquer
 
 Le flux temps réel du téléphone (`/api/v1/events`) passe par les mêmes règles que celui des applications (voir plus haut). Le jeton du téléphone voyage dans l'en-tête `Authorization`, jamais dans l'adresse : il n'apparaît pas dans les journaux du proxy.
 
+### Notifications push (0.7)
+
+Depuis la web app (menu ⋮ → Notifications), un téléphone s'abonne aux alertes de son choix : giveaway détecté, gain, rappel de tirage, mention, scanner. L'application du PC envoie chaque alerte au serveur, qui la transmet aux téléphones abonnés (Web Push), même web app fermée.
+
+- La web app doit être servie en **HTTPS** (exigence des navigateurs).
+- Sur iPhone et iPad (iOS 16.4 ou plus) : ajouter d'abord la web app à l'écran d'accueil, puis activer les notifications depuis cette icône.
+- Le serveur doit pouvoir joindre Internet en sortie (services de push de Google, Apple, Mozilla).
+- Une clé VAPID est créée au premier démarrage et gardée dans la base : la conserver (volume `/data`), sinon les téléphones devront réactiver leurs notifications.
+- Le contenu de chaque notification est chiffré pour le téléphone : le service de push ne le lit pas. Déconnecter un téléphone efface aussi son abonnement.
+
 ## Variables d'environnement
 
 | Variable | Défaut | Rôle |
@@ -91,6 +101,7 @@ Le flux temps réel du téléphone (`/api/v1/events`) passe par les mêmes règl
 | `SYNC_DB` | `/data/sync.db` | Fichier SQLite (volume `/data`) |
 | `SYNC_PORT` | `8787` | Port d'écoute |
 | `SYNC_WEB_PORT` | (aucun) | Port supplémentaire qui ne sert que la web app (`/app`) ; sans lui, elle est servie sur `SYNC_PORT` seulement |
+| `SYNC_PUSH_CONTACT` | `https://github.com/powange/twitch-desk` | Contact donné aux services de push dans la signature VAPID (`mailto:…` ou `https://…`) |
 | `SYNC_WEB_DIR` | `/usr/share/twitch-desk-sync/web` | Fichiers de la web app (remplis dans l'image) |
 | `SYNC_HOST_BIND` | `127.0.0.1` | (compose) Interface de l'hôte où le port est publié |
 | `SYNC_HOST_PORT` | `8787` | (compose) Port publié sur l'hôte |

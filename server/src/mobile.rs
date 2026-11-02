@@ -3,7 +3,7 @@
 //! chaque application (participations, statut live) et vue d'ensemble lue par la web app.
 //!
 //! Un appareil associé ne lit que la vue d'ensemble de son application et le flux
-//! d'événements : aucune route d'écriture ne l'accepte. Son jeton n'est gardé que sous forme
+//! d'événements ; il n'écrit que son propre abonnement aux notifications (`push`). Son jeton n'est gardé que sous forme
 //! d'empreinte SHA-256 ; le supprimer (révocation) le refuse aussitôt et ferme son flux.
 
 use std::collections::HashMap;
@@ -228,8 +228,13 @@ pub async fn list_devices(State(server): State<Shared>, Path(id): Path<String>) 
 pub async fn revoke_device(State(server): State<Shared>, Path((id, device)): Path<(String, String)>) -> Result<StatusCode, ApiError> {
     check_instance(&id)?;
     let target = device.clone();
-    let n = with_db(&server, move |conn| Ok(conn.execute("DELETE FROM devices WHERE id = ?1 AND instance = ?2", params![target, id])?))
-        .await?;
+    let n = with_db(&server, move |conn| {
+        let n = conn.execute("DELETE FROM devices WHERE id = ?1 AND instance = ?2", params![target, id])?;
+        // Plus de notifications pour lui
+        conn.execute("DELETE FROM push_subscriptions WHERE device = ?1", [&target])?;
+        Ok(n)
+    })
+    .await?;
     if n == 0 {
         return Err(ApiError::NotFound("Appareil inconnu".into()));
     }

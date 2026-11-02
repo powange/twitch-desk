@@ -1,7 +1,7 @@
 [package]
 name = "twitch-desk-sync"
-version = "0.6.0"
-description = "Serveur de synchronisation de Twitch Desk : cadeaux, groupes, giveaways, chaînes et fiches de streamers mis en commun, web app mobile"
+version = "0.7.0"
+description = "Serveur de synchronisation de Twitch Desk : cadeaux, groupes, giveaways, chaînes et fiches de streamers mis en commun, web app mobile et ses notifications push"
 edition = "2021"
 license = "MIT"
 publish = false
@@ -19,6 +19,11 @@ sha2 = "0.10"
 rand = "0.9"
 chrono = "0.4"
 tracing = "0.1"
+# Notifications push (Web Push : chiffrement aes128gcm, signature VAPID) ; certificats racine
+# intégrés (l'image n'a pas de magasin de certificats)
+web-push-native = "0.5"
+base64ct = { version = "1", features = ["alloc"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
