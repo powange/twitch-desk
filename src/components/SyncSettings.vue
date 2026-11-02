@@ -41,6 +41,17 @@ onMounted(async () => {
 })
 
 const syncView = computed(() => snapshot.value?.sync)
+// Flux temps réel : modifications des autres reçues aussitôt (sinon toutes les 30 s)
+const live = computed(() => {
+  switch (syncView.value?.live) {
+    case 'connected': return { label: 'connecté', class: 'text-success' }
+    case 'connecting': return { label: 'connexion…', class: 'text-muted' }
+    case 'reconnecting': return { label: 'reconnexion…', class: 'text-warning' }
+    case 'unavailable': return { label: 'indisponible (serveur ancien : mets-le à jour pour recevoir les modifications aussitôt)', class: 'text-muted' }
+    case 'refused': return { label: 'en pause (code refusé)', class: 'text-warning' }
+    default: return null
+  }
+})
 const status = computed(() => {
   const s = syncView.value
   if (!s || s.status === 'off') return { label: 'Désactivée', color: 'neutral' as const }
@@ -150,6 +161,9 @@ async function save(value = wanted.value) {
         <UButton label="Synchroniser maintenant" icon="i-lucide-refresh-cw" size="sm" color="neutral" variant="soft" :loading="syncView.status === 'syncing' || busy('sync')" @click="syncNow" />
       </div>
       <p v-if="syncView.error" class="text-sm text-error">{{ syncView.error }}</p>
+      <div v-if="live" class="text-sm">
+        <span class="text-muted">Temps réel :</span> <span :class="live.class">{{ live.label }}</span>
+      </div>
       <div v-if="offered.length" class="flex flex-col gap-2 pt-1">
         <div class="text-sm font-medium">Données synchronisées</div>
         <div class="text-xs text-muted">Celles que propose le serveur. Une donnée décochée reste sur ce poste sans être envoyée ni reçue.</div>

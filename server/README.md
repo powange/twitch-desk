@@ -2,7 +2,7 @@
 
 Serveur de synchronisation de Twitch Desk : plusieurs personnes mettent en commun ce qu'elles ajoutent dans l'application (cadeaux, groupes, giveaways, chaînes surveillées, fiches des streamers, formulations de gagnant et bots ajoutés).
 
-Chaque application envoie ses modifications et récupère celles des autres toutes les 30 secondes (et quelques secondes après une modification). La dernière modification reçue l'emporte ; une suppression s'applique chez tout le monde. Deux personnes qui créent le même élément (même cadeau, même groupe, même giveaway ouvert sur une chaîne) se retrouvent avec un seul élément.
+Chaque application envoie ses modifications et récupère celles des autres toutes les 30 secondes (et quelques secondes après une modification). Depuis la 0.5, le serveur prévient aussi les applications en temps réel dès qu'une modification arrive : elles la récupèrent tout de suite (le passage régulier s'espace alors à quelques minutes). La dernière modification reçue l'emporte ; une suppression s'applique chez tout le monde. Deux personnes qui créent le même élément (même cadeau, même groupe, même giveaway ouvert sur une chaîne) se retrouvent avec un seul élément.
 
 Ce qui reste propre à chacun : comptes Twitch, participations, gains et lots reçus, points, drops, réglages.
 
@@ -22,7 +22,27 @@ Mettre le serveur derrière un proxy HTTPS (Nginx Proxy Manager, Traefik, Caddy�
 
 Le port publié sur l'hôte sert en HTTP simple : il n'est ouvert qu'à l'hôte lui-même (`127.0.0.1`) par défaut, pour un proxy installé sur l'hôte ou un essai local. Pour l'ouvrir aux autres machines (proxy sur une autre machine, réseau local), définir `SYNC_HOST_BIND=0.0.0.0` (ou l'adresse d'une interface), en sachant que le code y passe en clair ; joint ainsi sans proxy, mettre aussi `SYNC_PROXY_HOPS=0`.
 
-Protection : après 10 codes incorrects en 10 minutes depuis une même adresse, celle-ci est refusée (réponse 429) pendant 15 minutes. Derrière un proxy, l'adresse du client est celle que le proxy ajoute à `X-Forwarded-For` (`SYNC_PROXY_HOPS` : nombre de proxys en chaîne, 1 par défaut). Le code est vérifié avant la lecture du corps de la requête ; 16 requêtes au plus sont traitées en même temps, chacune abandonnée après 45 s.
+Protection : après 10 codes incorrects en 10 minutes depuis une même adresse, celle-ci est refusée (réponse 429) pendant 15 minutes. Derrière un proxy, l'adresse du client est celle que le proxy ajoute à `X-Forwarded-For` (`SYNC_PROXY_HOPS` : nombre de proxys en chaîne, 1 par défaut). Le code est vérifié avant la lecture du corps de la requête ; 16 requêtes au plus sont traitées en même temps, chacune abandonnée après 45 s. Les flux temps réel (`/api/v1/events`) n'entrent pas dans cette limite : 64 au plus restent ouverts en même temps (au-delà, réponse 503 ; l'application réessaie et garde en attendant son passage toutes les 30 s).
+
+### Temps réel derrière un proxy
+
+`/api/v1/events` est une connexion qui reste ouverte (Server-Sent Events) : le proxy doit transmettre chaque événement sans le garder en mémoire tampon, et ne pas couper une connexion calme trop tôt (le serveur envoie un commentaire toutes les 20 s).
+
+- Nginx Proxy Manager, Traefik, Caddy : rien à régler d'habitude (le serveur envoie `X-Accel-Buffering: no`, que Nginx respecte).
+- Nginx écrit à la main, au besoin :
+
+  ```nginx
+  location /api/v1/events {
+      proxy_pass http://twitch-desk-sync:8787;
+      proxy_http_version 1.1;
+      proxy_buffering off;
+      proxy_read_timeout 1h;
+  }
+  ```
+
+- Cloudflare et autres CDN : les flux longs peuvent être coupés ; l'application se reconnecte seule.
+
+Sans temps réel (serveur d'avant la 0.5 ou proxy qui bloque le flux), l'application continue de synchroniser toutes les 30 s.
 
 ## Variables d'environnement
 
@@ -51,5 +71,6 @@ Toutes les routes sauf `/health` demandent `Authorization: Bearer <SYNC_CODE>`.
 - `GET /api/v1/info` : version, collections partagées, numéro de la dernière modification
 - `GET /api/v1/changes?since=<seq>&limit=<n>` : documents modifiés depuis `seq` (dernière version de chacun, suppressions comprises), `more` s'il en reste (page de 16 Mo de contenu au plus)
 - `POST /api/v1/changes` (16 Mo au plus) : `{ "author": "pseudo", "changes": [{ "collection": "gifts", "id": "…", "data": { … } }, { "collection": "gifts", "id": "…", "deleted": true }] }`
+- `GET /api/v1/events` (0.5 et plus) : flux Server-Sent Events ; à l'ouverture puis à chaque modification enregistrée, `event: seq` avec `data: {"seq": <numéro de la dernière modification>}` (des modifications rapprochées peuvent n'en donner qu'un) ; un commentaire toutes les 20 s garde la connexion ouverte. 503 quand 64 flux sont déjà ouverts
 
 À la première ouverture par la 0.4, une base existante est compactée une fois (`VACUUM`) après que le contenu est retiré de l'historique : le démarrage peut prendre quelques secondes de plus.

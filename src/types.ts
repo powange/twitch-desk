@@ -100,6 +100,8 @@ export interface SyncView {
   received: number
   // Augmente à chaque modification reçue
   revision: number
+  // Flux temps réel du serveur (0.5 et plus) : modifications des autres reçues aussitôt
+  live: 'off' | 'connecting' | 'connected' | 'reconnecting' | 'unavailable' | 'refused'
 }
 
 export interface ChannelInsight {

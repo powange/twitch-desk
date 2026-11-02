@@ -8,6 +8,11 @@
 //!
 //! Deux applications qui créent le même élément (même cadeau, même groupe, même giveaway
 //! ouvert) le fusionnent : chacune garde le plus petit identifiant, l'autre est supprimé.
+//!
+//! Temps réel (serveur 0.5 et plus) : un flux Server-Sent Events (`/api/v1/events`) annonce
+//! chaque modification enregistrée ; un passage est lancé tout de suite et le passage régulier
+//! s'espace tant que le flux est ouvert. Sans flux (serveur plus ancien, proxy qui le bloque),
+//! le passage reste toutes les 30 s.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -25,6 +30,19 @@ use crate::giveaways::MonitorCmd;
 /// Collections, dans l'ordre où les appliquer (groupes avant cadeaux, cadeaux avant giveaways)
 pub const COLLECTIONS: [&str; 6] = ["groups", "gifts", "giveaways", "channels", "streamers", "detection"];
 const EVERY: Duration = Duration::from_secs(30);
+/// Passage régulier quand le serveur annonce ses modifications en temps réel
+const EVERY_LIVE: Duration = Duration::from_secs(3 * 60);
+/// Flux temps réel : attente avant de se reconnecter, doublée à chaque échec
+const LIVE_RETRY_MIN: Duration = Duration::from_secs(2);
+const LIVE_RETRY_MAX: Duration = Duration::from_secs(60);
+/// Serveur sans flux (avant la 0.5) ou code refusé : nouvel essai bien plus tard
+const LIVE_PAUSE: Duration = Duration::from_secs(30 * 60);
+/// Rien reçu pendant ce délai (le serveur envoie un commentaire toutes les 20 s) : connexion perdue
+const LIVE_IDLE: Duration = Duration::from_secs(60);
+/// Connexion renouvelée au plus tard après ce délai
+const LIVE_MAX: Duration = Duration::from_secs(3600);
+/// Flux fermé plus tôt que ça après l'ouverture : compté comme un échec (proxy qui le coupe)
+const LIVE_SHORT: Duration = Duration::from_secs(30);
 /// Après une modification locale : petit délai pour regrouper les envois
 const DEBOUNCE: Duration = Duration::from_secs(2);
 const CODE_KEY: &str = "sync:code";
@@ -56,17 +74,35 @@ pub struct SyncView {
     pub received: u64,
     /// Augmente à chaque modification reçue : l'interface relit ses données
     pub revision: u64,
+    /// Flux temps réel : « off », « connecting », « connected », « reconnecting »,
+    /// « unavailable » (serveur d'avant la 0.5) ou « refused » (code refusé)
+    pub live: String,
 }
 
 #[derive(Default)]
 pub struct SyncHandle {
     view: Mutex<SyncView>,
     wake: tokio::sync::Notify,
+    /// Modification annoncée par le serveur : passage tout de suite, sans DEBOUNCE
+    pull: tokio::sync::Notify,
+    /// Réglages changés : le flux temps réel est rouvert
+    reconfigure: tokio::sync::Notify,
+    /// État du flux temps réel (voir `SyncView::live`), vide : « off »
+    live: Mutex<&'static str>,
 }
 
 impl SyncHandle {
     pub fn view(&self) -> SyncView {
-        self.view.lock().unwrap().clone()
+        let mut v = self.view.lock().unwrap().clone();
+        v.live = self.live_state().to_owned();
+        v
+    }
+
+    fn live_state(&self) -> &'static str {
+        match *self.live.lock().unwrap() {
+            "" => "off",
+            s => s,
+        }
     }
 
     /// Données modifiées ou réglages changés : synchroniser bientôt
@@ -1123,7 +1159,187 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
     })
 }
 
+// --- Temps réel ---
+
+/// Lecture d'un flux Server-Sent Events, morceau par morceau
+#[derive(Default)]
+struct EventParser {
+    line: Vec<u8>,
+    event: String,
+    data: String,
+}
+
+impl EventParser {
+    /// Ligne plus longue : ignorée (rien de tel n'est attendu)
+    const MAX_LINE: usize = 64 * 1024;
+
+    /// Morceau reçu : numéros annoncés par les événements `seq` complets
+    fn feed(&mut self, bytes: &[u8]) -> Vec<i64> {
+        let mut seqs = vec![];
+        for &b in bytes {
+            if b != b'\n' {
+                if self.line.len() < Self::MAX_LINE {
+                    self.line.push(b);
+                }
+                continue;
+            }
+            let raw = std::mem::take(&mut self.line);
+            let text = String::from_utf8_lossy(&raw);
+            let line = text.strip_suffix('\r').unwrap_or(&text);
+            if line.is_empty() {
+                // Ligne vide : fin de l'événement
+                let event = std::mem::take(&mut self.event);
+                let data = std::mem::take(&mut self.data);
+                if matches!(event.as_str(), "" | "seq") {
+                    if let Some(seq) = parse_seq(&data) {
+                        seqs.push(seq);
+                    }
+                }
+            } else if !line.starts_with(':') {
+                // « : » au début : commentaire (maintien de la connexion)
+                let (field, value) = line.split_once(':').map_or((line, ""), |(f, v)| (f, v.strip_prefix(' ').unwrap_or(v)));
+                match field {
+                    "event" => self.event = value.to_owned(),
+                    "data" => {
+                        if !self.data.is_empty() {
+                            self.data.push('\n');
+                        }
+                        self.data.push_str(value);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        seqs
+    }
+}
+
+/// `{"seq": 42}` (ou `42`)
+fn parse_seq(data: &str) -> Option<i64> {
+    let v: Value = serde_json::from_str(data.trim()).ok()?;
+    v.as_i64().or_else(|| int_of(&v, "seq"))
+}
+
+fn set_live(app: &App, state: &'static str) {
+    let previous = std::mem::replace(&mut *app.sync.live.lock().unwrap(), state);
+    if previous != state {
+        app.touch_domain(crate::app::Domain::Sync);
+    }
+}
+
+enum LiveEnd {
+    /// Flux ouvert puis fermé (serveur redémarré, connexion renouvelée ou perdue)
+    Closed,
+    /// Serveur injoignable ou erreur
+    Failed,
+    /// Pas de flux sur ce serveur (avant la 0.5, ou proxy qui ne le laisse pas passer)
+    Unavailable,
+    /// Code refusé, ou adresse bloquée après trop de codes refusés
+    Refused,
+}
+
+/// Écoute le flux temps réel jusqu'à sa fermeture : chaque numéro annoncé différent du
+/// curseur lance un passage
+async fn listen(app: &App, cfg: &Config) -> LiveEnd {
+    let res = app
+        .http
+        .get(format!("{}/api/v1/events", cfg.url))
+        .bearer_auth(&cfg.code)
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        // Pas de compression : chaque événement arrive aussitôt
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .timeout(LIVE_MAX)
+        .send()
+        .await;
+    let mut res = match res {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("synchronisation en temps réel : {e}");
+            return LiveEnd::Failed;
+        }
+    };
+    match res.status() {
+        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED => return LiveEnd::Unavailable,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::TOO_MANY_REQUESTS => return LiveEnd::Refused,
+        s if !s.is_success() => {
+            tracing::debug!("synchronisation en temps réel : réponse {s}");
+            return LiveEnd::Failed;
+        }
+        _ => {}
+    }
+    let is_stream = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/event-stream"));
+    if !is_stream {
+        return LiveEnd::Unavailable;
+    }
+    set_live(app, "connected");
+    let mut parser = EventParser::default();
+    loop {
+        let chunk = match tokio::time::timeout(LIVE_IDLE, res.chunk()).await {
+            Ok(Ok(Some(chunk))) => chunk,
+            _ => return LiveEnd::Closed,
+        };
+        for seq in parser.feed(&chunk) {
+            // Numéro différent du curseur : modifications à lire (celles des autres, ou notre
+            // propre envoi, relu sans effet) ; serveur remis à zéro : le passage s'en charge
+            let cursor = meta(&app.db.conn(), "cursor").and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
+            if seq != cursor {
+                app.sync.pull.notify_one();
+            }
+        }
+    }
+}
+
+/// Flux temps réel tant que la synchronisation est activée ; rouvert quand les réglages changent
+fn spawn_live(app: Arc<App>) {
+    tauri::async_runtime::spawn(async move {
+        let mut retry = LIVE_RETRY_MIN;
+        loop {
+            let Some(cfg) = config(&app) else {
+                set_live(&app, "off");
+                retry = LIVE_RETRY_MIN;
+                app.sync.reconfigure.notified().await;
+                continue;
+            };
+            if app.sync.live_state() != "reconnecting" {
+                set_live(&app, "connecting");
+            }
+            let opened = std::time::Instant::now();
+            let end = tokio::select! {
+                end = listen(&app, &cfg) => end,
+                _ = app.sync.reconfigure.notified() => {
+                    retry = LIVE_RETRY_MIN;
+                    continue;
+                }
+            };
+            let (state, wait) = match end {
+                LiveEnd::Closed if opened.elapsed() >= LIVE_SHORT => {
+                    retry = LIVE_RETRY_MIN;
+                    ("reconnecting", LIVE_RETRY_MIN)
+                }
+                LiveEnd::Closed | LiveEnd::Failed => {
+                    let wait = retry;
+                    retry = (retry * 2).min(LIVE_RETRY_MAX);
+                    ("reconnecting", wait)
+                }
+                LiveEnd::Unavailable => ("unavailable", LIVE_PAUSE),
+                // Pas d'essais répétés : ils finiraient par bloquer l'adresse sur le serveur
+                LiveEnd::Refused => ("refused", LIVE_PAUSE),
+            };
+            set_live(&app, state);
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = app.sync.reconfigure.notified() => retry = LIVE_RETRY_MIN,
+            }
+        }
+    });
+}
+
 pub fn spawn(app: Arc<App>) {
+    spawn_live(app.clone());
     tauri::async_runtime::spawn(async move {
         loop {
             let Some(cfg) = config(&app) else {
@@ -1173,9 +1389,20 @@ pub fn spawn(app: Arc<App>) {
                 }
             }
             app.touch_domain(crate::app::Domain::Sync);
-            tokio::select! {
-                _ = tokio::time::sleep(EVERY) => {}
-                _ = app.sync.wake.notified() => tokio::time::sleep(DEBOUNCE).await,
+            // Prochain passage : toutes les 30 s, ou EVERY_LIVE tant que le flux temps réel est
+            // ouvert (vérifié toutes les 30 s : flux perdu, le rythme normal reprend)
+            let since = std::time::Instant::now();
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(EVERY) => {
+                        if app.sync.live_state() == "connected" && since.elapsed() < EVERY_LIVE {
+                            continue;
+                        }
+                    }
+                    _ = app.sync.wake.notified() => tokio::time::sleep(DEBOUNCE).await,
+                    _ = app.sync.pull.notified() => {}
+                }
+                break;
             }
         }
     });
@@ -1218,6 +1445,7 @@ pub fn save_sync_config(app: State<'_, Arc<App>>, url: String, code: Option<Stri
     set_meta(&conn, "url", &url).map_err(db_err)?;
     set_meta(&conn, "enabled", if enabled { "1" } else { "0" }).map_err(db_err)?;
     drop(conn);
+    app.sync.reconfigure.notify_one();
     app.sync.poke();
     Ok(())
 }
@@ -1264,6 +1492,10 @@ pub fn set_sync_skipped(app: State<'_, Arc<App>>, skipped: Vec<String>) -> Resul
 
 #[tauri::command]
 pub fn sync_now(app: State<'_, Arc<App>>) {
+    // Flux temps réel en attente (serveur mis à jour depuis ?) : nouvel essai tout de suite
+    if matches!(app.sync.live_state(), "reconnecting" | "unavailable" | "refused") {
+        app.sync.reconfigure.notify_one();
+    }
     app.sync.poke();
 }
 
@@ -1305,6 +1537,17 @@ mod tests {
         // Contenu qui ne correspond pas à l'identifiant, ou invalide : refusé
         assert!(!apply(&b.conn(), "detection", "bot:autre", Some(&json!({ "kind": "bot", "value": "pirate" }))).unwrap());
         assert!(!apply(&b.conn(), "detection", &rule_id("winner", "sans pseudo"), Some(&json!({ "kind": "winner", "value": "sans pseudo" }))).unwrap());
+    }
+
+    #[test]
+    fn server_events_are_read_piece_by_piece() {
+        let mut p = EventParser::default();
+        assert!(p.feed(b": keep-alive\n\nevent: seq\nda").is_empty());
+        assert_eq!(p.feed(b"ta: {\"seq\":42}\n\n"), vec![42]);
+        assert_eq!(p.feed(b"event: seq\r\ndata: {\"seq\":43}\r\n\r\nevent: seq\ndata:44\n\n"), vec![43, 44]);
+        // Autres événements et données illisibles : ignorés
+        assert!(p.feed(b"event: autre\ndata: {\"seq\":1}\n\ndata: pas du json\n\n").is_empty());
+        assert_eq!(p.feed(b"data: {\"seq\":45}\n\n"), vec![45]);
     }
 
     #[test]

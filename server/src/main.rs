@@ -14,8 +14,12 @@
 //! - `SYNC_HISTORY_DAYS` : durée de conservation de l'historique (défaut : 90 jours)
 //! - `SYNC_PROXY_HOPS` : proxys devant le serveur, pour lire l'adresse du client dans
 //!   `X-Forwarded-For` (défaut : 1 ; 0 quand le serveur est joint directement)
+//!
+//! `GET /api/v1/events` (Server-Sent Events) annonce chaque nouvelle modification : les
+//! applications abonnées relisent `/api/v1/changes` tout de suite, sans attendre leur passage.
 
 use std::collections::{BTreeSet, HashMap};
+use std::convert::Infallible;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
@@ -23,11 +27,15 @@ use std::time::{Duration, Instant};
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use tokio::sync::{watch, Semaphore};
+use tokio_stream::wrappers::WatchStream;
+use tokio_stream::StreamExt as _;
 use tower::limit::GlobalConcurrencyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 
@@ -51,6 +59,11 @@ const FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
 const BLOCK_TIME: Duration = Duration::from_secs(15 * 60);
 /// Adresses suivies au plus (au-delà, les plus anciennes sont oubliées)
 const MAX_TRACKED: usize = 10_000;
+/// Flux d'événements ouverts en même temps au plus (au-delà : 503) ; ils échappent à
+/// MAX_CONCURRENT et REQUEST_TIMEOUT, qui ne visent que les requêtes courtes
+const MAX_STREAMS: usize = 64;
+/// Commentaire envoyé sur un flux sans nouvelle, pour que les proxys ne le ferment pas
+const KEEP_ALIVE: Duration = Duration::from_secs(20);
 
 struct Server {
     code: String,
@@ -59,6 +72,38 @@ struct Server {
     /// Proxys devant le serveur (voir `SYNC_PROXY_HOPS`)
     proxy_hops: usize,
     guard: Guard,
+    /// Numéro de la dernière modification, suivi par les flux d'événements ; `None` : arrêt du
+    /// serveur, les flux se ferment
+    seq: watch::Sender<Option<i64>>,
+    /// Places des flux d'événements (MAX_STREAMS)
+    streams: Arc<Semaphore>,
+}
+
+impl Server {
+    fn new(code: String, collections: BTreeSet<String>, conn: Connection, proxy_hops: usize) -> rusqlite::Result<Self> {
+        let seq = last_seq(&conn)?;
+        Ok(Server {
+            code,
+            collections,
+            db: Mutex::new(conn),
+            proxy_hops,
+            guard: Guard::default(),
+            seq: watch::Sender::new(Some(seq)),
+            streams: Arc::new(Semaphore::new(MAX_STREAMS)),
+        })
+    }
+
+    /// Nouvelle modification annoncée aux flux (le numéro ne fait qu'avancer : deux envois
+    /// simultanés peuvent finir dans le désordre)
+    fn announce(&self, seq: i64) {
+        self.seq.send_if_modified(|current| match current {
+            Some(c) if *c < seq => {
+                *c = seq;
+                true
+            }
+            _ => false,
+        });
+    }
 }
 
 type Shared = Arc<Server>;
@@ -434,8 +479,32 @@ async fn push(State(server): State<Shared>, Json(body): Json<Push>) -> Result<Js
     .await?;
     if accepted > 0 {
         tracing::info!("{accepted} modification(s) de {}", who.as_deref().unwrap_or("?"));
+        server.announce(seq);
     }
     Ok(Json(PushResult { accepted, seq }))
+}
+
+/// `/api/v1/events` : flux Server-Sent Events. À l'ouverture puis à chaque modification
+/// enregistrée, un événement `seq` porte le numéro de la dernière modification
+/// (`data: {"seq":42}`) ; plusieurs modifications rapprochées peuvent n'en donner qu'un.
+/// Un commentaire toutes les KEEP_ALIVE garde la connexion ouverte
+async fn events(State(server): State<Shared>) -> Response {
+    let Ok(place) = server.streams.clone().try_acquire_owned() else {
+        let body = Json(serde_json::json!({ "error": "Trop de connexions en temps réel : réessayer plus tard" }));
+        return (StatusCode::SERVICE_UNAVAILABLE, [(header::RETRY_AFTER, "60")], body).into_response();
+    };
+    let stream = WatchStream::new(server.seq.subscribe()).map_while(move |seq| {
+        // La place est rendue à la fermeture du flux
+        let _place = &place;
+        let seq = seq?;
+        Some(Ok::<_, Infallible>(Event::default().event("seq").data(serde_json::json!({ "seq": seq }).to_string())))
+    });
+    // `X-Accel-Buffering` : Nginx (et Nginx Proxy Manager) transmet chaque événement sans attendre
+    (
+        [(header::HeaderName::from_static("x-accel-buffering"), "no")],
+        Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)),
+    )
+        .into_response()
 }
 
 /// `/health` : le serveur répond et la base aussi
@@ -545,7 +614,12 @@ fn app(server: Shared) -> Router {
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(GlobalConcurrencyLimitLayer::new(MAX_CONCURRENT))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, REQUEST_TIMEOUT));
-    Router::new().route("/health", get(health)).merge(api).with_state(server)
+    // Flux d'événements : connexions longues, hors de la limite de requêtes simultanées et du
+    // délai maximal (plafonnés à part, MAX_STREAMS)
+    let live = Router::new()
+        .route("/api/v1/events", get(events))
+        .route_layer(middleware::from_fn_with_state(server.clone(), require_code));
+    Router::new().route("/health", get(health)).merge(api).merge(live).with_state(server)
 }
 
 #[tokio::main]
@@ -584,7 +658,13 @@ async fn main() -> std::process::ExitCode {
     };
     let days: i64 = std::env::var("SYNC_HISTORY_DAYS").ok().and_then(|d| d.parse().ok()).unwrap_or(90).max(1);
     let proxy_hops: usize = std::env::var("SYNC_PROXY_HOPS").ok().and_then(|d| d.trim().parse().ok()).unwrap_or(1);
-    let server = Arc::new(Server { code, collections, db: Mutex::new(conn), proxy_hops, guard: Guard::default() });
+    let server = match Server::new(code, collections, conn, proxy_hops) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            tracing::error!("lecture de {path} : {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
     // Ménage quotidien de l'historique
     let pruner = server.clone();
@@ -614,7 +694,8 @@ async fn main() -> std::process::ExitCode {
         env!("CARGO_PKG_VERSION"),
         server.collections.iter().cloned().collect::<Vec<_>>().join(", ")
     );
-    let shutdown = async {
+    let stopping = server.clone();
+    let shutdown = async move {
         let ctrl_c = tokio::signal::ctrl_c();
         #[cfg(unix)]
         {
@@ -623,6 +704,8 @@ async fn main() -> std::process::ExitCode {
         }
         #[cfg(not(unix))]
         let _ = ctrl_c.await;
+        // Flux d'événements fermés : l'arrêt n'attend pas qu'ils se terminent d'eux-mêmes
+        stopping.seq.send_replace(None);
     };
     let service = app(server).into_make_service_with_connect_info::<SocketAddr>();
     if let Err(e) = axum::serve(listener, service).with_graceful_shutdown(shutdown).await {
@@ -639,13 +722,8 @@ mod tests {
     use tower::ServiceExt;
 
     fn server(collections: &[&str]) -> Shared {
-        Arc::new(Server {
-            code: "code-secret".into(),
-            collections: collections.iter().map(|c| c.to_string()).collect(),
-            db: Mutex::new(open_db(":memory:").unwrap()),
-            proxy_hops: 1,
-            guard: Guard::default(),
-        })
+        let collections = collections.iter().map(|c| c.to_string()).collect();
+        Arc::new(Server::new("code-secret".into(), collections, open_db(":memory:").unwrap(), 1).unwrap())
     }
 
     fn change(collection: &str, id: &str, data: Option<serde_json::Value>) -> IncomingChange {
@@ -799,6 +877,57 @@ mod tests {
         assert_eq!((page.changes.len(), page.more, page.seq), (2, true, 2));
         let page = read_changes(&conn, &s.collections, 0, 200, 1).unwrap();
         assert_eq!((page.changes.len(), page.more, page.seq), (1, true, 1));
+    }
+
+    /// Prochain morceau du flux, en texte (5 s au plus)
+    async fn next_event(body: &mut axum::body::BodyDataStream) -> String {
+        let chunk = tokio::time::timeout(Duration::from_secs(5), body.next()).await.expect("événement attendu");
+        String::from_utf8(chunk.unwrap().unwrap().to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn events_announce_new_changes() {
+        let s = server(&["gifts"]);
+        assert_eq!(status(&s, request("GET", "/api/v1/events", None, "7.7.7.7", "")).await, StatusCode::UNAUTHORIZED);
+
+        let res = app(s.clone()).oneshot(request("GET", "/api/v1/events", Some("code-secret"), "7.7.7.7", "")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers()[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/event-stream"));
+        assert_eq!(res.headers()["x-accel-buffering"], "no");
+        let mut body = res.into_body().into_data_stream();
+        // À l'ouverture : la dernière modification
+        assert_eq!(next_event(&mut body).await, "event: seq\ndata: {\"seq\":0}\n\n");
+
+        // Envoi accepté par une autre application : annoncé
+        let push = r#"{"author":"alice","changes":[{"collection":"gifts","id":"a","data":{"title":"Voiles"}}]}"#;
+        assert_eq!(status(&s, request("POST", "/api/v1/changes", Some("code-secret"), "7.7.7.7", push)).await, StatusCode::OK);
+        assert_eq!(next_event(&mut body).await, "event: seq\ndata: {\"seq\":1}\n\n");
+
+        // Rien de nouveau (même contenu) : pas d'événement
+        assert_eq!(status(&s, request("POST", "/api/v1/changes", Some("code-secret"), "7.7.7.7", push)).await, StatusCode::OK);
+        assert!(tokio::time::timeout(Duration::from_millis(200), body.next()).await.is_err());
+
+        // Le numéro ne recule pas
+        s.announce(0);
+        assert!(tokio::time::timeout(Duration::from_millis(200), body.next()).await.is_err());
+
+        // Arrêt du serveur : le flux se ferme
+        s.seq.send_replace(None);
+        assert!(tokio::time::timeout(Duration::from_secs(5), body.next()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn event_streams_are_capped() {
+        let s = server(&["gifts"]);
+        let all = s.streams.clone().try_acquire_many_owned(MAX_STREAMS as u32).unwrap();
+        assert_eq!(status(&s, request("GET", "/api/v1/events", Some("code-secret"), "6.6.6.6", "")).await, StatusCode::SERVICE_UNAVAILABLE);
+        drop(all);
+        let res = app(s.clone()).oneshot(request("GET", "/api/v1/events", Some("code-secret"), "6.6.6.6", "")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(s.streams.available_permits(), MAX_STREAMS - 1);
+        // Flux fermé : place rendue
+        drop(res);
+        assert_eq!(s.streams.available_permits(), MAX_STREAMS);
     }
 
     #[test]
