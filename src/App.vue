@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getVersion } from '@tauri-apps/api/app'
@@ -80,6 +81,12 @@ void listen<string>('open-streamer', async (e) => {
   }
   streamerLogin.value = e.payload
   streamerOpen.value = true
+})
+
+// Clic sur une notification Windows : page de l'alerte (scanner, gains, giveaways)
+const router = useRouter()
+void listen<string>('navigate', (e) => {
+  if (e.payload.startsWith('/') && router.currentRoute.value.path !== e.payload) void router.push(e.payload)
 })
 
 onMounted(async () => {

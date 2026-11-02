@@ -156,6 +156,35 @@ impl Alert {
             Alert::Scanner => "scanner",
         }
     }
+
+    /// Page ouverte par un clic sur la notification
+    pub fn page(self) -> &'static str {
+        match self {
+            Alert::Giveaway | Alert::Mention | Alert::Reminder => "/giveaways",
+            Alert::Win => "/giveaways/wins",
+            Alert::Scanner => "/giveaways/scanner",
+        }
+    }
+}
+
+/// Clic sur une notification Windows : fenêtre principale affichée, sur la page de l'alerte
+pub fn on_notification_click(handle: &AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+    let app = handle.clone();
+    let _ = handle.notification().on_action(move |action| {
+        if action.action_id() != "tap" {
+            return;
+        }
+        let page = action.notification().and_then(|n| n.extra().get("page")).and_then(|p| p.as_str()).map(str::to_owned);
+        let app = app.clone();
+        // Fenêtre manipulée depuis le fil principal (le gestionnaire tourne sur un autre fil)
+        let _ = app.clone().run_on_main_thread(move || {
+            crate::tray::show_main(&app);
+            if let Some(page) = page {
+                let _ = app.emit_to("main", "navigate", page);
+            }
+        });
+    });
 }
 
 /// Parties de l'état envoyées séparément à l'interface. Chaque partie n'est reconstruite
@@ -579,7 +608,7 @@ impl App {
         if !settings.notifications {
             return;
         }
-        if let Err(e) = self.handle.notification().builder().title(title).body(body).show() {
+        if let Err(e) = self.handle.notification().builder().title(title).body(body).extra("page", alert.page()).show() {
             tracing::warn!("notification : {e}");
         }
     }

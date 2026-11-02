@@ -218,6 +218,7 @@ pub fn run() {
             viewer::restore(&state);
             sync::spawn(state.clone());
             usage::set_enabled(app.handle(), settings.show_usage);
+            app::on_notification_click(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
