@@ -14,6 +14,7 @@ import ChatLogModal from '../../components/ChatLogModal.vue'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, formatDrawAt } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
+import { useGiftPreview } from '../../composables/useGiftPreview'
 import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
 import ConditionCells from '../../components/conditions/ConditionCells.vue'
 import { useConditionActions } from '../../composables/useConditionActions'
@@ -128,6 +129,7 @@ function evidenceText(g: GiveawayView) {
 }
 
 const { byId: giftById } = useGiftCatalog()
+const { openGift } = useGiftPreview()
 
 // Formulaire : null = nouveau giveaway
 const formOpen = ref(false)
@@ -338,8 +340,10 @@ function share(g: GiveawayView) {
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
                   <UTooltip v-for="id in g.giftIds" :key="id" :text="giftById.get(id)?.title ?? ''">
-                    <img v-if="giftById.get(id)?.image" :src="giftById.get(id)?.image ?? ''" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
-                    <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                    <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${giftById.get(id)?.title ?? 'le cadeau'} en grand`" @click="openGift(id)">
+                      <img v-if="giftById.get(id)?.image" :src="giftById.get(id)?.image ?? ''" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
+                      <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                    </button>
                   </UTooltip>
                   <span v-if="g.giftIds.length === 0" class="text-muted">—</span>
                 </div>

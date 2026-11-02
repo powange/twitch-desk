@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useGiftPreview } from '../../composables/useGiftPreview'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
@@ -183,6 +184,8 @@ function liveFor(iso: string | null) {
   const h = Math.floor(min / 60)
   return h ? `${h} h ${String(min % 60).padStart(2, '0')}` : `${min} min`
 }
+// Vignette d'un cadeau : affichée en grand
+const { openGift } = useGiftPreview()
 </script>
 
 <template>
@@ -340,11 +343,11 @@ function liveFor(iso: string | null) {
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-36 max-w-80">
                   <UTooltip v-for="g in giftsOf(m)" :key="g.id" :text="g.favorite ? `${g.title} (favori)` : g.title">
-                    <span class="relative">
+                    <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${g.title} en grand`" @click="openGift(g.id)">
                       <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
                       <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
                       <SolidIcon v-if="g.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
-                    </span>
+                    </button>
                   </UTooltip>
                   <span v-if="giftsOf(m).length === 0" class="text-muted">—</span>
                 </div>

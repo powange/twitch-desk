@@ -12,6 +12,7 @@ import ChatLogModal from '../../components/ChatLogModal.vue'
 import { suggestGifts, useGiftCatalog, useKnownCategories } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
+import { useGiftPreview } from '../../composables/useGiftPreview'
 import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
 import ConditionCells from '../../components/conditions/ConditionCells.vue'
 import { useConditionActions } from '../../composables/useConditionActions'
@@ -20,6 +21,7 @@ import { useAction } from '../../composables/useAction'
 import { numberList, stringList, usePersisted } from '../../composables/usePersisted'
 
 const { snapshot } = useSnapshot()
+const { openGift } = useGiftPreview()
 const toast = useToast()
 const openExternal = useOpenExternal()
 const watchStream = useWatchStream()
@@ -371,12 +373,12 @@ async function confirmRemove() {
             <td class="px-3 py-2">
               <div class="flex flex-wrap items-center gap-1 min-w-36 max-w-80">
                 <UTooltip v-for="x in channelGifts(c)" :key="x.gift.id" :text="`${x.gift.title} (${x.attached ? 'rattaché au giveaway' : 'repéré'}${x.gift.favorite ? ', favori' : ''})`">
-                  <span class="relative">
+                  <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${x.gift.title} en grand`" @click="openGift(x.gift.id)">
                     <img v-if="x.gift.image" :src="x.gift.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
                     <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
                     <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
                     <SolidIcon v-if="x.gift.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
-                  </span>
+                  </button>
                 </UTooltip>
                 <span v-if="channelGifts(c).length === 0" class="text-muted">—</span>
               </div>
