@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 use crate::app::{Alert, App, EventKind};
 use crate::db::{GiveawayChannel, GiveawayGame, GiveawayInput, GiveawayRow, NewGiveaway, GIVEAWAY_KINDS};
 use crate::twitch::gql::{Gql, StreamInfo};
-use crate::twitch::chat::{self, ChatAuth, ChatEvent, TapEvent};
+use crate::twitch::chat::{self, ChatAuth, ChatEvent, TapEvent, TapSender};
 use bots::BotEvent;
 use detect::{Detector, Evidence};
 
@@ -122,14 +122,16 @@ pub struct GiveawaysView {
 }
 
 pub struct MonitorReceivers {
-    cmd: mpsc::Receiver<MonitorCmd>,
+    cmd: mpsc::UnboundedReceiver<MonitorCmd>,
     tap: mpsc::Receiver<TapEvent>,
+    control: mpsc::UnboundedReceiver<TapEvent>,
 }
 
 /// Point d'accès au moniteur, gardé dans l'état de l'application
 pub struct GiveawayHandle {
-    cmd: mpsc::Sender<MonitorCmd>,
-    tap: mpsc::Sender<TapEvent>,
+    /// Commandes (rechargement, participation…) : file jamais pleine, aucune ne se perd
+    cmd: mpsc::UnboundedSender<MonitorCmd>,
+    tap: TapSender,
     view: Arc<RwLock<GiveawaysView>>,
     receivers: Mutex<Option<MonitorReceivers>>,
     /// Participations en cours d'envoi (giveaway, compte) : manuelle et automatique ne
@@ -139,25 +141,26 @@ pub struct GiveawayHandle {
 
 impl Default for GiveawayHandle {
     fn default() -> Self {
-        let (cmd, cmd_rx) = mpsc::channel(64);
+        let (cmd, cmd_rx) = mpsc::unbounded_channel();
         let (tap, tap_rx) = mpsc::channel(4096);
+        let (control, control_rx) = mpsc::unbounded_channel();
         Self {
             cmd,
-            tap,
+            tap: TapSender::new(tap, control),
             view: Arc::new(RwLock::new(GiveawaysView::default())),
-            receivers: Mutex::new(Some(MonitorReceivers { cmd: cmd_rx, tap: tap_rx })),
+            receivers: Mutex::new(Some(MonitorReceivers { cmd: cmd_rx, tap: tap_rx, control: control_rx })),
             sending: Mutex::new(HashSet::new()),
         }
     }
 }
 
 impl GiveawayHandle {
-    pub fn tap(&self) -> mpsc::Sender<TapEvent> {
+    pub fn tap(&self) -> TapSender {
         self.tap.clone()
     }
 
     pub fn send(&self, cmd: MonitorCmd) {
-        let _ = self.cmd.try_send(cmd);
+        let _ = self.cmd.send(cmd);
     }
 
     pub fn view(&self) -> GiveawaysView {
@@ -198,7 +201,7 @@ struct Monitor {
     /// Giveaways ouverts (toutes chaînes), relus à chaque publication : lus à chaque message
     open: Vec<GiveawayRow>,
     view: Arc<RwLock<GiveawaysView>>,
-    tap: mpsc::Sender<TapEvent>,
+    tap: TapSender,
     channels: Vec<GiveawayChannel>,
     /// Chaîne → sources (0 : anonyme, sinon compte) présentes dans son chat
     coverage: HashMap<String, BTreeSet<i64>>,
@@ -244,7 +247,7 @@ fn now_rfc3339() -> String {
 }
 
 impl Monitor {
-    fn new(app: Arc<App>, view: Arc<RwLock<GiveawaysView>>, tap: mpsc::Sender<TapEvent>) -> Self {
+    fn new(app: Arc<App>, view: Arc<RwLock<GiveawaysView>>, tap: TapSender) -> Self {
         let (live_tx, live_rx) = mpsc::channel(4);
         Self {
             app,
@@ -293,7 +296,10 @@ impl Monitor {
         let mut live_rx = self.live_rx.take().expect("moniteur lancé une fois");
         loop {
             tokio::select! {
-                Some(event) = rx.tap.recv() => self.on_tap(event),
+                // Dans l'ordre : contrôle d'abord (une chaîne rejointe est connue avant ses premiers
+                // messages), messages du chat en dernier
+                biased;
+                Some(event) = rx.control.recv() => self.on_tap(event),
                 Some(cmd) = rx.cmd.recv() => self.on_cmd(cmd),
                 event = next_anon(&mut self.anon_events) => match event {
                     Some(ChatEvent::Connected(c)) => {
@@ -321,6 +327,9 @@ impl Monitor {
                     }
                     self.presence_reminders();
                 }
+                // Messages du chat en dernier : un chat très actif ne retarde ni les commandes
+                // ni les relevés (sélection dans l'ordre)
+                Some(event) = rx.tap.recv() => self.on_tap(event),
             }
         }
     }

@@ -49,6 +49,8 @@ sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows-core = "0.62"
+# Fichier de secrets de secours chiffré pour la session Windows (DPAPI)
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [profile.release]
 codegen-units = 1

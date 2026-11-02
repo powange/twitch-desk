@@ -1,6 +1,7 @@
 //! Jetons Twitch : dans le Gestionnaire d'identification Windows (ou le Secret
 //! Service sous Linux). Si le trousseau du système est indisponible (WSL, Linux
-//! sans Secret Service), repli sur un fichier lisible par l'utilisateur seul.
+//! sans Secret Service), repli sur un fichier lisible par l'utilisateur seul ; sous
+//! Windows, chaque valeur y est en plus chiffrée pour la session (DPAPI).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,6 +10,58 @@ use std::sync::Mutex;
 use crate::twitch::auth::Tokens;
 
 const SERVICE: &str = "twitch-desk";
+/// Valeur chiffrée dans le fichier de secours (préfixe, puis base64)
+const PROTECTED: &str = "dpapi:";
+
+/// Chiffrement des valeurs du fichier de secours, lié à la session Windows (DPAPI) : le
+/// fichier copié ailleurs ou lu par un autre utilisateur est inutilisable
+#[cfg(windows)]
+mod protect {
+    use base64::Engine;
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB};
+
+    pub const AVAILABLE: bool = true;
+
+    fn take(blob: CRYPT_INTEGER_BLOB) -> Vec<u8> {
+        // Mémoire allouée par Windows : copiée puis rendue
+        let bytes = unsafe { std::slice::from_raw_parts(blob.pbData, blob.cbData as usize) }.to_vec();
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(blob.pbData as _)));
+        }
+        bytes
+    }
+
+    pub fn seal(value: &str) -> Result<String, String> {
+        let input = CRYPT_INTEGER_BLOB { cbData: value.len() as u32, pbData: value.as_ptr() as *mut u8 };
+        let mut out = CRYPT_INTEGER_BLOB::default();
+        unsafe { CryptProtectData(&input, windows::core::PCWSTR::null(), None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut out) }
+            .map_err(|e| e.to_string())?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(take(out)))
+    }
+
+    pub fn open(sealed: &str) -> Result<String, String> {
+        let mut data = base64::engine::general_purpose::STANDARD.decode(sealed).map_err(|e| e.to_string())?;
+        let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_mut_ptr() };
+        let mut out = CRYPT_INTEGER_BLOB::default();
+        unsafe { CryptUnprotectData(&input, None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut out) }.map_err(|e| e.to_string())?;
+        String::from_utf8(take(out)).map_err(|e| e.to_string())
+    }
+}
+
+/// Ailleurs que sous Windows : fichier lisible par l'utilisateur seul (0600), sans chiffrement
+#[cfg(not(windows))]
+mod protect {
+    pub const AVAILABLE: bool = false;
+
+    pub fn seal(value: &str) -> Result<String, String> {
+        Ok(value.to_owned())
+    }
+
+    pub fn open(_sealed: &str) -> Result<String, String> {
+        Err("valeur chiffrée sous Windows, illisible ici".into())
+    }
+}
 
 pub struct Secrets {
     fallback: PathBuf,
@@ -82,17 +135,43 @@ impl Secrets {
     }
 
     fn read_file(&self) -> HashMap<String, String> {
-        std::fs::read_to_string(&self.fallback)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let stored: HashMap<String, String> =
+            std::fs::read_to_string(&self.fallback).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let mut plain = false;
+        let all: HashMap<String, String> = stored
+            .into_iter()
+            .filter_map(|(k, v)| match v.strip_prefix(PROTECTED) {
+                Some(sealed) => match protect::open(sealed) {
+                    Ok(value) => Some((k, value)),
+                    Err(e) => {
+                        tracing::warn!("secret {k} illisible ({e})");
+                        None
+                    }
+                },
+                None => {
+                    plain = true;
+                    Some((k, v))
+                }
+            })
+            .collect();
+        // Valeurs écrites en clair par une version précédente : chiffrées tout de suite
+        if plain && protect::AVAILABLE {
+            if let Err(e) = self.write_file(&all) {
+                tracing::warn!("secrets : chiffrement du fichier de secours impossible ({e})");
+            }
+        }
+        all
     }
 
     /// Écriture atomique (fichier temporaire puis renommage), lisible par l'utilisateur seul
     /// dès sa création
     fn write_file(&self, all: &HashMap<String, String>) -> Result<(), String> {
         use std::io::Write;
-        let text = serde_json::to_string(all).map_err(|e| e.to_string())?;
+        let stored: HashMap<&String, String> = all
+            .iter()
+            .map(|(k, v)| Ok((k, if protect::AVAILABLE { format!("{PROTECTED}{}", protect::seal(v)?) } else { v.clone() })))
+            .collect::<Result<_, String>>()?;
+        let text = serde_json::to_string(&stored).map_err(|e| e.to_string())?;
         let tmp = self.fallback.with_extension("json.tmp");
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);

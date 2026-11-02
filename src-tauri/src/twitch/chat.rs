@@ -51,13 +51,39 @@ pub enum TapEvent {
     Message { source: i64, channel: String, user: String, text: String, moderator: bool },
 }
 
+/// Envoi vers le moniteur : les messages du chat par une file bornée (moniteur débordé : on
+/// en perd plutôt que de bloquer la lecture), les événements de contrôle (rejoint, quitté,
+/// déconnecté) par une file à part, jamais pleine : ils ne se perdent pas, sinon le moniteur
+/// croirait une chaîne lue (ou non) à tort
+#[derive(Clone)]
+pub struct TapSender {
+    messages: mpsc::Sender<TapEvent>,
+    control: mpsc::UnboundedSender<TapEvent>,
+}
+
+impl TapSender {
+    pub fn new(messages: mpsc::Sender<TapEvent>, control: mpsc::UnboundedSender<TapEvent>) -> Self {
+        Self { messages, control }
+    }
+
+    pub fn send(&self, event: TapEvent) {
+        match event {
+            TapEvent::Message { .. } => {
+                let _ = self.messages.try_send(event);
+            }
+            _ => {
+                let _ = self.control.send(event);
+            }
+        }
+    }
+}
+
 /// Connexion vue par le moniteur : identifiant de la source (0 : anonyme, sinon compte)
-pub type Tap = Option<(i64, mpsc::Sender<TapEvent>)>;
+pub type Tap = Option<(i64, TapSender)>;
 
 fn tap_send(tap: &Tap, event: impl FnOnce(i64) -> TapEvent) {
     if let Some((source, tx)) = tap {
-        // Moniteur débordé : on perd un message plutôt que de bloquer la lecture du chat
-        let _ = tx.try_send(event(*source));
+        tx.send(event(*source));
     }
 }
 

@@ -567,16 +567,8 @@ impl Miner {
     }
 
     fn tap_disconnected(&self) {
-        let tap = self.app.giveaways.tap();
-        let event = TapEvent::Disconnected { source: self.account.id };
-        if let Err(tokio::sync::mpsc::error::TrySendError::Full(event)) = tap.try_send(event) {
-            // Moniteur débordé : cet événement-là ne doit pas se perdre
-            if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                rt.spawn(async move {
-                    let _ = tap.send(event).await;
-                });
-            }
-        }
+        // File des événements de contrôle : jamais pleine, l'événement ne se perd pas
+        self.app.giveaways.tap().send(TapEvent::Disconnected { source: self.account.id });
     }
 
     /// Chaînes où le compte doit être présent dans le chat
