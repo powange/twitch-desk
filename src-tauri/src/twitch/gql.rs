@@ -626,6 +626,48 @@ pub async fn box_arts(http: &reqwest::Client, ids: &[String]) -> Result<HashMap<
     Ok(out)
 }
 
+/// Chaînes au plus par requête de statut live groupée
+pub const STREAMS_BATCH: usize = 50;
+
+/// Statut live de plusieurs chaînes, sans compte, en une requête par lot de 50 (mêmes champs que
+/// `stream_info`). Une chaîne demandée absente de la réponse n'existe pas : hors ligne. Les
+/// logins invalides ne sont pas demandés (absents du résultat)
+pub async fn streams_info(http: &reqwest::Client, logins: &[String]) -> Result<HashMap<String, Option<StreamInfo>>> {
+    let mut out = HashMap::new();
+    let valid: Vec<&String> = logins.iter().filter(|l| is_login(l)).collect();
+    for chunk in valid.chunks(STREAMS_BATCH) {
+        let list: Vec<String> = chunk.iter().map(|l| format!("\"{l}\"")).collect();
+        let query = format!(
+            "query {{ users(logins: [{}]) {{ login stream {{ id viewersCount }} \
+             broadcastSettings {{ title game {{ id displayName }} }} }} }}",
+            list.join(",")
+        );
+        let value = raw_query(http, &query).await?;
+        let found = parse_streams(&value).ok_or_else(|| {
+            let why = value.get("errors").map(Value::to_string).unwrap_or_else(|| "réponse sans données".into());
+            TwitchError::Gql(format!("statut live groupé : {why}"))
+        })?;
+        for login in chunk {
+            out.insert((*login).clone(), found.get(&login.to_lowercase()).cloned().flatten());
+        }
+    }
+    Ok(out)
+}
+
+/// login (minuscules) → statut live ; None si la réponse n'a pas de liste
+fn parse_streams(value: &Value) -> Option<HashMap<String, Option<StreamInfo>>> {
+    let users = value.pointer("/data/users")?.as_array()?;
+    Some(
+        users
+            .iter()
+            .filter_map(|u| {
+                let login = u.get("login")?.as_str()?.to_lowercase();
+                Some((login, parse_stream_info(&json!({ "user": u }))))
+            })
+            .collect(),
+    )
+}
+
 async fn raw_query(http: &reqwest::Client, query: &str) -> Result<Value> {
     let res = http
         .post(GQL_URL)
@@ -915,6 +957,21 @@ mod tests {
         let offline = json!({"user":{"id":"1","stream":null,"broadcastSettings":{"title":"x","game":null}}});
         assert_eq!(parse_stream_info(&offline), None);
         assert_eq!(parse_stream_info(&json!({"user":null})), None);
+    }
+
+    #[test]
+    fn batched_streams() {
+        let value = json!({"data":{"users":[
+            {"login":"Alpha","stream":{"id":"7","viewersCount":12},"broadcastSettings":{"title":"t","game":{"id":"1","displayName":"Jeu"}}},
+            {"login":"beta","stream":null,"broadcastSettings":{"title":"x","game":null}},
+            null
+        ]}});
+        let map = parse_streams(&value).unwrap();
+        assert_eq!(map.len(), 2);
+        let alpha = map["alpha"].as_ref().unwrap();
+        assert_eq!((alpha.broadcast_id.as_str(), alpha.viewers, alpha.game_name.as_deref()), ("7", 12, Some("Jeu")));
+        assert_eq!(map["beta"], None);
+        assert_eq!(parse_streams(&json!({"errors":[{"message":"x"}]})), None);
     }
 
     #[test]

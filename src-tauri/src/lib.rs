@@ -4,6 +4,7 @@ mod db;
 mod drops;
 mod giveaways;
 mod insights;
+mod lives;
 mod miner;
 mod scanner;
 mod secrets;

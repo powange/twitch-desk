@@ -33,7 +33,6 @@ const AUTO_CLOSE_AFTER: chrono::Duration = chrono::Duration::hours(12);
 const RECENT_GIVEAWAYS: usize = 60;
 // Statut live des chaînes surveillées : relu toutes les 2 min, 3 chaînes au plus toutes les 10 s
 const LIVE_CHECK_EVERY: Duration = Duration::from_secs(120);
-const LIVE_CHECKS_PER_TICK: usize = 3;
 /// Rappel « reste présent » envoyé ce délai avant l'heure du tirage
 const PRESENCE_REMINDER: chrono::Duration = chrono::Duration::minutes(5);
 
@@ -431,7 +430,7 @@ impl Monitor {
             .iter()
             .map(|c| c.login.clone())
             .filter(|c| self.live.get(c).is_none_or(|l| now.duration_since(l.at) >= LIVE_CHECK_EVERY))
-            .take(LIVE_CHECKS_PER_TICK)
+            .take(crate::lives::BATCH)
             .collect();
         if due.is_empty() {
             return;
@@ -442,8 +441,9 @@ impl Monitor {
         }
         self.live_busy = Some(Instant::now());
         let tx = self.live_tx.clone();
+        let app = self.app.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = tx.send(fetch_lives(gqls, due).await).await;
+            let _ = tx.send(fetch_lives(&app, &gqls, due).await).await;
         });
     }
 
@@ -1142,31 +1142,20 @@ impl Drop for SendingGuard<'_> {
     }
 }
 
-/// Statut live des chaînes, relu avec le premier client accepté (jeton refusé : compte suivant)
-async fn fetch_lives(mut gqls: Vec<Gql>, due: Vec<String>) -> LiveReport {
+/// Statut live des chaînes, partagé avec les superviseurs des comptes : cache, sinon requête
+/// groupée, sinon le premier client accepté (jeton refusé : compte suivant)
+async fn fetch_lives(app: &App, gqls: &[Gql], due: Vec<String>) -> LiveReport {
+    let since = crate::lives::since(LIVE_CHECK_EVERY);
+    let wanted: Vec<(String, Instant)> = due.into_iter().map(|c| (c, since)).collect();
+    let fetch = app.lives.streams_status(&app.http, gqls, &wanted).await;
     let mut results = vec![];
-    let mut unauthorized = false;
-    'channels: for channel in due {
-        while let Some(gql) = gqls.first() {
-            match gql.stream_info(&channel).await {
-                Ok(info) => {
-                    results.push((channel, info));
-                    continue 'channels;
-                }
-                Err(crate::twitch::TwitchError::Unauthorized) => {
-                    unauthorized = true;
-                    gqls.remove(0);
-                }
-                Err(e) => {
-                    tracing::warn!("giveaways : statut de {channel} : {e}");
-                    continue 'channels;
-                }
-            }
+    for (channel, result) in fetch.results {
+        match result {
+            Ok(info) => results.push((channel, info)),
+            Err(e) => tracing::warn!("giveaways : statut de {channel} : {e}"),
         }
-        // Plus aucun jeton accepté
-        break;
     }
-    LiveReport { results, unauthorized }
+    LiveReport { results, unauthorized: fetch.refused }
 }
 
 /// Giveaway ouvert auquel rattacher le gagnant annoncé par `bot` : StreamElements ne tire que
