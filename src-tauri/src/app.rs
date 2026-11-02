@@ -562,10 +562,12 @@ impl App {
         });
     }
 
-    /// Notification Windows, si l'utilisateur ne les a pas coupées
-    /// Notification Windows et alerte sonore (jouée par l'interface), selon les réglages
+    /// Notification Windows et alerte sonore (jouée par l'interface), selon les réglages ;
+    /// notification push sur les téléphones connectés
     pub fn notify(&self, alert: Alert, title: &str, body: &str) {
         use tauri_plugin_notification::NotificationExt;
+        // Téléphones connectés : chacun a choisi ses alertes, quels que soient les réglages du PC
+        self.sync.phone_alert(alert.key(), title, body);
         let settings = self.db.settings();
         if settings.sound_alerts && settings.sound_events.iter().any(|e| e == alert.key()) {
             let sound = settings.sound_choices.get(alert.key()).cloned();

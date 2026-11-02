@@ -19,7 +19,7 @@
 //! un petit état (participations de ses comptes, statut live des chaînes) que les téléphones
 //! lisent.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -62,6 +62,9 @@ const STATE_DEBOUNCE: Duration = Duration::from_secs(3);
 const STATE_REFRESH: Duration = Duration::from_secs(30 * 60);
 /// Serveur d'avant la 0.6 (pas de web app) : nouvel essai bien plus tard
 const STATE_UNSUPPORTED_PAUSE: Duration = Duration::from_secs(30 * 60);
+/// Alertes pour les téléphones en attente d'envoi, au plus (serveur injoignable : les plus
+/// anciennes sont oubliées)
+const MAX_PHONE_ALERTS: usize = 20;
 const NOT_SYNC_SERVER: &str = "Ce n'est pas un serveur de synchronisation Twitch Desk";
 const OLD_SERVER: &str = "Mets à jour le serveur de synchronisation (version 0.6 ou plus) pour connecter un téléphone";
 
@@ -105,6 +108,16 @@ pub struct SyncHandle {
     state_changed: tokio::sync::Notify,
     /// Application enregistrée sur le serveur : « adresse|nom » (réenregistrée s'il change)
     registered: Mutex<Option<String>>,
+    /// Alertes à transmettre aux téléphones (notifications push)
+    phone_alerts: Mutex<VecDeque<PhoneAlert>>,
+    phone_alert: tokio::sync::Notify,
+}
+
+#[derive(Debug, Serialize)]
+struct PhoneAlert {
+    alert: &'static str,
+    title: String,
+    body: String,
 }
 
 impl SyncHandle {
@@ -130,6 +143,17 @@ impl SyncHandle {
     /// (regroupé, STATE_DEBOUNCE)
     pub fn state_changed(&self) {
         self.state_changed.notify_one();
+    }
+
+    /// Alerte transmise au serveur, qui l'envoie aux téléphones qui l'ont choisie
+    pub fn phone_alert(&self, alert: &'static str, title: &str, body: &str) {
+        let mut queue = self.phone_alerts.lock().unwrap();
+        if queue.len() >= MAX_PHONE_ALERTS {
+            queue.pop_front();
+        }
+        queue.push_back(PhoneAlert { alert, title: title.to_owned(), body: body.to_owned() });
+        drop(queue);
+        self.phone_alert.notify_one();
     }
 }
 
@@ -1383,6 +1407,7 @@ fn spawn_live(app: Arc<App>) {
 pub fn spawn(app: Arc<App>) {
     spawn_live(app.clone());
     spawn_state(app.clone());
+    spawn_phone_alerts(app.clone());
     tauri::async_runtime::spawn(async move {
         loop {
             let Some(cfg) = config(&app) else {
@@ -1598,6 +1623,35 @@ fn spawn_state(app: Arc<App>) {
                         tokio::time::sleep(Duration::from_secs(30)).await;
                         handle.sync.state_changed();
                     });
+                }
+            }
+        }
+    });
+}
+
+/// Envoie les alertes aux téléphones (serveur 0.7 et plus ; plus ancien : alertes oubliées,
+/// nouvel essai STATE_UNSUPPORTED_PAUSE plus tard)
+fn spawn_phone_alerts(app: Arc<App>) {
+    tauri::async_runtime::spawn(async move {
+        let mut unsupported: Option<(String, std::time::Instant)> = None;
+        loop {
+            app.sync.phone_alert.notified().await;
+            let alerts: Vec<PhoneAlert> = app.sync.phone_alerts.lock().unwrap().drain(..).collect();
+            let Some(cfg) = config(&app) else { continue };
+            if unsupported.as_ref().is_some_and(|(url, at)| *url == cfg.url && at.elapsed() < STATE_UNSUPPORTED_PAUSE) {
+                continue;
+            }
+            let Ok(id) = instance_id(&app.db.conn()) else { continue };
+            register(&app, &cfg).await;
+            for alert in alerts {
+                let req = app.http.post(format!("{}/api/v1/instances/{id}/notify", cfg.url)).json(&alert);
+                match send(req, &cfg.code).await {
+                    Ok(_) => unsupported = None,
+                    Err(e) if e == NOT_SYNC_SERVER => {
+                        unsupported = Some((cfg.url.clone(), std::time::Instant::now()));
+                        break;
+                    }
+                    Err(e) => tracing::debug!("alerte pour les téléphones : {e}"),
                 }
             }
         }

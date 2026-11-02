@@ -152,7 +152,7 @@ async function copyLink() {
   <div class="flex flex-col gap-3">
     <div>
       <div class="text-sm font-medium">Téléphone</div>
-      <div class="text-xs text-muted">Sur ton téléphone, la web app montre les giveaways en cours, la commande à copier et les participations de cette application. Elle ne modifie rien.</div>
+      <div class="text-xs text-muted">Sur ton téléphone, la web app montre les giveaways en cours, la commande à copier et les participations de cette application. Elle ne modifie rien. Les notifications (giveaway détecté, gain, mention, rappel de tirage, scanner) s'activent depuis le téléphone, qui choisit lesquelles recevoir.</div>
     </div>
     <UFormField label="Nom de cette application" help="Affiché sur le téléphone pour reconnaître ce poste">
       <UInput id="sync-instance-name" v-model="name" :placeholder="defaultName" class="w-full" maxlength="60" autocomplete="off" />
@@ -218,7 +218,7 @@ async function copyLink() {
 
     <UModal :open="revokeTarget !== null" title="Déconnecter ce téléphone ?" @update:open="v => { if (!v) revokeTarget = null }">
       <template #body>
-        <p class="text-sm">{{ revokeTarget?.name }} n'aura plus accès à la web app. Pour le reconnecter, il faudra un nouveau code.</p>
+        <p class="text-sm">{{ revokeTarget?.name }} n'aura plus accès à la web app ni aux notifications. Pour le reconnecter, il faudra un nouveau code.</p>
       </template>
       <template #footer>
         <div class="flex justify-end gap-2 w-full">
