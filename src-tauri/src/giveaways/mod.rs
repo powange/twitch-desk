@@ -865,7 +865,12 @@ impl Monitor {
 
     fn on_winner(&mut self, channel: &str, bot: &str, winner: &str, chance: Option<&str>) {
         let open = self.open_giveaways(channel);
-        let target = winner_target(&open, bot).cloned();
+        // Aucun ouvert : giveaway clos récemment sans gagnant (fin du live juste avant le tirage)
+        let target = winner_target(&open, bot).cloned().or_else(|| {
+            let since = (chrono::Utc::now() - chrono::Duration::hours(RECENT_UNDRAWN_HOURS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            let recent = self.app.db.recent_undrawn_giveaways(channel, &since).unwrap_or_default();
+            winner_target(&recent, bot).cloned()
+        });
         self.record_winner(channel, target, winner, chance);
     }
 
@@ -1160,9 +1165,18 @@ async fn fetch_lives(app: &App, gqls: &[Gql], due: Vec<String>) -> LiveReport {
 /// Giveaway ouvert auquel rattacher le gagnant annoncé par `bot` : StreamElements ne tire que
 /// ses giveaways ; les autres bots tirent les giveaways par commande, sinon le plus récent
 /// qui n'est pas StreamElements
+/// Gagnant annoncé sans giveaway ouvert : giveaway clos sans gagnant dans ces dernières heures
+const RECENT_UNDRAWN_HOURS: i64 = 6;
+
 fn winner_target<'a>(open: &'a [GiveawayRow], bot: &str) -> Option<&'a GiveawayRow> {
+    // StreamElements tire aussi ses giveaways par commande dans le chat (même annonce) : son
+    // giveaway StreamElements d'abord, sinon celui par commande, sinon un autre
     if bot == "streamelements" {
-        return open.iter().find(|g| g.kind == "streamelements");
+        return open
+            .iter()
+            .find(|g| g.kind == "streamelements")
+            .or_else(|| open.iter().find(|g| g.kind == "command"))
+            .or_else(|| open.first());
     }
     open.iter().find(|g| g.kind == "command").or_else(|| open.iter().find(|g| g.kind != "streamelements"))
 }
@@ -1346,9 +1360,11 @@ mod tests {
         let open = vec![row(1, "ticket"), row(2, "streamelements"), row(3, "command")];
         assert_eq!(winner_target(&open, "streamelements").map(|g| g.id), Some(2));
         assert_eq!(winner_target(&open, "nightbot").map(|g| g.id), Some(3));
-        // Pas de giveaway StreamElements ouvert : le gagnant de StreamElements n'est rattaché à rien
+        // Pas de giveaway StreamElements ouvert : tirage StreamElements par commande dans le chat
         let open = vec![row(1, "ticket"), row(3, "command")];
-        assert_eq!(winner_target(&open, "streamelements"), None);
+        assert_eq!(winner_target(&open, "streamelements").map(|g| g.id), Some(3));
+        assert_eq!(winner_target(&[row(1, "ticket")], "streamelements").map(|g| g.id), Some(1));
+        assert_eq!(winner_target(&[], "streamelements"), None);
         // Un autre bot ne tire pas un giveaway StreamElements
         assert_eq!(winner_target(&[row(2, "streamelements")], "moobot"), None);
         assert_eq!(winner_target(&[row(2, "streamelements"), row(1, "ticket")], "moobot").map(|g| g.id), Some(1));

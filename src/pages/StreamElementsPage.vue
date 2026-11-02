@@ -3,9 +3,10 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { useChannelList } from '../composables/useChannelList'
+import { useSnapshot } from '../composables/useSnapshot'
 import { useOpenExternal } from '../utils/external'
 import { formatNumber } from '../utils/format'
-import type { ChannelView } from '../types'
+import type { ChannelView, GiveawayView } from '../types'
 import ChannelFlag from '../components/ChannelFlag.vue'
 import AccountPicker from '../components/AccountPicker.vue'
 
@@ -21,6 +22,35 @@ watch(() => route.query.channels, (q) => {
 }, { immediate: true })
 const streamerItems = computed(() => channels.value.map(c => c.login).sort())
 const shown = computed(() => streamerFilter.value.length ? channels.value.filter(c => streamerFilter.value.includes(c.login)) : channels.value)
+
+// Giveaway StreamElements connu de l'application pour la chaîne : celui en cours (même lien),
+// sinon le dernier détecté depuis 24 h — pour son état (clos) et son gagnant
+const { snapshot } = useSnapshot()
+const RECENT_MS = 24 * 3600 * 1000
+const seGiveaways = computed(() => {
+  const map = new Map<string, GiveawayView[]>()
+  for (const g of snapshot.value?.giveaways.giveaways ?? []) {
+    if (g.kind !== 'streamelements') continue
+    if (!map.has(g.channel)) map.set(g.channel, [])
+    map.get(g.channel)!.push(g)
+  }
+  return map
+})
+function knownGiveaway(channel: ChannelView): GiveawayView | null {
+  const list = seGiveaways.value.get(channel.login) ?? []
+  const active = channel.seGiveaway
+  if (active) return list.find(g => g.url?.includes(active.id)) ?? null
+  const recent = list.filter(g => g.open || Date.now() - new Date(g.detectedAt).getTime() < RECENT_MS)
+  return recent.sort((a, b) => b.detectedAt.localeCompare(a.detectedAt))[0] ?? null
+}
+// État du giveaway : en cours (StreamElements le donne actif), clos, ou rien de connu
+function giveawayState(channel: ChannelView): { label: string, color: 'primary' | 'neutral' | 'success' } | null {
+  if (channel.seGiveaway) return { label: 'En cours', color: 'primary' }
+  const g = knownGiveaway(channel)
+  if (!g) return null
+  if (g.winner) return { label: 'Tiré', color: 'success' }
+  return g.open ? { label: 'Ouvert', color: 'primary' } : { label: 'Clos', color: 'neutral' }
+}
 
 // Pourquoi une chaîne ne rapporte pas (ou rien : elle rapporte)
 function status(channel: ChannelView): { label: string, color: 'success' | 'warning' | 'neutral' | 'error' } {
@@ -199,6 +229,8 @@ function affordable(channel: ChannelView): number | null {
               <th class="text-right px-1.5 py-2 whitespace-nowrap">Mes tickets</th>
               <th class="text-right px-1.5 py-2">Tickets</th>
               <th class="text-right px-1.5 py-2">Participants</th>
+              <th class="text-left px-1.5 py-2">Giveaway</th>
+              <th class="text-left px-1.5 py-2">Gagnant</th>
               <th class="text-left px-1.5 py-2">Acheter</th>
               <th class="text-center px-1.5 py-2">Chat</th>
               <th class="px-1.5 py-2" />
@@ -290,6 +322,16 @@ function affordable(channel: ChannelView): number | null {
                 {{ channel.seGiveaway ? formatNumber(channel.seGiveaway.totalUsers) : '—' }}
               </td>
               <td class="px-1.5 py-2">
+                <UBadge v-if="giveawayState(channel)" :label="giveawayState(channel)!.label" :color="giveawayState(channel)!.color" variant="subtle" size="sm" class="whitespace-nowrap" />
+                <span v-else class="text-muted">—</span>
+              </td>
+              <td class="px-1.5 py-2 whitespace-nowrap">
+                <span v-if="knownGiveaway(channel)?.winner" class="inline-flex items-center gap-1" :class="knownGiveaway(channel)?.winnerOurs ? 'text-success font-medium' : ''">
+                  <UIcon name="i-lucide-trophy" class="size-3.5" />{{ knownGiveaway(channel)!.winner }}
+                </span>
+                <span v-else class="text-muted">—</span>
+              </td>
+              <td class="px-1.5 py-2">
                 <template v-if="channel.seGiveaway">
                   <div v-if="account.seAccount === 'connected'" class="flex flex-col gap-1 w-[5.5rem]">
                     <UInputNumber
@@ -320,10 +362,10 @@ function affordable(channel: ChannelView): number | null {
               </td>
             </tr>
             <tr v-if="shown.length === 0 && channels.length">
-              <td colspan="12" class="px-3 py-8 text-center text-muted">Aucune chaîne ne correspond au filtre.</td>
+              <td colspan="14" class="px-3 py-8 text-center text-muted">Aucune chaîne ne correspond au filtre.</td>
             </tr>
             <tr v-if="channels.length === 0">
-              <td colspan="12" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
+              <td colspan="14" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
             </tr>
           </tbody>
         </table>

@@ -1190,6 +1190,14 @@ impl Db {
         }
     }
 
+    /// Giveaways d'une chaîne clos sans gagnant, détectés depuis `since` (RFC 3339), les plus récents d'abord
+    pub fn recent_undrawn_giveaways(&self, channel: &str, since: &str) -> DbResult<Vec<GiveawayRow>> {
+        self.select_giveaways(
+            "WHERE channel = ?1 AND status = 'closed' AND winner IS NULL AND detected_at >= ?2 ORDER BY detected_at DESC",
+            [channel, since],
+        )
+    }
+
     /// Dernier giveaway d'une chaîne ayant ce lien (ouvert ou clos)
     pub fn giveaway_by_url(&self, channel: &str, url: &str) -> DbResult<Option<GiveawayRow>> {
         Ok(self
