@@ -67,7 +67,15 @@ const { grabbed, dragging, ordered: orderedGames, onDragStart, onDragOver, onDro
 )
 
 // --- Campagnes ---
-const campaigns = computed(() => drops.value?.campaigns ?? [])
+// Campagne regardée en premier, puis les autres
+const campaigns = computed(() => {
+  const list = drops.value?.campaigns ?? []
+  const id = drops.value?.target?.campaignId
+  return id ? [...list].sort((a, b) => Number(b.id === id) - Number(a.id === id)) : list
+})
+// Campagne pour laquelle la chaîne est regardée
+const targetCampaign = computed(() => campaigns.value.find(c => c.id === drops.value?.target?.campaignId) ?? null)
+const remainingDrops = (c: DropCampaign) => c.drops.filter(d => !d.claimed).length
 const wantedIds = computed(() => new Set(games.value.map(g => g.gameId)))
 
 // Jaquette Twitch : l'adresse porte sa taille (…-40x56.jpg), on demande le double pour un rendu net.
@@ -119,6 +127,7 @@ function refreshDrops() {
   <div class="p-6 flex flex-col gap-5">
     <div class="flex items-center gap-3">
       <h1 class="text-xl font-semibold flex-1">Drops</h1>
+      <UButton label="Inventaire Twitch" icon="i-lucide-external-link" color="neutral" variant="soft" title="Ouvrir l'inventaire des drops sur Twitch (navigateur)" @click="openExternal('https://www.twitch.tv/drops/inventory')" />
       <AccountPicker />
     </div>
 
@@ -153,6 +162,13 @@ function refreshDrops() {
           <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${drops.target.login}`)">{{ drops.target.login }}</button>
           <span class="inline-flex items-center gap-0.5 text-error ml-1.5 align-middle" :title="`${formatNumber(drops.target.viewers)} spectateurs`"><UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(drops.target.viewers) }}</span>
           <span class="text-muted"> · {{ drops.target.title }}</span>
+          <span class="block text-xs mt-0.5">
+            <template v-if="targetCampaign">
+              Pour la campagne <b>{{ targetCampaign.name }}</b> :
+              {{ remainingDrops(targetCampaign) }} drop(s) restant(s), détail ci-dessous
+            </template>
+            <template v-else>Campagne pas encore connue : la chaîne propose des drops pour ce jeu, la campagne apparaîtra à la prochaine lecture de l'inventaire</template>
+          </span>
         </span>
       </div>
 
@@ -238,23 +254,24 @@ function refreshDrops() {
       <!-- Campagnes commencées -->
       <section class="flex flex-col gap-2">
         <div class="flex items-baseline gap-3">
-          <h2 class="text-sm font-semibold uppercase text-muted tracking-wide flex-1">Campagnes commencées</h2>
+          <h2 class="text-sm font-semibold uppercase text-muted tracking-wide flex-1">Campagnes</h2>
           <UTooltip text="La progression avance en direct ; l'inventaire complet est relu toutes les 10 minutes">
             <span v-if="drops.inventoryAt" class="text-xs text-muted">Inventaire relu à {{ new Date(drops.inventoryAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) }}</span>
           </UTooltip>
           <UButton label="Relire maintenant" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="busy('refresh')" @click="refreshDrops" />
         </div>
         <p v-if="campaigns.length === 0" class="text-sm text-muted">
-          Aucune campagne commencée. Une campagne apparaît ici dès la première minute regardée.
+          Aucune campagne connue pour l'instant. Elles apparaissent à la lecture de l'inventaire Twitch.
         </p>
 
-        <div v-for="campaign in campaigns" :key="campaign.id" class="border border-default rounded-lg overflow-hidden">
+        <div v-for="campaign in campaigns" :key="campaign.id" class="border rounded-lg overflow-hidden" :class="campaign.id === targetCampaign?.id ? 'border-success/60 ring-1 ring-success/40' : 'border-default'">
           <div class="flex items-center gap-3 px-4 py-3 bg-elevated/40 border-b border-default flex-wrap">
             <img :src="boxArt(campaign.game.boxArt, campaign.game.id)" alt="" class="w-8 h-11 rounded object-cover bg-elevated">
             <div class="flex-1 min-w-0">
               <div class="font-medium">{{ campaign.game.name }} <span class="text-muted font-normal">· {{ campaign.name }}</span></div>
               <div class="text-xs text-muted">Jusqu'au {{ formatDate(campaign.endsAt) }}<template v-if="campaign.allowedChannels.length"> · {{ campaign.allowedChannels.length }} chaîne(s) imposée(s)</template></div>
             </div>
+            <UBadge v-if="campaign.id === targetCampaign?.id" color="success" variant="solid" label="Regardée" icon="i-lucide-eye" />
             <UBadge v-if="campaign.accountLinked" color="success" variant="subtle" label="Compte du jeu lié" icon="i-lucide-link" />
             <template v-else>
               <UBadge color="error" variant="subtle" label="Compte du jeu non lié" icon="i-lucide-unlink" />

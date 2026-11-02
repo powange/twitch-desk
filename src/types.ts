@@ -276,7 +276,8 @@ export interface DropsView {
   enabled: boolean
   games: DropGameView[]
   campaigns: DropCampaign[]
-  target: { gameName: string, login: string, viewers: number, title: string } | null
+  // campaignId : campagne pour laquelle la chaîne est regardée (null : pas encore connue)
+  target: { gameName: string, login: string, viewers: number, title: string, campaignId: string | null } | null
   inventoryAt: string | null
   error: string | null
 }

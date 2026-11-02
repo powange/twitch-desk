@@ -570,6 +570,8 @@ pub struct DropTargetView {
     pub login: String,
     pub viewers: i64,
     pub title: String,
+    /// Campagne pour laquelle la chaîne est regardée (None : pas encore connue)
+    pub campaign_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -711,6 +713,28 @@ impl DropsEngine {
         }
     }
 
+    /// Campagnes proposées par une chaîne, lues en détail et ajoutées aux campagnes connues (la
+    /// page Drops les affiche, et une campagne déjà obtenue n'est plus regardée)
+    async fn campaigns_on_channel(&mut self, gql: &Gql, user_id: &str, ids: &[String]) -> Vec<Campaign> {
+        let mut found = vec![];
+        for (id, res) in ids.iter().zip(gql.drop_campaign_details(user_id, ids).await) {
+            let parsed = match res {
+                Ok(d) => d.pointer("/user/dropCampaign").filter(|c| !c.is_null()).and_then(|c| parse_campaign(c, &self.claimed)),
+                Err(e) => {
+                    tracing::warn!("drops : détail de la campagne {id} indisponible ({e})");
+                    None
+                }
+            };
+            if let Some(c) = parsed {
+                if !self.campaigns.iter().any(|x| x.id == c.id) {
+                    self.campaigns.push(c.clone());
+                }
+                found.push(c);
+            }
+        }
+        found
+    }
+
     fn campaign_for(&self, game_id: &str) -> Option<&Campaign> {
         self.campaigns.iter().find(|c| c.game.id == game_id && c.active())
     }
@@ -812,7 +836,17 @@ impl DropsEngine {
                 if stale && !verified_once {
                     verified_once = true;
                     let confirmed = match gql.available_drops(&candidate.channel_id).await {
-                        Ok(Some(list)) => list.iter().any(|(_, game)| *game == g.game_id),
+                        // Campagne proposée par la chaîne mais absente de nos campagnes (une campagne
+                        // terminée disparaît de la liste de Twitch) : ses drops sont-ils déjà obtenus ?
+                        Ok(Some(list)) => {
+                            let ids: Vec<String> = list.iter().filter(|(_, game)| *game == g.game_id).map(|(id, _)| id.clone()).collect();
+                            if ids.is_empty() {
+                                false
+                            } else {
+                                let found = self.campaigns_on_channel(gql, &account.user_id, &ids).await;
+                                found.is_empty() || found.iter().any(|c| c.active() && c.unfinished())
+                            }
+                        }
                         // Information refusée : secours sur le nombre de streams avec le tag
                         Ok(None) => total >= MIN_STREAMS_WITHOUT_CAMPAIGN,
                         Err(TwitchError::Unauthorized) => return Err(TwitchError::Unauthorized),
@@ -1031,6 +1065,7 @@ impl DropsEngine {
                 login: t.stream.login.clone(),
                 viewers: t.live.as_ref().map_or(t.stream.viewers, |l| l.viewers as i64),
                 title: t.live.as_ref().map_or(t.stream.title.clone(), |l| l.title.clone()),
+                campaign_id: self.campaign_for(&t.game_id).map(|c| c.id.clone()),
             }),
             inventory_at: self.inventory_wall.clone(),
             error: self.error.clone(),
