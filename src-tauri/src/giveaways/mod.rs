@@ -1022,6 +1022,10 @@ impl Monitor {
         };
         *self.view.write().unwrap() = view;
         self.app.touch_domain(crate::app::Domain::Giveaways);
+        // Changement détecté ici (giveaway, gagnant, clôture, pause, reprise) : envoyé au serveur
+        // de synchronisation dans les 2 s, comme une modification faite à la main (sans changement
+        // local, le passage n'envoie rien)
+        self.app.sync.poke();
     }
 }
 
