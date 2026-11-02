@@ -14,27 +14,40 @@
 //! - `SYNC_HISTORY_DAYS` : durée de conservation de l'historique (défaut : 90 jours)
 //! - `SYNC_PROXY_HOPS` : proxys devant le serveur, pour lire l'adresse du client dans
 //!   `X-Forwarded-For` (défaut : 1 ; 0 quand le serveur est joint directement)
+//! - `SYNC_WEB_DIR` : fichiers de la web app mobile, servis sous `/app`
+//!   (défaut : /usr/share/twitch-desk-sync/web, rempli dans l'image Docker)
+//! - `SYNC_WEB_PORT` : port supplémentaire qui ne sert que la web app (défaut : aucun, elle
+//!   est servie sur le port de l'API)
 //!
 //! `GET /api/v1/events` (Server-Sent Events) annonce chaque nouvelle modification : les
 //! applications abonnées relisent `/api/v1/changes` tout de suite, sans attendre leur passage.
+//!
+//! Web app mobile (0.6, module `mobile`) : un téléphone associé par un code à 6 chiffres lit,
+//! avec son propre jeton (`Authorization: Device <jeton>`), les giveaways ouverts et l'état
+//! publié par son application ; il n'écrit rien.
+
+mod mobile;
+mod web;
 
 use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
+use std::future::IntoFuture;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, Request, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Extension, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{watch, Semaphore};
-use tokio_stream::wrappers::WatchStream;
+use tokio::sync::{broadcast, mpsc, watch, Semaphore};
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt as _;
 use tower::limit::GlobalConcurrencyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -77,6 +90,14 @@ struct Server {
     seq: watch::Sender<Option<i64>>,
     /// Places des flux d'événements (MAX_STREAMS)
     streams: Arc<Semaphore>,
+    /// Codes d'association refusés, par adresse (plus strict que `guard`)
+    pair_guard: Guard,
+    /// Codes d'association en attente : code → application (en mémoire : perdus au redémarrage)
+    pairings: Mutex<HashMap<String, mobile::Pairing>>,
+    /// États publiés et appareils révoqués, annoncés aux flux des appareils
+    notices: broadcast::Sender<mobile::Notice>,
+    /// Fichiers de la web app (`SYNC_WEB_DIR`)
+    web_dir: PathBuf,
 }
 
 impl Server {
@@ -90,6 +111,10 @@ impl Server {
             guard: Guard::default(),
             seq: watch::Sender::new(Some(seq)),
             streams: Arc::new(Semaphore::new(MAX_STREAMS)),
+            pair_guard: Guard::new(mobile::PAIR_MAX_FAILURES, mobile::PAIR_WINDOW, mobile::PAIR_BLOCK),
+            pairings: Mutex::new(HashMap::new()),
+            notices: broadcast::channel(64).0,
+            web_dir: PathBuf::from(web::DEFAULT_WEB_DIR),
         })
     }
 
@@ -108,10 +133,20 @@ impl Server {
 
 type Shared = Arc<Server>;
 
-/// Essais de code refusés, par adresse
-#[derive(Default)]
+/// Essais de code refusés, par adresse : après `max_failures` essais en `window`, l'adresse
+/// attend `block`
 struct Guard {
     attempts: Mutex<HashMap<IpAddr, Attempts>>,
+    max_failures: u32,
+    window: Duration,
+    block: Duration,
+}
+
+/// Code partagé et jetons d'appareils
+impl Default for Guard {
+    fn default() -> Self {
+        Guard::new(MAX_FAILURES, FAILURE_WINDOW, BLOCK_TIME)
+    }
 }
 
 struct Attempts {
@@ -125,15 +160,19 @@ impl Attempts {
         Attempts { count: 0, since: now, blocked_until: None }
     }
 
-    fn expired(&self, now: Instant) -> bool {
+    fn expired(&self, now: Instant, window: Duration) -> bool {
         match self.blocked_until {
             Some(until) => until <= now,
-            None => now.duration_since(self.since) > FAILURE_WINDOW,
+            None => now.duration_since(self.since) > window,
         }
     }
 }
 
 impl Guard {
+    fn new(max_failures: u32, window: Duration, block: Duration) -> Self {
+        Guard { attempts: Mutex::new(HashMap::new()), max_failures, window, block }
+    }
+
     /// Temps d'attente restant quand l'adresse est bloquée
     fn blocked(&self, ip: IpAddr, now: Instant) -> Option<Duration> {
         let map = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
@@ -143,18 +182,18 @@ impl Guard {
     fn failed(&self, ip: IpAddr, now: Instant) {
         let mut map = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
         if map.len() >= MAX_TRACKED && !map.contains_key(&ip) {
-            map.retain(|_, a| !a.expired(now));
+            map.retain(|_, a| !a.expired(now, self.window));
             if map.len() >= MAX_TRACKED {
                 map.clear();
             }
         }
         let a = map.entry(ip).or_insert_with(|| Attempts::fresh(now));
-        if a.expired(now) {
+        if a.expired(now, self.window) {
             *a = Attempts::fresh(now);
         }
         a.count += 1;
-        if a.count >= MAX_FAILURES {
-            a.blocked_until = Some(now + BLOCK_TIME);
+        if a.count >= self.max_failures {
+            a.blocked_until = Some(now + self.block);
         }
     }
 
@@ -235,9 +274,14 @@ struct PushResult {
 #[derive(Debug)]
 enum ApiError {
     Unauthorized,
+    /// Jeton d'appareil inconnu (révoqué) : à associer de nouveau
+    UnknownDevice,
+    /// Code d'association inconnu, expiré ou déjà utilisé
+    BadPairingCode,
     /// Trop de codes refusés depuis cette adresse : temps d'attente
     TooManyAttempts(Duration),
     BadRequest(String),
+    NotFound(String),
     Internal(String),
 }
 
@@ -245,6 +289,8 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "Code de synchronisation incorrect".to_owned()),
+            ApiError::UnknownDevice => (StatusCode::UNAUTHORIZED, "Appareil inconnu : associe-le de nouveau depuis l'application".to_owned()),
+            ApiError::BadPairingCode => (StatusCode::BAD_REQUEST, "Code inconnu, expiré ou déjà utilisé".to_owned()),
             ApiError::TooManyAttempts(wait) => {
                 let minutes = wait.as_secs().div_ceil(60).max(1);
                 let body = Json(serde_json::json!({
@@ -253,6 +299,7 @@ impl IntoResponse for ApiError {
                 return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, wait.as_secs().max(1).to_string())], body).into_response();
             }
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
             ApiError::Internal(m) => {
                 tracing::error!("{m}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "Erreur du serveur".to_owned())
@@ -285,6 +332,24 @@ fn code_given(server: &Server, headers: &HeaderMap) -> bool {
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or_default();
     same_code(given.trim(), &server.code)
+}
+
+/// Jeton d'appareil donné (`Authorization: Device <jeton>`)
+fn device_token(headers: &HeaderMap) -> Option<String> {
+    let token = headers.get("authorization")?.to_str().ok()?.strip_prefix("Device ")?.trim();
+    (!token.is_empty() && token.len() <= 128).then(|| token.to_owned())
+}
+
+/// Qui fait la requête : une application (code partagé, tout permis) ou un appareil associé
+/// (lecture seule, limitée à son application)
+#[derive(Debug, Clone)]
+enum Access {
+    Full,
+    Device { id: String, instance: String },
+}
+
+fn now_text() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// Adresse du client : derrière `hops` proxys, celle ajoutée par le premier d'entre eux à
@@ -325,6 +390,36 @@ async fn require_code(State(server): State<Shared>, request: Request, next: Next
         return ApiError::Unauthorized.into_response();
     }
     server.guard.succeeded(ip);
+    next.run(request).await
+}
+
+/// Code partagé ou jeton d'appareil, vérifié avant toute lecture du corps ; les jetons refusés
+/// comptent comme des codes refusés. L'accès accordé est passé à la route (`Access`)
+async fn require_access(State(server): State<Shared>, mut request: Request, next: Next) -> Response {
+    let peer = request.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
+    let ip = client_ip(request.headers(), peer, server.proxy_hops);
+    let now = Instant::now();
+    if let Some(wait) = server.guard.blocked(ip, now) {
+        return ApiError::TooManyAttempts(wait).into_response();
+    }
+    let access = if code_given(&server, request.headers()) {
+        Some(Access::Full)
+    } else if let Some(token) = device_token(request.headers()) {
+        match with_db(&server, move |conn| Ok(mobile::device_for_token(conn, &token)?)).await {
+            Ok(found) => found.map(|(id, instance)| Access::Device { id, instance }),
+            Err(e) => return e.into_response(),
+        }
+    } else {
+        None
+    };
+    let Some(access) = access else {
+        server.guard.failed(ip, now);
+        tracing::warn!("code ou jeton refusé pour {ip}");
+        let device = request.headers().get("authorization").and_then(|v| v.to_str().ok()).is_some_and(|v| v.starts_with("Device "));
+        return if device { ApiError::UnknownDevice } else { ApiError::Unauthorized }.into_response();
+    };
+    server.guard.succeeded(ip);
+    request.extensions_mut().insert(access);
     next.run(request).await
 }
 
@@ -434,7 +529,7 @@ async fn push(State(server): State<Shared>, Json(body): Json<Push>) -> Result<Js
         }
     }
     let author = body.author.map(|a| a.chars().take(60).collect::<String>());
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let now = now_text();
     let who = author.clone();
     let (accepted, seq) = with_db(&server, move |conn| {
         let tx = conn.transaction()?;
@@ -484,20 +579,79 @@ async fn push(State(server): State<Shared>, Json(body): Json<Push>) -> Result<Js
     Ok(Json(PushResult { accepted, seq }))
 }
 
+fn seq_event(seq: i64) -> Event {
+    Event::default().event("seq").data(serde_json::json!({ "seq": seq }).to_string())
+}
+
 /// `/api/v1/events` : flux Server-Sent Events. À l'ouverture puis à chaque modification
 /// enregistrée, un événement `seq` porte le numéro de la dernière modification
 /// (`data: {"seq":42}`) ; plusieurs modifications rapprochées peuvent n'en donner qu'un.
-/// Un commentaire toutes les KEEP_ALIVE garde la connexion ouverte
-async fn events(State(server): State<Shared>) -> Response {
+/// Un commentaire toutes les KEEP_ALIVE garde la connexion ouverte.
+///
+/// Appareil associé (0.6) : en plus, un événement `state` (`data: {"instance":"…"}`) quand
+/// son application publie un nouvel état ; son flux se ferme dès qu'il est révoqué
+async fn events(State(server): State<Shared>, Extension(access): Extension<Access>) -> Response {
     let Ok(place) = server.streams.clone().try_acquire_owned() else {
         let body = Json(serde_json::json!({ "error": "Trop de connexions en temps réel : réessayer plus tard" }));
         return (StatusCode::SERVICE_UNAVAILABLE, [(header::RETRY_AFTER, "60")], body).into_response();
     };
-    let stream = WatchStream::new(server.seq.subscribe()).map_while(move |seq| {
+    let (tx, rx) = mpsc::channel::<Event>(16);
+    let mut seq = server.seq.subscribe();
+    let mut notices = server.notices.subscribe();
+    let device = match access {
+        Access::Full => None,
+        Access::Device { id, instance } => Some((id, instance)),
+    };
+    let s = server.clone();
+    tokio::spawn(async move {
+        let first = *seq.borrow_and_update();
+        let Some(first) = first else { return };
+        if tx.send(seq_event(first)).await.is_err() {
+            return;
+        }
+        loop {
+            let event = tokio::select! {
+                _ = tx.closed() => break,
+                changed = seq.changed() => {
+                    let current = *seq.borrow_and_update();
+                    match (changed, current) {
+                        (Ok(()), Some(n)) => seq_event(n),
+                        // Arrêt du serveur : le flux se ferme
+                        _ => break,
+                    }
+                }
+                notice = notices.recv(), if device.is_some() => {
+                    let (id, instance) = device.as_ref().expect("appareil");
+                    match notice {
+                        Ok(mobile::Notice::State(i)) if &i == instance => {
+                            Event::default().event("state").data(serde_json::json!({ "instance": i }).to_string())
+                        }
+                        Ok(mobile::Notice::Revoked(d)) if &d == id => break,
+                        Ok(_) => continue,
+                        // Nouvelles perdues : appareil revérifié, puis tout est relu
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            let id = id.clone();
+                            match with_db(&s, move |conn| Ok(mobile::device_exists(conn, &id)?)).await {
+                                Ok(true) => match *seq.borrow() {
+                                    Some(n) => seq_event(n),
+                                    None => break,
+                                },
+                                _ => break,
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            };
+            if tx.send(event).await.is_err() {
+                break;
+            }
+        }
+    });
+    let stream = ReceiverStream::new(rx).map(move |event| {
         // La place est rendue à la fermeture du flux
         let _place = &place;
-        let seq = seq?;
-        Some(Ok::<_, Infallible>(Event::default().event("seq").data(serde_json::json!({ "seq": seq }).to_string())))
+        Ok::<_, Infallible>(event)
     });
     // `X-Accel-Buffering` : Nginx (et Nginx Proxy Manager) transmet chaque événement sans attendre
     (
@@ -546,7 +700,25 @@ fn open_db(path: &str) -> rusqlite::Result<Connection> {
              author TEXT,
              PRIMARY KEY (collection, id)
          );
-         CREATE INDEX IF NOT EXISTS docs_seq ON docs (seq);",
+         CREATE INDEX IF NOT EXISTS docs_seq ON docs (seq);
+         -- Web app mobile (0.6) : applications, leur dernier état publié, appareils associés
+         -- (jeton gardé sous forme d'empreinte SHA-256)
+         CREATE TABLE IF NOT EXISTS instances (
+             id TEXT PRIMARY KEY,
+             name TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             state TEXT,
+             state_at TEXT
+         );
+         CREATE TABLE IF NOT EXISTS devices (
+             id TEXT PRIMARY KEY,
+             instance TEXT NOT NULL,
+             name TEXT NOT NULL,
+             token_hash TEXT NOT NULL UNIQUE,
+             created_at TEXT NOT NULL,
+             last_seen TEXT
+         );
+         CREATE INDEX IF NOT EXISTS devices_instance ON devices (instance);",
     )?;
     // Bases d'avant la 0.4 : l'historique gardait le contenu de chaque version (lu par
     // personne) ; il est vidé de ce contenu et la place libérée au fil des ménages
@@ -606,11 +778,26 @@ fn health_check(port: u16) -> std::process::ExitCode {
 }
 
 fn app(server: Shared) -> Router {
-    let api = Router::new()
+    // Code partagé : applications seulement (tout ce qui écrit)
+    let full = Router::new()
         .route("/api/v1/info", get(info))
         .route("/api/v1/changes", get(changes).post(push))
+        .route("/api/v1/instances/{id}", put(mobile::put_instance))
+        .route("/api/v1/instances/{id}/state", put(mobile::put_state))
+        .route("/api/v1/instances/{id}/devices", get(mobile::list_devices))
+        .route("/api/v1/instances/{id}/devices/{device}", delete(mobile::revoke_device))
+        .route("/api/v1/pair/start", post(mobile::pair_start))
         // Code vérifié avant la lecture du corps (route_layer : routes connues seulement)
-        .route_layer(middleware::from_fn_with_state(server.clone(), require_code))
+        .route_layer(middleware::from_fn_with_state(server.clone(), require_code));
+    // Code partagé ou jeton d'appareil : lecture seule
+    let read = Router::new()
+        .route("/api/v1/app/overview", get(mobile::overview))
+        .route_layer(middleware::from_fn_with_state(server.clone(), require_access));
+    // Association : sans code, limitée par adresse dans la route
+    let open = Router::new().route("/api/v1/pair/claim", post(mobile::pair_claim));
+    let api = full
+        .merge(read)
+        .merge(open)
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(GlobalConcurrencyLimitLayer::new(MAX_CONCURRENT))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, REQUEST_TIMEOUT));
@@ -618,8 +805,9 @@ fn app(server: Shared) -> Router {
     // délai maximal (plafonnés à part, MAX_STREAMS)
     let live = Router::new()
         .route("/api/v1/events", get(events))
-        .route_layer(middleware::from_fn_with_state(server.clone(), require_code));
-    Router::new().route("/health", get(health)).merge(api).merge(live).with_state(server)
+        .route_layer(middleware::from_fn_with_state(server.clone(), require_access));
+    let files = web::router(&server.web_dir);
+    Router::new().route("/health", get(health)).merge(api).merge(live).with_state(server).merge(files)
 }
 
 #[tokio::main]
@@ -659,7 +847,12 @@ async fn main() -> std::process::ExitCode {
     let days: i64 = std::env::var("SYNC_HISTORY_DAYS").ok().and_then(|d| d.parse().ok()).unwrap_or(90).max(1);
     let proxy_hops: usize = std::env::var("SYNC_PROXY_HOPS").ok().and_then(|d| d.trim().parse().ok()).unwrap_or(1);
     let server = match Server::new(code, collections, conn, proxy_hops) {
-        Ok(s) => Arc::new(s),
+        Ok(mut s) => {
+            if let Some(dir) = std::env::var("SYNC_WEB_DIR").ok().filter(|d| !d.trim().is_empty()) {
+                s.web_dir = PathBuf::from(dir.trim());
+            }
+            Arc::new(s)
+        }
         Err(e) => {
             tracing::error!("lecture de {path} : {e}");
             return std::process::ExitCode::FAILURE;
@@ -681,21 +874,33 @@ async fn main() -> std::process::ExitCode {
         }
     });
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!("écoute sur {addr} : {e}");
-            return std::process::ExitCode::FAILURE;
-        }
+    let web_port: Option<u16> = std::env::var("SYNC_WEB_PORT").ok().and_then(|p| p.trim().parse().ok()).filter(|p| *p != port);
+    let bind = |port: u16| async move {
+        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        tokio::net::TcpListener::bind(addr).await.map_err(|e| tracing::error!("écoute sur {addr} : {e}"))
+    };
+    let Ok(listener) = bind(port).await else { return std::process::ExitCode::FAILURE };
+    let web_listener = match web_port {
+        Some(p) => match bind(p).await {
+            Ok(l) => Some(l),
+            Err(()) => return std::process::ExitCode::FAILURE,
+        },
+        None => None,
     };
     tracing::info!(
-        "Twitch Desk Sync {} sur {addr}, base {path}, collections : {}",
+        "Twitch Desk Sync {} sur le port {port}, base {path}, collections : {}",
         env!("CARGO_PKG_VERSION"),
         server.collections.iter().cloned().collect::<Vec<_>>().join(", ")
     );
+    if !server.web_dir.join("index.html").is_file() {
+        tracing::info!("web app absente de {} : /app non servi", server.web_dir.display());
+    } else if let Some(p) = web_port {
+        tracing::info!("web app sur /app (ports {port} et {p})");
+    }
+    // Arrêt demandé : chaque écoute s'arrête
+    let (stop_tx, stop_rx) = watch::channel(false);
     let stopping = server.clone();
-    let shutdown = async move {
+    tokio::spawn(async move {
         let ctrl_c = tokio::signal::ctrl_c();
         #[cfg(unix)]
         {
@@ -706,9 +911,23 @@ async fn main() -> std::process::ExitCode {
         let _ = ctrl_c.await;
         // Flux d'événements fermés : l'arrêt n'attend pas qu'ils se terminent d'eux-mêmes
         stopping.seq.send_replace(None);
+        let _ = stop_tx.send(true);
+    });
+    let stopped = |mut rx: watch::Receiver<bool>| async move {
+        let _ = rx.wait_for(|stop| *stop).await;
     };
+    let web_dir = server.web_dir.clone();
     let service = app(server).into_make_service_with_connect_info::<SocketAddr>();
-    if let Err(e) = axum::serve(listener, service).with_graceful_shutdown(shutdown).await {
+    let api = axum::serve(listener, service).with_graceful_shutdown(stopped(stop_rx.clone()));
+    let result = match web_listener {
+        None => api.await,
+        Some(l) => {
+            let files: Router = web::standalone(&web_dir);
+            let web = axum::serve(l, files.into_make_service()).with_graceful_shutdown(stopped(stop_rx));
+            tokio::try_join!(api.into_future(), web.into_future()).map(|_| ())
+        }
+    };
+    if let Err(e) = result {
         tracing::error!("serveur : {e}");
         return std::process::ExitCode::FAILURE;
     }
@@ -928,6 +1147,279 @@ mod tests {
         // Flux fermé : place rendue
         drop(res);
         assert_eq!(s.streams.available_permits(), MAX_STREAMS);
+    }
+
+    /// Requête avec un en-tête `Authorization` quelconque
+    fn request_auth(method: &str, uri: &str, auth: &str, ip: &str, body: &str) -> Request {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-forwarded-for", ip)
+            .header("content-type", "application/json")
+            .header("authorization", auth)
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    }
+
+    async fn json_of(s: &Shared, r: Request) -> (StatusCode, serde_json::Value) {
+        let res = app(s.clone()).oneshot(r).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    const INSTANCE: &str = "0b6f1c1e-1111-4a2b-9c3d-000000000001";
+
+    /// Code d'association demandé par l'application
+    async fn start_pairing(s: &Shared, instance: &str) -> String {
+        let body = format!(r#"{{"instance":"{instance}","name":"PC de test"}}"#);
+        let (status, v) = json_of(s, request("POST", "/api/v1/pair/start", Some("code-secret"), "1.1.1.1", &body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["expiresIn"], 300);
+        let code = v["code"].as_str().unwrap().to_owned();
+        assert!(code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()));
+        code
+    }
+
+    async fn claim(s: &Shared, code: &str, ip: &str) -> (StatusCode, serde_json::Value) {
+        let body = format!(r#"{{"code":"{code}","deviceName":"iPhone"}}"#);
+        json_of(s, request("POST", "/api/v1/pair/claim", None, ip, &body)).await
+    }
+
+    /// Téléphone associé : (jeton, identifiant de l'appareil)
+    async fn paired_device(s: &Shared, instance: &str) -> (String, String) {
+        let code = start_pairing(s, instance).await;
+        let (status, v) = claim(s, &code, "2.2.2.2").await;
+        assert_eq!(status, StatusCode::OK);
+        (v["token"].as_str().unwrap().to_owned(), v["deviceId"].as_str().unwrap().to_owned())
+    }
+
+    #[tokio::test]
+    async fn pairing_gives_a_single_use_token() {
+        let s = server(&["gifts", "giveaways"]);
+        // Sans le code partagé : pas de code d'association
+        let body = format!(r#"{{"instance":"{INSTANCE}"}}"#);
+        assert_eq!(status(&s, request("POST", "/api/v1/pair/start", None, "1.1.1.1", &body)).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status(&s, request("POST", "/api/v1/pair/start", Some("code-secret"), "1.1.1.1", r#"{"instance":"x"}"#)).await,
+            StatusCode::BAD_REQUEST
+        );
+
+        let code = start_pairing(&s, INSTANCE).await;
+        let (st, v) = claim(&s, &code, "2.2.2.2").await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(v["instance"]["name"], "PC de test");
+        let token = v["token"].as_str().unwrap().to_owned();
+        assert_eq!(token.len(), 64);
+        // Seule l'empreinte du jeton est gardée
+        let stored: String = s.db.lock().unwrap().query_row("SELECT token_hash FROM devices", [], |r| r.get(0)).unwrap();
+        assert_ne!(stored, token);
+        assert_eq!(stored, mobile::token_hash(&token));
+
+        // Le jeton ouvre la vue d'ensemble
+        let (st, v) = json_of(&s, request_auth("GET", "/api/v1/app/overview", &format!("Device {token}"), "2.2.2.2", "")).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(v["instance"]["id"], INSTANCE);
+        assert_eq!(v["device"]["name"], "iPhone");
+        assert!(v["device"]["lastSeen"].is_string());
+
+        // Code déjà utilisé
+        assert_eq!(claim(&s, &code, "2.2.2.2").await.0, StatusCode::BAD_REQUEST);
+        // Code expiré
+        let code = start_pairing(&s, INSTANCE).await;
+        s.pairings.lock().unwrap().get_mut(&code).unwrap().expires = Instant::now() - Duration::from_secs(1);
+        assert_eq!(claim(&s, &code, "3.3.3.3").await.0, StatusCode::BAD_REQUEST);
+        // Un nouveau code remplace le précédent de la même application
+        let first = start_pairing(&s, INSTANCE).await;
+        let second = start_pairing(&s, INSTANCE).await;
+        if first != second {
+            assert_eq!(claim(&s, &first, "3.3.3.3").await.0, StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(claim(&s, &second, "3.3.3.3").await.0, StatusCode::OK);
+        // Jeton inconnu
+        let (st, v) = json_of(&s, request_auth("GET", "/api/v1/app/overview", "Device inconnu", "4.4.4.4", "")).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        assert!(v["error"].as_str().unwrap().contains("associe-le"));
+    }
+
+    #[tokio::test]
+    async fn pairing_attempts_are_limited_per_address() {
+        let s = server(&["giveaways"]);
+        let code = start_pairing(&s, INSTANCE).await;
+        let wrong = if code == "000000" { "111111" } else { "000000" };
+        for _ in 0..mobile::PAIR_MAX_FAILURES {
+            assert_eq!(claim(&s, wrong, "5.5.5.5").await.0, StatusCode::BAD_REQUEST);
+        }
+        // Bloquée, même avec le bon code ; les autres adresses non
+        assert_eq!(claim(&s, &code, "5.5.5.5").await.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(claim(&s, &code, "5.5.5.6").await.0, StatusCode::OK);
+        // Corps illisible ou trop gros : refusé sans être lu en entier
+        assert_eq!(status(&s, request("POST", "/api/v1/pair/claim", None, "5.5.5.7", "{pas du json")).await, StatusCode::BAD_REQUEST);
+        let big = format!(r#"{{"code":"{}"}}"#, "1".repeat(10_000));
+        assert_eq!(status(&s, request("POST", "/api/v1/pair/claim", None, "5.5.5.7", &big)).await, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn device_token_is_read_only() {
+        let s = server(&["gifts", "giveaways"]);
+        let (token, device) = paired_device(&s, INSTANCE).await;
+        let auth = format!("Device {token}");
+        let push = r#"{"author":"x","changes":[{"collection":"gifts","id":"a","data":{"title":"Voiles"}}]}"#;
+        assert_eq!(status(&s, request_auth("POST", "/api/v1/changes", &auth, "6.6.6.1", push)).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/changes", &auth, "6.6.6.1", "")).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/info", &auth, "6.6.6.1", "")).await, StatusCode::UNAUTHORIZED);
+        let state_uri = format!("/api/v1/instances/{INSTANCE}/state");
+        assert_eq!(status(&s, request_auth("PUT", &state_uri, &auth, "6.6.6.1", "{}")).await, StatusCode::UNAUTHORIZED);
+        let devices_uri = format!("/api/v1/instances/{INSTANCE}/devices");
+        assert_eq!(status(&s, request_auth("GET", &devices_uri, &auth, "6.6.6.1", "")).await, StatusCode::UNAUTHORIZED);
+        let revoke_uri = format!("/api/v1/instances/{INSTANCE}/devices/{device}");
+        assert_eq!(status(&s, request_auth("DELETE", &revoke_uri, &auth, "6.6.6.1", "")).await, StatusCode::UNAUTHORIZED);
+        let start = format!(r#"{{"instance":"{INSTANCE}"}}"#);
+        assert_eq!(status(&s, request_auth("POST", "/api/v1/pair/start", &auth, "6.6.6.1", &start)).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(pull(&s, 0).await.changes.len(), 0);
+        // Lecture permise : vue d'ensemble et flux
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/app/overview", &auth, "6.6.6.2", "")).await, StatusCode::OK);
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/events", &auth, "6.6.6.2", "")).await, StatusCode::OK);
+        // La vue d'ensemble est celle d'un appareil
+        assert_eq!(status(&s, request("GET", "/api/v1/app/overview", Some("code-secret"), "6.6.6.2", "")).await, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn overview_lists_open_then_paused_giveaways_with_their_gifts() {
+        let s = server(&["groups", "gifts", "giveaways"]);
+        let body = Push {
+            author: Some("alice".into()),
+            changes: vec![
+                change("groups", "g1", Some(serde_json::json!({"name": "Voiles"}))),
+                change("gifts", "c1", Some(serde_json::json!({"title": "Obsidian Sails", "image": "data:image/png;base64,AAA", "group": "g1", "gameName": "Sea of Thieves"}))),
+                change("gifts", "c2", Some(serde_json::json!({"title": "Pirate", "image": "javascript:alert(1)"}))),
+                change("giveaways", "old", Some(serde_json::json!({"channel": "a", "kind": "command", "detectedAt": "2026-01-01T00:00:00Z", "open": false}))),
+                change("giveaways", "p1", Some(serde_json::json!({"channel": "b", "kind": "command", "detectedAt": "2026-11-01T12:00:00Z", "open": false, "status": "paused"}))),
+                change("giveaways", "o1", Some(serde_json::json!({"channel": "c", "kind": "command", "command": "!join", "detectedAt": "2026-11-01T10:00:00Z", "open": true, "gifts": ["c1", "c2", "absent"]}))),
+                change("giveaways", "o2", Some(serde_json::json!({"channel": "d", "kind": "ticket", "detectedAt": "2026-11-01T11:00:00Z", "open": true}))),
+            ],
+        };
+        let _ = push(State(s.clone()), Json(body)).await.ok().unwrap();
+        let (token, _) = paired_device(&s, INSTANCE).await;
+        let auth = format!("Device {token}");
+
+        // État publié par l'application
+        let state = r#"{"accounts":["alice"],"giveaways":{"o1":{"participated":["alice"],"handled":true}},"live":{"c":{"live":true,"viewers":42}}}"#;
+        let uri = format!("/api/v1/instances/{INSTANCE}/state");
+        assert_eq!(status(&s, request("PUT", &uri, Some("code-secret"), "7.7.7.1", state)).await, StatusCode::NO_CONTENT);
+        assert_eq!(status(&s, request("PUT", &uri, Some("code-secret"), "7.7.7.1", "[1]")).await, StatusCode::BAD_REQUEST);
+
+        let (st, v) = json_of(&s, request_auth("GET", "/api/v1/app/overview", &auth, "7.7.7.2", "")).await;
+        assert_eq!(st, StatusCode::OK);
+        let ids: Vec<&str> = v["giveaways"].as_array().unwrap().iter().map(|g| g["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["o2", "o1", "p1"]);
+        let o1 = &v["giveaways"][1];
+        assert_eq!(o1["status"], "open");
+        assert_eq!(o1["command"], "!join");
+        assert_eq!(o1["gifts"].as_array().unwrap().len(), 2);
+        assert_eq!(o1["gifts"][0]["title"], "Obsidian Sails");
+        assert_eq!(o1["gifts"][0]["group"], "Voiles");
+        assert_eq!(o1["gifts"][0]["gameName"], "Sea of Thieves");
+        // Image qui n'est ni une data URL ni une adresse https : retirée
+        assert!(o1["gifts"][1]["image"].is_null());
+        assert_eq!(v["giveaways"][2]["status"], "paused");
+        assert_eq!(v["state"]["giveaways"]["o1"]["participated"][0], "alice");
+        assert!(v["stateAt"].is_string());
+        assert_eq!(v["instance"]["name"], "PC de test");
+    }
+
+    #[tokio::test]
+    async fn device_stream_announces_its_state_and_closes_on_revoke() {
+        let s = server(&["gifts"]);
+        let (token, device) = paired_device(&s, INSTANCE).await;
+        let (other_token, _) = paired_device(&s, "0b6f1c1e-1111-4a2b-9c3d-000000000002").await;
+        let res = app(s.clone()).oneshot(request_auth("GET", "/api/v1/events", &format!("Device {token}"), "8.8.8.1", "")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let mut body = res.into_body().into_data_stream();
+        assert_eq!(next_event(&mut body).await, "event: seq\ndata: {\"seq\":0}\n\n");
+
+        // État d'une autre application : rien ; de la sienne : annoncé (une fois s'il ne change pas)
+        let other = "/api/v1/instances/0b6f1c1e-1111-4a2b-9c3d-000000000002/state";
+        assert_eq!(status(&s, request("PUT", other, Some("code-secret"), "8.8.8.2", r#"{"a":1}"#)).await, StatusCode::NO_CONTENT);
+        assert!(tokio::time::timeout(Duration::from_millis(200), body.next()).await.is_err());
+        let mine = format!("/api/v1/instances/{INSTANCE}/state");
+        assert_eq!(status(&s, request("PUT", &mine, Some("code-secret"), "8.8.8.2", r#"{"a":1}"#)).await, StatusCode::NO_CONTENT);
+        assert_eq!(next_event(&mut body).await, format!("event: state\ndata: {{\"instance\":\"{INSTANCE}\"}}\n\n"));
+        assert_eq!(status(&s, request("PUT", &mine, Some("code-secret"), "8.8.8.2", r#"{"a":1}"#)).await, StatusCode::NO_CONTENT);
+        assert!(tokio::time::timeout(Duration::from_millis(200), body.next()).await.is_err());
+
+        // Modification d'un document : annoncée aussi
+        let push = r#"{"changes":[{"collection":"gifts","id":"a","data":{"title":"Voiles"}}]}"#;
+        assert_eq!(status(&s, request("POST", "/api/v1/changes", Some("code-secret"), "8.8.8.2", push)).await, StatusCode::OK);
+        assert_eq!(next_event(&mut body).await, "event: seq\ndata: {\"seq\":1}\n\n");
+
+        // Appareils de l'application, puis révocation : jeton refusé, flux fermé
+        let (st, list) = json_of(&s, request("GET", &format!("/api/v1/instances/{INSTANCE}/devices"), Some("code-secret"), "8.8.8.2", "")).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["id"], device.as_str());
+        assert_eq!(list[0]["name"], "iPhone");
+        let revoke = format!("/api/v1/instances/{INSTANCE}/devices/{device}");
+        assert_eq!(status(&s, request("DELETE", &revoke, Some("code-secret"), "8.8.8.2", "")).await, StatusCode::NO_CONTENT);
+        assert!(tokio::time::timeout(Duration::from_secs(5), body.next()).await.unwrap().is_none());
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/app/overview", &format!("Device {token}"), "8.8.8.3", "")).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status(&s, request("DELETE", &revoke, Some("code-secret"), "8.8.8.2", "")).await, StatusCode::NOT_FOUND);
+        // L'appareil de l'autre application reste associé
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/app/overview", &format!("Device {other_token}"), "8.8.8.3", "")).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn instance_registration() {
+        let s = server(&["gifts"]);
+        let uri = format!("/api/v1/instances/{INSTANCE}");
+        assert_eq!(status(&s, request("PUT", &uri, None, "9.1.1.1", r#"{"name":"PC"}"#)).await, StatusCode::UNAUTHORIZED);
+        let (st, v) = json_of(&s, request("PUT", &uri, Some("code-secret"), "9.1.1.1", r#"{"name":"  PC du salon "}"#)).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(v["name"], "PC du salon");
+        assert_eq!(status(&s, request("PUT", "/api/v1/instances/a%20b", Some("code-secret"), "9.1.1.1", "{}")).await, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn web_app_is_served_under_app() {
+        let dir = std::env::temp_dir().join(format!("tdsync-web-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("index.html"), "<html>web app</html>").unwrap();
+        std::fs::write(dir.join("assets/index-abc123.js"), "console.log(1)").unwrap();
+        std::fs::write(dir.join("sw.js"), "self").unwrap();
+        let mut srv = Server::new("code-secret".into(), ["gifts".to_string()].into(), open_db(":memory:").unwrap(), 1).unwrap();
+        srv.web_dir = dir.clone();
+        let s = Arc::new(srv);
+        let get = |uri: &str| Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let read = |res: Response| async move {
+            let cache = res.headers().get(header::CACHE_CONTROL).map(|v| v.to_str().unwrap().to_owned());
+            (res.status(), cache, String::from_utf8(axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap())
+        };
+
+        let (st, cache, body) = read(app(s.clone()).oneshot(get("/app/")).await.unwrap()).await;
+        assert_eq!((st, cache.as_deref(), body.as_str()), (StatusCode::OK, Some("no-cache"), "<html>web app</html>"));
+        let (st, cache, _) = read(app(s.clone()).oneshot(get("/app/assets/index-abc123.js")).await.unwrap()).await;
+        assert_eq!((st, cache.as_deref()), (StatusCode::OK, Some("public, max-age=31536000, immutable")));
+        let (st, cache, _) = read(app(s.clone()).oneshot(get("/app/sw.js")).await.unwrap()).await;
+        assert_eq!((st, cache.as_deref()), (StatusCode::OK, Some("no-cache")));
+        // Navigation dans la web app : index.html
+        let (st, _, body) = read(app(s.clone()).oneshot(get("/app/giveaways/42")).await.unwrap()).await;
+        assert_eq!((st, body.as_str()), (StatusCode::OK, "<html>web app</html>"));
+        // Fichier absent : 404, pas index.html
+        assert_eq!(app(s.clone()).oneshot(get("/app/assets/index-old.js")).await.unwrap().status(), StatusCode::NOT_FOUND);
+        assert_eq!(app(s.clone()).oneshot(get("/app/icon-9.png")).await.unwrap().status(), StatusCode::NOT_FOUND);
+        // Hors de /app : rien de servi, l'API reste protégée
+        assert_eq!(app(s.clone()).oneshot(get("/index.html")).await.unwrap().status(), StatusCode::NOT_FOUND);
+        assert_eq!(app(s.clone()).oneshot(get("/app/../Cargo.toml")).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+        // Port propre à la web app : /app seulement, la racine y mène
+        let web: Router = web::standalone(&dir);
+        let res = web.clone().oneshot(get("/")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(res.headers()[header::LOCATION], "/app/");
+        assert_eq!(web.clone().oneshot(get("/app/")).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(web.clone().oneshot(get("/api/v1/info")).await.unwrap().status(), StatusCode::NOT_FOUND);
+        assert_eq!(web.oneshot(get("/health")).await.unwrap().status(), StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
