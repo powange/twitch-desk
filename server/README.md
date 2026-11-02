@@ -8,6 +8,8 @@ Ce qui reste propre à chacun : comptes Twitch, participations, gains et lots re
 
 Dans l'application, chacun choisit parmi les données proposées par le serveur celles qu'il synchronise (Paramètres → Synchronisation). Les chaînes surveillées sont décochées par défaut : chacun garde sa liste tant qu'il ne coche pas la case.
 
+Depuis la 0.6, le serveur sert aussi une **web app mobile** (`/app`) : sur le téléphone, les giveaways ouverts et en pause, la commande à copier, les lots, les conditions, l'heure du tirage, le statut live de la chaîne et les comptes de *ton* PC qui ont déjà participé. Elle ne modifie rien (lecture seule).
+
 ## Installation (Portainer)
 
 Stacks → Add stack → **Repository** :
@@ -16,7 +18,7 @@ Stacks → Add stack → **Repository** :
 - Compose path : `server/docker-compose.yml`
 - Environment variables : `SYNC_CODE` (obligatoire), et au besoin `SYNC_COLLECTIONS`, `SYNC_HISTORY_DAYS`, `SYNC_PROXY_HOPS`, `SYNC_HOST_PORT` (port publié sur l'hôte, `8787` par défaut), `SYNC_HOST_BIND` (interface de l'hôte où il est publié, `127.0.0.1` par défaut)
 
-L'image `ghcr.io/powange/twitch-desk-sync` est publiée par GitHub Actions à chaque modification du serveur. Pour la construire sur place à la place, remplacer `image:` par `build: .` dans le compose.
+L'image `ghcr.io/powange/twitch-desk-sync` est publiée par GitHub Actions à chaque modification du serveur ou de la web app. Pour la construire sur place à la place, remplacer `image:` par le bloc `build:` commenté dans le compose (contexte : la racine du dépôt, `dockerfile: server/Dockerfile`), ou à la main : `docker build -f server/Dockerfile -t twitch-desk-sync .` depuis la racine du dépôt.
 
 Mettre le serveur derrière un proxy HTTPS (Nginx Proxy Manager, Traefik, Caddy…) : le code circule dans chaque requête. Le compose rejoint le réseau `proxy-network` : le proxy joint le serveur par `twitch-desk-sync:8787`.
 
@@ -44,6 +46,40 @@ Protection : après 10 codes incorrects en 10 minutes depuis une même adresse, 
 
 Sans temps réel (serveur d'avant la 0.5 ou proxy qui bloque le flux), l'application continue de synchroniser toutes les 30 s.
 
+## Web app mobile (0.6)
+
+### Connecter un téléphone
+
+Dans l'application : Paramètres → Synchronisation → « Connecter un téléphone ». Un code à 6 chiffres s'affiche avec un QR code (lien `https://<serveur>/app/#pair=<code>`) : le scanner avec l'appareil photo ouvre la web app, qui se connecte seule ; sinon ouvrir `https://<serveur>/app/` et taper le code. Le téléphone apparaît alors dans la liste « Téléphones connectés », d'où on peut le déconnecter. Sur le téléphone, « Ajouter à l'écran d'accueil » l'installe comme une application.
+
+- Le code vaut 5 minutes, une seule fois ; un nouveau code remplace le précédent. Après 5 codes incorrects en 10 minutes, une adresse est refusée pendant 10 minutes.
+- Le téléphone reçoit son propre jeton (le code du serveur ne quitte jamais le PC). Le serveur n'en garde que l'empreinte (SHA-256). Ce jeton ne permet que de lire les giveaways ouverts et l'état publié par le PC qui l'a associé : aucune écriture.
+- Déconnecter un téléphone depuis le PC refuse son jeton aussitôt et ferme sa connexion temps réel.
+- Chaque PC publie un petit état (comptes, participations aux giveaways ouverts, statut live de leurs chaînes) quelques secondes après un changement : le téléphone se met à jour en temps réel.
+
+### Derrière un proxy
+
+La web app est servie sous `/app` sur le même port que l'API : avec un seul hôte (`https://sync.exemple.fr`), rien à régler, `/app` et `/api` passent par le même proxy.
+
+Le proxy doit transmettre `/app` **avec son préfixe** (`/app/…` arrive tel quel au serveur ; pas de réécriture vers `/`). La web app appelle l'API sur la même adresse (`/api/v1/…`) : `/api` doit donc rester joignable sur le même hôte, vers le port de l'API.
+
+Port à part (`SYNC_WEB_PORT`, facultatif) : le serveur sert alors aussi la web app, et seulement elle, sur ce second port (sa racine `/` redirige vers `/app/`). Utile pour router `/app` vers un autre port que l'API, par exemple avec Nginx Proxy Manager :
+
+- Proxy host `sync.exemple.fr` → `twitch-desk-sync:8787` (l'API, comme avant, SSL compris)
+- Onglet « Custom locations » : location `/app`, scheme `http`, forward hostname `twitch-desk-sync`, forward port `8788` (la valeur de `SYNC_WEB_PORT`). Ne rien mettre après le nom d'hôte (pas de `/` final dans « Forward Hostname / IP ») : NPM garde alors le préfixe `/app`.
+
+En Nginx écrit à la main :
+
+```nginx
+location /app/ {
+    proxy_pass http://twitch-desk-sync:8788;   # sans chemin après le port : /app/ est gardé
+}
+```
+
+Si la web app est publiée à une autre adresse que celle du serveur, l'indiquer dans l'application (« Adresse de la web app ») : c'est elle que le QR code contient. Elle doit rester sur le même hôte que `/api`.
+
+Le flux temps réel du téléphone (`/api/v1/events`) passe par les mêmes règles que celui des applications (voir plus haut). Le jeton du téléphone voyage dans l'en-tête `Authorization`, jamais dans l'adresse : il n'apparaît pas dans les journaux du proxy.
+
 ## Variables d'environnement
 
 | Variable | Défaut | Rôle |
@@ -54,6 +90,8 @@ Sans temps réel (serveur d'avant la 0.5 ou proxy qui bloque le flux), l'applica
 | `SYNC_PROXY_HOPS` | `1` | Proxys devant le serveur, pour lire l'adresse du client dans `X-Forwarded-For` ; `0` si le serveur est joint directement |
 | `SYNC_DB` | `/data/sync.db` | Fichier SQLite (volume `/data`) |
 | `SYNC_PORT` | `8787` | Port d'écoute |
+| `SYNC_WEB_PORT` | (aucun) | Port supplémentaire qui ne sert que la web app (`/app`) ; sans lui, elle est servie sur `SYNC_PORT` seulement |
+| `SYNC_WEB_DIR` | `/usr/share/twitch-desk-sync/web` | Fichiers de la web app (remplis dans l'image) |
 | `SYNC_HOST_BIND` | `127.0.0.1` | (compose) Interface de l'hôte où le port est publié |
 | `SYNC_HOST_PORT` | `8787` | (compose) Port publié sur l'hôte |
 
@@ -65,12 +103,23 @@ Paramètres → Synchronisation : adresse du serveur (`https://sync.exemple.fr`)
 
 ## API
 
-Toutes les routes sauf `/health` demandent `Authorization: Bearer <SYNC_CODE>`.
+Sauf mention contraire, les routes demandent `Authorization: Bearer <SYNC_CODE>`. Un téléphone associé utilise `Authorization: Device <jeton>`, accepté seulement par `/api/v1/app/overview` et `/api/v1/events`.
 
 - `GET /health` : `ok` (le serveur et sa base répondent), sinon 503
 - `GET /api/v1/info` : version, collections partagées, numéro de la dernière modification
 - `GET /api/v1/changes?since=<seq>&limit=<n>` : documents modifiés depuis `seq` (dernière version de chacun, suppressions comprises), `more` s'il en reste (page de 16 Mo de contenu au plus)
 - `POST /api/v1/changes` (16 Mo au plus) : `{ "author": "pseudo", "changes": [{ "collection": "gifts", "id": "…", "data": { … } }, { "collection": "gifts", "id": "…", "deleted": true }] }`
-- `GET /api/v1/events` (0.5 et plus) : flux Server-Sent Events ; à l'ouverture puis à chaque modification enregistrée, `event: seq` avec `data: {"seq": <numéro de la dernière modification>}` (des modifications rapprochées peuvent n'en donner qu'un) ; un commentaire toutes les 20 s garde la connexion ouverte. 503 quand 64 flux sont déjà ouverts
+- `GET /api/v1/events` (0.5 et plus ; code ou jeton d'appareil) : flux Server-Sent Events ; à l'ouverture puis à chaque modification enregistrée, `event: seq` avec `data: {"seq": <numéro de la dernière modification>}` (des modifications rapprochées peuvent n'en donner qu'un) ; un commentaire toutes les 20 s garde la connexion ouverte. 503 quand 64 flux sont déjà ouverts. Pour un téléphone (0.6), aussi `event: state` avec `data: {"instance": "<id>"}` quand son PC publie un nouvel état ; le flux se ferme quand il est déconnecté
+
+Web app (0.6 et plus) :
+
+- `PUT /api/v1/instances/{id}` : `{ "name": "PC du salon" }`, enregistre l'application (identifiant tiré une fois par elle)
+- `PUT /api/v1/instances/{id}/state` (256 Ko au plus) : état publié par l'application, objet JSON (`accounts`, `giveaways` : `{ "<id partagé>": { "participated": [...], "handled": true } }`, `live` : `{ "<chaîne>": { "live": true, "viewers": 42, "category": "…", "title": "…" } }`) ; 204
+- `POST /api/v1/pair/start` : `{ "instance": "<id>", "name": "…" }` → `{ "code": "123456", "expiresAt": "…", "expiresIn": 300 }`
+- `POST /api/v1/pair/claim` (sans code ; 5 codes incorrects en 10 min par adresse, puis 429 pendant 10 min) : `{ "code": "123456", "deviceName": "iPhone" }` → `{ "token": "…", "deviceId": "…", "instance": { "id": "…", "name": "…" } }`
+- `GET /api/v1/instances/{id}/devices` : `[{ "id", "name", "createdAt", "lastSeen" }]`
+- `DELETE /api/v1/instances/{id}/devices/{deviceId}` : révoque le téléphone (204, 404 s'il est inconnu)
+- `GET /api/v1/app/overview` (jeton d'appareil) : `{ instance, device, state, stateAt, giveaways, seq }` ; giveaways ouverts puis en pause (les plus récents d'abord), cadeaux remplacés par `{ id, title, image, gameName, group }`
+- `GET /app/…` (sans authentification) : fichiers de la web app ; `/app/assets/…` en cache un an (noms à empreinte), le reste revérifié à chaque visite ; une adresse sans extension renvoie `index.html`
 
 À la première ouverture par la 0.4, une base existante est compactée une fois (`VACUUM`) après que le contenu est retiré de l'historique : le démarrage peut prendre quelques secondes de plus.

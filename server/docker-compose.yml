@@ -5,8 +5,11 @@
 services:
   twitch-desk-sync:
     image: ghcr.io/powange/twitch-desk-sync:latest
-    # Ou construire l'image depuis le dépôt (dossier server/) au lieu de la télécharger :
-    # build: .
+    # Ou construire l'image depuis le dépôt au lieu de la télécharger (contexte : la racine du
+    # dépôt, pour la web app du dossier web/) :
+    # build:
+    #   context: ..
+    #   dockerfile: server/Dockerfile
     container_name: twitch-desk-sync
     restart: unless-stopped
     environment:
@@ -19,6 +22,9 @@ services:
       # Proxys devant le serveur (adresse du client lue dans X-Forwarded-For, pour bloquer
       # les essais de code répétés) ; 0 si le serveur est joint directement
       SYNC_PROXY_HOPS: ${SYNC_PROXY_HOPS:-1}
+      # Web app mobile servie sous /app sur le port de l'API ; un numéro de port ici la sert
+      # aussi (et seulement elle) sur ce port : le proxy joint alors twitch-desk-sync:<port>
+      SYNC_WEB_PORT: ${SYNC_WEB_PORT:-}
     volumes:
       - twitch-desk-sync:/data
     # Port publié sur l'hôte en HTTP simple : limité à l'hôte lui-même par défaut (le proxy

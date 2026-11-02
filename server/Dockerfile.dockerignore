@@ -1,0 +1,8 @@
+# Contexte = racine du dépôt : seuls le serveur et la web app sont envoyés
+*
+!server/Cargo.toml
+!server/Cargo.lock
+!server/src
+!web
+web/node_modules
+web/dist

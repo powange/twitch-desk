@@ -45,6 +45,17 @@ updates:
       - dependency-name: '*'
         update-types: [version-update:semver-major]
 
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: monthly
+    groups:
+      web-npm:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]
+
   - package-ecosystem: docker
     directory: /server
     schedule:

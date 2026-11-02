@@ -1,13 +1,14 @@
 name: Serveur de synchronisation
 
-# Image Docker publiée sur ghcr.io/powange/twitch-desk-sync à chaque modification du serveur,
+# Image Docker publiée sur ghcr.io/powange/twitch-desk-sync à chaque modification du serveur
+# ou de la web app mobile (web/, construite dans l'image),
 # puis redéploiement par le webhook Portainer (secret PORTAINER_WEBHOOK_URL, facultatif).
 # Chaque architecture est compilée sur sa propre machine (pas d'émulation), en parallèle des
 # vérifications ; l'image n'est étiquetée et déployée que si tout a réussi
 on:
   push:
     branches: [main]
-    paths: ['server/**', '.github/workflows/server.yml']
+    paths: ['server/**', 'web/**', '.github/workflows/server.yml']
   workflow_dispatch:
 
 permissions:
@@ -70,7 +71,9 @@ jobs:
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          context: server
+          # Racine du dépôt : le serveur et la web app (server/Dockerfile.dockerignore)
+          context: .
+          file: server/Dockerfile
           platforms: linux/${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
