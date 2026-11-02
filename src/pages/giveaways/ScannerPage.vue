@@ -363,7 +363,6 @@ function liveFor(iso: string | null) {
                   <UButton v-if="!m.monitored" label="Surveiller" icon="i-lucide-plus" size="xs" :loading="adding === m.login" @click="monitor(m)" />
                   <UButton v-if="!m.monitored && !m.ignored" label="Ignorer" size="xs" color="neutral" variant="ghost" title="Jusqu'à la fin de ce live" @click="ignore(m, true)" />
                   <UButton v-if="m.ignored" label="Rétablir" size="xs" color="neutral" variant="ghost" @click="ignore(m, false)" />
-                  <UButton icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" aria-label="Ouvrir la chaîne" @click="openExternal(channelUrl(m.login))" />
                 </div>
               </td>
             </tr>
