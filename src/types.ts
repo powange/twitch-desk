@@ -191,7 +191,6 @@ export interface Settings {
   // Compter aussi les mots-clés tapés seuls, sans « ! »
   detectKeywords: boolean
   // Page multi-stream : intégrée à l'application, ou page GitHub (secours)
-  viewerSource: 'local' | 'github'
   // Fenêtre « Streams » : bloqueur de publicités Twitch dans les lecteurs
   viewerAdblock: boolean
   // Phrases pour dire bonjour dans le chat, par langue (code ISO 639-1)

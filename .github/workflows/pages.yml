@@ -30,26 +30,7 @@ jobs:
         with:
           # Après une release : le tag publié ; à la main : la branche choisie
           ref: ${{ github.event.workflow_run.head_branch || github.ref }}
-          # Tous les tags : copies de la page multi-stream de chaque version
-          fetch-depth: 0
-          fetch-tags: true
           persist-credentials: false
-      # Page multi-stream : intégrée à l'application (public/), copie de secours sur GitHub Pages.
-      # À la racine : celle du tag publié. Dans viewer/<version>/ : celle de chaque version
-      # publiée, reprise des tags à chaque déploiement (un déploiement remplace tout le site)
-      - name: Page multi-stream
-        run: |
-          cp public/viewer.html public/viewer.js site/
-          for tag in $(git tag -l 'v*'); do
-            git cat-file -e "$tag:public/viewer.html" 2>/dev/null || continue
-            git cat-file -e "$tag:public/viewer.js" 2>/dev/null || continue
-            dir="site/viewer/${tag#v}"
-            mkdir -p "$dir"
-            git show "$tag:public/viewer.html" > "$dir/viewer.html"
-            git show "$tag:public/viewer.js" > "$dir/viewer.js"
-            cp site/icon.svg "$dir/"
-          done
-          ls site/viewer
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:

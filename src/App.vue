@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getVersion } from '@tauri-apps/api/app'
+import AppUsage from './components/AppUsage.vue'
 import type { NavigationMenuItem } from '@nuxt/ui'
 import { useSnapshot } from './composables/useSnapshot'
 import { useUpdater } from './composables/useUpdater'
@@ -107,6 +108,7 @@ onMounted(async () => {
             <span class="size-2 rounded-full" :class="paused ? 'bg-warning' : 'bg-success'" />
             {{ paused ? 'En pause' : `Actif · ${liveCount} en live` }}
           </div>
+          <AppUsage />
           <div>v{{ version }}</div>
         </div>
       </aside>

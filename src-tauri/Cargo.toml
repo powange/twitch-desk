@@ -43,6 +43,7 @@ chrono = { version = "0.4", features = ["serde"] }
 rand = "0.9"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 
 # Windows : réglage du navigateur intégré (protection contre le pistage)
 [target.'cfg(windows)'.dependencies]

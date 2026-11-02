@@ -23,11 +23,6 @@ const autostart = ref(false)
 const version = ref('')
 const paths = ref<{ data: string, logs: string } | null>(null)
 
-const viewerItems = [
-  { label: 'Intégrée à l\'application', value: 'local' },
-  { label: 'Page GitHub du projet', value: 'github' }
-]
-
 const themeItems = [
   { label: 'Système', value: 'auto' },
   { label: 'Clair', value: 'light' },
@@ -134,13 +129,6 @@ async function checkUpdates() {
               </div>
               <USwitch v-model="settings.startMinimized" aria-label="Démarrer réduit" />
             </div>
-            <div class="flex items-center justify-between gap-4 px-4 py-3">
-              <div>
-            <div class="font-medium">Page des streams</div>
-            <div class="text-sm text-muted">Fenêtre multi-stream. Si le lecteur Twitch refuse de s'afficher, essaie la page GitHub (puis rouvre la fenêtre).</div>
-          </div>
-          <USelect v-model="settings.viewerSource" :items="viewerItems" class="w-56" />
-        </div>
         <div class="flex items-center justify-between gap-4 px-4 py-3">
           <div>
             <div class="font-medium">Bloquer les publicités Twitch</div>

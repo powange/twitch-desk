@@ -10,6 +10,7 @@ mod secrets;
 mod streamelements;
 mod sync;
 mod tray;
+mod usage;
 mod viewer;
 mod twitch;
 
@@ -215,6 +216,7 @@ pub fn run() {
             }
             viewer::restore(&state);
             sync::spawn(state.clone());
+            usage::spawn(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {

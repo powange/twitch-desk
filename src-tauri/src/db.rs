@@ -690,8 +690,6 @@ pub struct Settings {
     pub detect_cooldown_secs: u64,
     /// Compter aussi les mots-clés tapés seuls, sans « ! »
     pub detect_keywords: bool,
-    /// Page multi-stream : « local » (intégrée à l'application) ou « github » (page GitHub)
-    pub viewer_source: String,
     /// Phrases pour dire bonjour dans le chat, par langue (code ISO 639-1)
     pub greetings: std::collections::BTreeMap<String, Vec<String>>,
     /// Langue des phrases de bonjour quand celle de la chaîne est inconnue ou sans phrases
@@ -730,7 +728,6 @@ impl Default for Settings {
             detect_max_per_user: 2,
             detect_cooldown_secs: 600,
             detect_keywords: true,
-            viewer_source: "local".into(),
             greetings: [
                 ("fr", &["Bonjour tout le monde !", "Salut le chat !", "Coucou à tous !", "Hello tout le monde !"][..]),
                 ("en", &["Hello everyone!", "Hi chat!", "Hey everyone!", "Hello chat!"][..]),

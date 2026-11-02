@@ -22,13 +22,6 @@ const PIN_ID: &str = "viewer-pin";
 const RELOAD_ID: &str = "viewer-reload";
 /// Bloqueur de publicités Twitch (vaft, MIT) : voir vendor/vaft/README.md
 const VAFT: &str = include_str!("../vendor/vaft/vaft.user.js");
-/// Page multi-stream ; `TWITCH_DESK_VIEWER_URL` la remplace (essais)
-const VIEWER_URL: &str = "https://powange.github.io/twitch-desk/viewer.html";
-
-fn viewer_url() -> String {
-    std::env::var("TWITCH_DESK_VIEWER_URL").ok().filter(|u| u.starts_with("https://")).unwrap_or_else(|| VIEWER_URL.to_owned())
-}
-
 fn valid_login(login: &str) -> bool {
     !login.is_empty() && login.len() <= 25 && login.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
@@ -231,15 +224,10 @@ pub fn restore(app: &Arc<App>) {
 fn open_window(app: &App, query: &str) -> Result<(), String> {
     let handle = app.handle();
     // `page` : adresse de la page, dont l'origine reste admise dans la fenêtre
-    let (source, page): (WebviewUrl, url::Url) = if app.db.settings().viewer_source == "github" {
-        let url: url::Url = format!("{}?{query}", viewer_url()).parse().map_err(|_| "Adresse de la page des streams invalide".to_owned())?;
-        (WebviewUrl::External(url.clone()), url)
-    } else {
-        // En développement, la page vient du serveur de Vite (devUrl)
-        let dev = if cfg!(dev) { handle.config().build.dev_url.clone() } else { None };
-        let page = dev.unwrap_or_else(|| "https://tauri.localhost/".parse().expect("adresse fixe"));
-        (WebviewUrl::App(format!("viewer.html?{query}").into()), page)
-    };
+    // Page intégrée à l'application ; en développement, elle vient du serveur de Vite (devUrl)
+    let dev = if cfg!(dev) { handle.config().build.dev_url.clone() } else { None };
+    let page: url::Url = dev.unwrap_or_else(|| "https://tauri.localhost/".parse().expect("adresse fixe"));
+    let source = WebviewUrl::App(format!("viewer.html?{query}").into());
     let mut builder = WebviewWindowBuilder::new(handle, LABEL, source);
     if app.db.settings().viewer_adblock {
         // Seulement dans les lecteurs (player.twitch.tv), pas dans la page ni le chat
@@ -382,18 +370,15 @@ mod tests {
     #[test]
     fn only_the_page_and_twitch_load_in_the_window() {
         let local: url::Url = "https://tauri.localhost/".parse().unwrap();
-        let github: url::Url = "https://powange.github.io/twitch-desk/viewer.html?channels=a".parse().unwrap();
         let ok = |u: &str, page: &url::Url| navigation_allowed(&u.parse().unwrap(), page);
         assert!(ok("https://tauri.localhost/viewer.html?channels=a", &local));
         assert!(ok("tauri://localhost/viewer.html?channels=a", &local));
         assert!(ok("https://player.twitch.tv/?channel=a&parent=tauri.localhost", &local));
         assert!(ok("https://abc.ext-twitch.tv/x", &local));
         assert!(ok("about:blank", &local));
-        assert!(ok("https://powange.github.io/twitch-desk/viewer.html?channels=b", &github));
         assert!(!ok("https://powange.github.io/twitch-desk/viewer.html", &local));
-        assert!(!ok("https://tauri.localhost/viewer.html", &github));
         assert!(!ok("https://evil.example/", &local));
-        assert!(!ok("https://twitch.tv.evil.example/", &github));
+        assert!(!ok("https://twitch.tv.evil.example/", &local));
         assert!(!ok("http://player.twitch.tv/", &local));
     }
 
