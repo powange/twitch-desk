@@ -1,6 +1,7 @@
 # Publie une version : pousser un tag vX.Y.Z (même numéro que tauri.conf.json).
 # Vérifie le numéro et les tests, compile Windows (installateur NSIS) et Linux (AppImage,
-# .deb), signe chaque paquet et publie latest.json, que l'application lit pour se mettre à
+# .deb) sans la clé de signature, puis signe chaque paquet dans un job à part qui n'exécute
+# aucun code du projet, et publie latest.json, que l'application lit pour se mettre à
 # jour. La release reste en brouillon jusqu'à ce que tous les paquets soient envoyés : un
 # brouillon n'est pas la « dernière release », les applications gardent donc la version
 # précédente (releases/latest/download/latest.json) tant que la nouvelle n'est pas complète.
@@ -83,7 +84,7 @@ jobs:
     outputs:
       id: ${{ steps.release.outputs.id }}
     steps:
-      # Brouillon créé une fois ici : les deux compilations y envoient leurs paquets
+      # Brouillon créé une fois ici : le job sign y envoie paquets, signatures et latest.json
       - id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -97,10 +98,11 @@ jobs:
           fi
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
+  # Compilation sans la clé de signature ni droit d'écriture : npm ci, npm run build et les
+  # build.rs des crates exécutent du code tiers, qui ne doit pas pouvoir la lire. Les
+  # paquets passent au job sign, qui signe sans rien compiler
   build:
     needs: draft
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -136,20 +138,168 @@ jobs:
 
       - run: npm ci
 
-      # Clé de signature des mises à jour : passée à cette seule étape (pas au job), pour
-      # qu'aucune autre étape ni action ne la voie
-      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+      # createUpdaterArtifacts coupé pour cette compilation seulement : activé, tauri build
+      # exige la clé privée. Les paquets produits sont les mêmes, sans leur .sig
+      - name: Paquets (sans signature)
+        shell: bash
+        run: npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      # Seuls les fichiers publiés aujourd'hui (installateur NSIS ; AppImage et .deb), de la
+      # version du tag : le cache peut contenir des paquets d'une version précédente
+      - name: Paquets à signer
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          bundle=src-tauri/target/release/bundle
+          mkdir paquets
+          if [ "$RUNNER_OS" = Windows ]; then
+            motifs=("nsis/*_${version}_x64-setup.exe")
+          else
+            motifs=("appimage/*_${version}_amd64.AppImage" "deb/*_${version}_amd64.deb")
+          fi
+          for motif in "${motifs[@]}"; do
+            fichiers=($bundle/$motif)
+            if [ "${#fichiers[@]}" -ne 1 ] || [ ! -f "${fichiers[0]}" ]; then
+              echo "::error::Paquet $motif introuvable ou en plusieurs exemplaires"
+              exit 1
+            fi
+            cp "${fichiers[0]}" paquets/
+          done
+          ls -l paquets
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: paquets-${{ matrix.platform }}
+          path: paquets/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Signature dans un job à part, qui n'exécute aucun code du projet ni de ses dépendances :
+  # pas de checkout, pas de npm ci, seulement la CLI Tauri (version de package-lock.json,
+  # vérifiée par son empreinte) installée sans scripts. La clé n'est donnée qu'à l'étape
+  # qui signe
+  sign:
+    name: Signature et latest.json
+    needs: [draft, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: paquets-*
+          path: ${{ runner.temp }}/paquets
+          merge-multiple: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      # package-lock.json lu par l'API (sans checkout) : même version et mêmes empreintes que
+      # la compilation. --ignore-scripts : aucun script d'installation n'est lancé (la CLI
+      # n'en a pas besoin, son binaire vient du paquet propre à la plateforme)
+      - name: CLI Tauri
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir "$RUNNER_TEMP/cli"
+          cd "$RUNNER_TEMP/cli"
+          gh api "repos/$GITHUB_REPOSITORY/contents/package-lock.json?ref=$GITHUB_SHA" \
+            -H 'Accept: application/vnd.github.raw' > "$RUNNER_TEMP/package-lock.json"
+          version=$(jq -er '.packages["node_modules/@tauri-apps/cli"].version' "$RUNNER_TEMP/package-lock.json")
+          npm install --no-save --ignore-scripts --no-audit --no-fund "@tauri-apps/cli@$version"
+          # Chaque paquet installé doit avoir l'empreinte de package-lock.json
+          jq -r '.packages | to_entries[] | "\(.key) \(.value.integrity)"' node_modules/.package-lock.json |
+            while read -r paquet empreinte; do
+              attendue=$(jq -r --arg p "$paquet" '.packages[$p].integrity // empty' "$RUNNER_TEMP/package-lock.json")
+              if [ "$empreinte" != "$attendue" ]; then
+                echo "::error::$paquet : empreinte différente de package-lock.json"
+                exit 1
+              fi
+              echo "$paquet : empreinte conforme"
+            done
+          ./node_modules/.bin/tauri --version
+
+      # Clé de signature des mises à jour : passée à cette seule étape (pas au job). La
+      # version est liée à la signature (commentaire de confiance), comme le fait tauri build
+      - name: Signature
+        working-directory: ${{ runner.temp }}/cli
+        env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          releaseId: ${{ needs.draft.outputs.id }}
-          includeUpdaterJson: true
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for f in "$RUNNER_TEMP"/paquets/*; do
+            ./node_modules/.bin/tauri signer sign --app-version "$version" "$f" > /dev/null
+            echo "Signé : $(basename "$f")"
+          done
+
+      # Noms des fichiers envoyés : GitHub remplace les espaces par des points (« Twitch
+      # Desk_… » devient « Twitch.Desk_… ») ; renommés ici pour que latest.json donne les
+      # mêmes noms. Signatures faites avant, sur les noms d'origine, comme tauri build
+      - name: latest.json
+        run: |
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          mkdir "$RUNNER_TEMP/envoi"
+          for f in "$RUNNER_TEMP"/paquets/*; do
+            nom=$(basename "$f")
+            cp "$f" "$RUNNER_TEMP/envoi/${nom// /.}"
+          done
+          cd "$RUNNER_TEMP/envoi"
+          un() {
+            fichiers=($1)
+            if [ "${#fichiers[@]}" -ne 1 ] || [ ! -f "${fichiers[0]}" ] || [ ! -s "${fichiers[0]}.sig" ]; then
+              echo "::error::Paquet $1 ou sa signature introuvable" >&2
+              return 1
+            fi
+            echo "${fichiers[0]}"
+          }
+          exe=$(un "*_${version}_x64-setup.exe")
+          appimage=$(un "*_${version}_amd64.AppImage")
+          deb=$(un "*_${version}_amd64.deb")
+          jq -n \
+            --arg version "$version" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg base "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag" \
+            --arg exe "$exe" --rawfile exe_sig "$exe.sig" \
+            --arg appimage "$appimage" --rawfile appimage_sig "$appimage.sig" \
+            --arg deb "$deb" --rawfile deb_sig "$deb.sig" \
+            '
+              def paquet($nom; $sig): {signature: ($sig | rtrimstr("\n")), url: "\($base)/\($nom)"};
+              {
+                version: $version,
+                notes: "Voir les changements dans le dépôt.",
+                pub_date: $date,
+                platforms: {
+                  "linux-x86_64": paquet($appimage; $appimage_sig),
+                  "linux-x86_64-appimage": paquet($appimage; $appimage_sig),
+                  "linux-x86_64-deb": paquet($deb; $deb_sig),
+                  "windows-x86_64": paquet($exe; $exe_sig),
+                  "windows-x86_64-nsis": paquet($exe; $exe_sig)
+                }
+              }
+            ' > latest.json
+          cat latest.json
+          ls -l
+
+      # Envoi dans le brouillon créé par le job draft (le tag doit désigner ce brouillon)
+      - name: Envoi dans la release
+        working-directory: ${{ runner.temp }}/envoi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ID: ${{ needs.draft.outputs.id }}
+        run: |
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/$ID" --jq 'select(.draft) | .tag_name')
+          if [ "$tag" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::La release $ID n'est pas le brouillon de $GITHUB_REF_NAME"
+            exit 1
+          fi
+          gh release upload "$GITHUB_REF_NAME" ./* --clobber --repo "$GITHUB_REPOSITORY"
 
   publish:
     name: Publication
-    needs: [draft, build]
+    needs: [draft, sign]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
