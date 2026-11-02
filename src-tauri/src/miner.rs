@@ -33,7 +33,6 @@ use crate::twitch::TwitchError;
 pub const MAX_WATCHED: usize = 2;
 const STEP: Duration = Duration::from_secs(2);
 const LIVE_CHECK_EVERY: Duration = Duration::from_secs(120);
-const LIVE_CHECKS_PER_STEP: usize = 3;
 const CONTEXT_WATCHING_EVERY: Duration = Duration::from_secs(5 * 60);
 const CONTEXT_OTHERS_EVERY: Duration = Duration::from_secs(20 * 60);
 const CONTEXTS_PER_STEP: usize = 2;
@@ -684,7 +683,10 @@ impl Miner {
         };
         self.channels[i].se_loyalty_at = Some(now);
         let se_id = Self::se_ready(&self.channels[i]).unwrap_or_default();
-        match streamelements::loyalty(&self.app.http, &se_id).await {
+        // Réglage de la chaîne, le même pour tous les comptes : partagé
+        let http = &self.app.http;
+        let since = crate::lives::since(SE_LOYALTY_EVERY);
+        match self.app.lives.se_loyalty.get(&se_id, since, || streamelements::loyalty(http, &se_id)).await {
             Ok(loyalty) => self.channels[i].se_loyalty = loyalty,
             Err(e) => tracing::warn!("StreamElements ({}) : {e}", self.channels[i].ch.login),
         }
@@ -692,16 +694,19 @@ impl Miner {
     }
 
     async fn poll_se_giveaway(&mut self, now: Instant) -> bool {
+        let every = |c: &ChannelRt| if c.live.is_some() { SE_GIVEAWAY_LIVE_EVERY } else { SE_GIVEAWAY_OFFLINE_EVERY };
         let Some(i) = self.channels.iter().position(|c| {
-            let every = if c.live.is_some() { SE_GIVEAWAY_LIVE_EVERY } else { SE_GIVEAWAY_OFFLINE_EVERY };
-            Self::se_ready(c).is_some() && c.se_giveaway_at.is_none_or(|t| now.duration_since(t) >= every)
+            Self::se_ready(c).is_some() && c.se_giveaway_at.is_none_or(|t| now.duration_since(t) >= every(c))
         }) else {
             return false;
         };
         self.channels[i].se_giveaway_at = Some(now);
         let se_id = Self::se_ready(&self.channels[i]).unwrap_or_default();
         let login = self.channels[i].ch.login.clone();
-        let giveaway = match streamelements::active_giveaway(&self.app.http, &se_id).await {
+        // Giveaway de la chaîne, le même pour tous les comptes : partagé (nos tickets restent à part)
+        let http = &self.app.http;
+        let since = crate::lives::since(every(&self.channels[i]));
+        let giveaway = match self.app.lives.se_giveaway.get(&se_id, since, || streamelements::active_giveaway(http, &se_id)).await {
             Ok(g) => g,
             Err(e) => {
                 tracing::warn!("StreamElements ({login}) : {e}");
@@ -890,33 +895,46 @@ impl Miner {
     }
 
     async fn check_lives(&mut self, gql: &Gql, now: Instant) -> Result<(), Stop> {
-        let mut done = 0;
-        for i in 0..self.channels.len() {
-            if done >= LIVE_CHECKS_PER_STEP {
+        // Statut partagé entre comptes : relu seulement s'il a plus de LIVE_CHECK_EVERY, en une
+        // requête groupée pour toutes les chaînes dues
+        let regular = crate::lives::since(LIVE_CHECK_EVERY);
+        let mut due: Vec<usize> = vec![];
+        let mut wanted: Vec<(String, Instant)> = vec![];
+        for (i, ch) in self.channels.iter().enumerate() {
+            if wanted.len() >= crate::lives::BATCH {
                 break;
             }
-            let ch = &self.channels[i];
             // Le live sert aussi aux points StreamElements (relus seulement en live)
             if !ch.ch.farms_points() && !ch.ch.wants_chat() {
                 continue;
             }
-            let due = ch.recheck_at.is_some_and(|t| t <= now)
-                || ch.live_checked.is_none_or(|t| t.elapsed() >= LIVE_CHECK_EVERY);
-            if !due {
+            let recheck = ch.recheck_at.filter(|t| *t <= now);
+            if recheck.is_none() && ch.live_checked.is_some_and(|t| t.elapsed() < LIVE_CHECK_EVERY) {
                 continue;
             }
-            done += 1;
-            let login = ch.ch.login.clone();
-            match gql.stream_info(&login).await {
-                Ok(info) => self.set_live(i, info),
-                Err(TwitchError::Unauthorized) => {
-                    self.reauth().await?;
-                }
-                Err(e) => self.channels[i].error = Some(e.to_string()),
+            // Après un « stream-up » : seulement un statut lu depuis l'heure de la relecture
+            wanted.push((ch.ch.login.clone(), recheck.unwrap_or(regular)));
+            due.push(i);
+        }
+        if due.is_empty() {
+            return Ok(());
+        }
+        let fetch = self.app.lives.streams_status(&self.app.http, std::slice::from_ref(gql), &wanted).await;
+        let mut refused = false;
+        for i in due {
+            // Absente : pas relue cette fois (repli une par une limité), au passage suivant
+            match fetch.results.get(&self.channels[i].ch.login) {
+                None => continue,
+                Some(Ok(info)) => self.set_live(i, info.clone()),
+                Some(Err(TwitchError::Unauthorized)) => refused = true,
+                Some(Err(e)) => self.channels[i].error = Some(e.to_string()),
             }
             let ch = &mut self.channels[i];
             ch.live_checked = Some(Instant::now());
             ch.recheck_at = None;
+        }
+        if refused {
+            self.reauth().await?;
         }
         Ok(())
     }
@@ -1084,17 +1102,27 @@ impl Miner {
             }
             PubSubEvent::StreamUp { channel_id } => {
                 if let Some(i) = self.index_of(&channel_id) {
+                    // Statut partagé périmé pour tous les comptes ; relu après le délai
+                    self.app.lives.streams.invalidate(&self.channels[i].ch.login);
                     self.channels[i].recheck_at = Some(Instant::now() + STREAM_UP_DELAY);
                 }
             }
             PubSubEvent::StreamDown { channel_id } => {
                 if let Some(i) = self.index_of(&channel_id) {
+                    self.app.lives.streams.put(&self.channels[i].ch.login, None);
                     self.set_live(i, None);
                 }
             }
             PubSubEvent::Viewers { channel_id, viewers } => {
-                if let Some(live) = self.index_of(&channel_id).and_then(|i| self.channels[i].live.as_mut()) {
-                    live.viewers = viewers;
+                if let Some(i) = self.index_of(&channel_id) {
+                    self.app.lives.streams.update(&self.channels[i].ch.login, |info| {
+                        if let Some(live) = info {
+                            live.viewers = viewers;
+                        }
+                    });
+                    if let Some(live) = self.channels[i].live.as_mut() {
+                        live.viewers = viewers;
+                    }
                 }
             }
             PubSubEvent::DropProgress { drop_id, current } => {

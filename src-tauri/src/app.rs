@@ -276,6 +276,8 @@ pub struct App {
     pub insights: Mutex<crate::insights::InsightsState>,
     pub sync: crate::sync::SyncHandle,
     languages: RwLock<HashMap<String, String>>,
+    /// Statut live et infos StreamElements par chaîne, partagés entre comptes
+    pub lives: crate::lives::Lives,
 }
 
 impl App {
@@ -302,6 +304,7 @@ impl App {
             insights: Mutex::new(crate::insights::InsightsState::default()),
             sync: crate::sync::SyncHandle::default(),
             languages: RwLock::new(HashMap::new()),
+            lives: crate::lives::Lives::default(),
         })
     }
 
