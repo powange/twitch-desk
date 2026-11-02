@@ -175,7 +175,7 @@ const STATE_LEGEND: { state: ChannelState, text: string }[] = [
       <!-- Légende de la colonne État -->
       <div class="flex flex-col gap-2">
         <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">Colonne État</h2>
-        <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm items-center max-w-[85ch]">
+        <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm items-center">
           <template v-for="item in STATE_LEGEND" :key="item.state">
             <dt><UBadge :color="CHANNEL_STATE[item.state].color" variant="subtle" :label="CHANNEL_STATE[item.state].label" class="whitespace-nowrap" /></dt>
             <dd class="text-muted">{{ item.text }}</dd>

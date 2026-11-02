@@ -433,7 +433,7 @@ async function confirmRemove() {
         </tbody>
       </table>
     </div>
-    <p class="text-xs text-muted max-w-[85ch]">
+    <p class="text-xs text-muted">
       Une chaîne où l'un de tes comptes est déjà présent pour StreamElements est lue via cette connexion. Les autres sont lues par une seule connexion anonyme commune, qui n'apparaît pour aucun de tes comptes.
       Une commande ignorée (ex. <span class="font-mono">!points</span>, dans la fiche du streamer) ne déclenche jamais d'alerte. Quand une chaîne passe hors ligne, ses giveaways ouverts sont clos.
     </p>
