@@ -14,7 +14,7 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
-    version: '0.40.2',
+    version: '0.40.3',
     date: '2026-11-03',
     changes: [
       { kind: 'new', text: 'Page Alertes : les giveaways passés se parcourent page par page (boutons à côté du titre), tous les giveaways terminés et plus seulement les plus récents.' },
