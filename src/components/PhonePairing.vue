@@ -40,7 +40,8 @@ const remaining = computed(() => {
 const remainingLabel = computed(() => `${Math.floor(remaining.value / 60)}:${String(remaining.value % 60).padStart(2, '0')}`)
 
 onMounted(async () => {
-  const config = await invoke<{ instanceName: string, defaultName: string, webUrl: string }>('get_sync_config')
+  const config = await invoke<{ instanceName: string, defaultName: string, webUrl: string, phoneActions: boolean }>('get_sync_config')
+  phoneActions.value = config.phoneActions
   name.value = config.instanceName
   savedName.value = config.instanceName
   defaultName.value = config.defaultName
@@ -50,6 +51,19 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(stopTimers)
+
+// Achats de tickets StreamElements demandés depuis le téléphone (désactivé par défaut)
+const phoneActions = ref(false)
+async function setPhoneActions(enabled: boolean) {
+  const before = phoneActions.value
+  phoneActions.value = enabled
+  try {
+    await invoke('set_phone_actions', { enabled })
+  } catch (e) {
+    phoneActions.value = before
+    toast.add({ title: 'Réglage non enregistré', description: String(e), color: 'error' })
+  }
+}
 
 async function saveInstance() {
   savingInstance.value = true
@@ -152,7 +166,14 @@ async function copyLink() {
   <div class="flex flex-col gap-3">
     <div>
       <div class="text-sm font-medium">Téléphone</div>
-      <div class="text-xs text-muted">Sur ton téléphone, la web app montre les giveaways en cours, la commande à copier et les participations de cette application. Elle ne modifie rien. Les notifications (giveaway détecté, gain, mention, rappel de tirage, scanner) s'activent depuis le téléphone, qui choisit lesquelles recevoir.</div>
+      <div class="text-xs text-muted">Sur ton téléphone, la web app montre les giveaways en cours, la commande à copier, les participations, et les pages Points de chaîne et StreamElements de cette application. Les notifications (giveaway détecté, gain, mention, rappel de tirage, scanner) s'activent depuis le téléphone, qui choisit lesquelles recevoir.</div>
+    </div>
+    <div class="flex items-start justify-between gap-4 border border-default rounded-lg px-3 py-2.5">
+      <div>
+        <div class="text-sm font-medium">Autoriser les achats depuis le téléphone</div>
+        <div class="text-xs text-muted">Les téléphones connectés peuvent acheter des tickets StreamElements avec tes comptes. Le PC fait l'achat : il doit être ouvert. Désactivé, ils ne peuvent rien dépenser.</div>
+      </div>
+      <USwitch :model-value="phoneActions" aria-label="Autoriser les achats depuis le téléphone" @update:model-value="setPhoneActions" />
     </div>
     <UFormField label="Nom de cette application" help="Affiché sur le téléphone pour reconnaître ce poste">
       <UInput id="sync-instance-name" v-model="name" :placeholder="defaultName" class="w-full" maxlength="60" autocomplete="off" />

@@ -92,6 +92,7 @@
     "allow-refresh-giveaways",
     "allow-create-past-giveaway",
     "allow-import-past-giveaways",
+    "allow-set-phone-actions",
     "allow-game-box-arts",
     "allow-save-streamer",
     "allow-get-streamers",

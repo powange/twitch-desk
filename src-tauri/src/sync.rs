@@ -111,6 +111,8 @@ pub struct SyncHandle {
     /// Alertes à transmettre aux téléphones (notifications push)
     phone_alerts: Mutex<VecDeque<PhoneAlert>>,
     phone_alert: tokio::sync::Notify,
+    /// Demande d'un téléphone annoncée par le serveur : à lire tout de suite
+    phone_action: tokio::sync::Notify,
 }
 
 #[derive(Debug, Serialize)]
@@ -1260,6 +1262,8 @@ struct EventParser {
     line: Vec<u8>,
     event: String,
     data: String,
+    /// Applications visées par les événements `action` reçus (demandes des téléphones)
+    actions: Vec<String>,
 }
 
 impl EventParser {
@@ -1286,6 +1290,10 @@ impl EventParser {
                 if matches!(event.as_str(), "" | "seq") {
                     if let Some(seq) = parse_seq(&data) {
                         seqs.push(seq);
+                    }
+                } else if event == "action" {
+                    if let Some(instance) = serde_json::from_str::<Value>(data.trim()).ok().as_ref().and_then(|v| str_of(v, "instance")) {
+                        self.actions.push(instance);
                     }
                 }
             } else if !line.starts_with(':') {
@@ -1383,6 +1391,13 @@ async fn listen(app: &App, cfg: &Config) -> LiveEnd {
                 app.sync.pull.notify_one();
             }
         }
+        // Demande d'un de nos téléphones : lue tout de suite
+        if !parser.actions.is_empty() {
+            let mine = instance_id(&app.db.conn()).ok();
+            if parser.actions.drain(..).any(|i| Some(&i) == mine.as_ref()) {
+                app.sync.phone_action.notify_one();
+            }
+        }
     }
 }
 
@@ -1435,6 +1450,7 @@ pub fn spawn(app: Arc<App>) {
     spawn_live(app.clone());
     spawn_state(app.clone());
     spawn_phone_alerts(app.clone());
+    spawn_phone_actions(app.clone());
     tauri::async_runtime::spawn(async move {
         loop {
             let Some(cfg) = config(&app) else {
@@ -1596,6 +1612,79 @@ fn instance_state(view: &crate::giveaways::GiveawaysView, sync_ids: &HashMap<i64
     json!({ "accounts": accounts, "giveaways": giveaways, "live": live })
 }
 
+/// Spectateurs arrondis (2 chiffres significatifs) : l'état n'est pas republié à chaque petite
+/// variation
+fn round_viewers(n: u64) -> u64 {
+    if n < 100 {
+        return n;
+    }
+    let step = 10u64.pow((n as f64).log10().floor() as u32 - 1);
+    (n + step / 2) / step * step
+}
+
+fn phone_live(live: &Option<crate::twitch::gql::StreamInfo>) -> Value {
+    match live {
+        Some(s) => json!({ "viewers": round_viewers(s.viewers), "category": s.game_name, "title": s.title }),
+        None => Value::Null,
+    }
+}
+
+/// Chaînes des pages Points de chaîne et StreamElements, par compte, pour la web app (lecture
+/// seule) : état, soldes, gains du jour, live et giveaway StreamElements en cours
+fn phone_channels(views: &[crate::app::AccountView]) -> (Value, Value) {
+    let mut points = vec![];
+    let mut se = vec![];
+    for a in views {
+        let p: Vec<Value> = a
+            .channels
+            .iter()
+            .filter(|c| c.in_points)
+            .map(|c| {
+                json!({
+                    "login": c.login,
+                    "avatar": c.profile_image,
+                    "state": c.state,
+                    "balance": c.balance,
+                    "earnedToday": c.earned_today,
+                    "maxBalance": c.max_balance,
+                    "priority": c.priority,
+                    "live": phone_live(&c.live),
+                })
+            })
+            .collect();
+        points.push(json!({ "login": a.login, "enabled": a.points_enabled, "channels": p }));
+        let s: Vec<Value> = a
+            .channels
+            .iter()
+            .filter(|c| c.in_se)
+            .map(|c| {
+                json!({
+                    "login": c.login,
+                    "avatar": c.profile_image,
+                    "enabled": c.se_enabled,
+                    "points": c.se_points,
+                    "earnedToday": c.se_earned_today,
+                    "inChat": c.in_chat,
+                    "live": phone_live(&c.live),
+                    "myTickets": c.se_my_tickets,
+                    "giveaway": c.se_giveaway.as_ref().map(|g| json!({
+                        "id": g.id,
+                        "title": g.title,
+                        "description": g.description,
+                        "command": g.command,
+                        "cost": g.cost,
+                        "maxTickets": g.max_tickets,
+                        "totalTickets": g.total_tickets,
+                        "totalUsers": g.total_users,
+                    })),
+                })
+            })
+            .collect();
+        se.push(json!({ "login": a.login, "connected": a.se_account == crate::app::SeAccount::Connected, "channels": s }));
+    }
+    (Value::Array(points), Value::Array(se))
+}
+
 /// Giveaways ouverts ou en pause : identifiant local → identifiant partagé
 fn open_sync_ids(conn: &Connection) -> rusqlite::Result<HashMap<i64, String>> {
     conn.prepare_cached("SELECT id, sync_id FROM giveaways WHERE sync_id IS NOT NULL AND status IN ('open', 'paused')")?
@@ -1629,7 +1718,12 @@ fn spawn_state(app: Arc<App>) {
                     _ => continue,
                 }
             };
-            let state = instance_state(&app.giveaways.view(), &sync_ids, &accounts);
+            let mut state = instance_state(&app.giveaways.view(), &sync_ids, &accounts);
+            // Pages Points de chaîne et StreamElements de la web app
+            let (points, se) = phone_channels(&app.account_views());
+            state["points"] = points;
+            state["streamelements"] = se;
+            state["actionsAllowed"] = json!(phone_actions_allowed(&app));
             let digest = hash(&state);
             if last.as_ref().is_some_and(|(url, h, at)| *url == cfg.url && *h == digest && at.elapsed() < STATE_REFRESH) {
                 continue;
@@ -1654,6 +1748,101 @@ fn spawn_state(app: Arc<App>) {
             }
         }
     });
+}
+
+/// Achats depuis le téléphone autorisés sur ce PC (désactivé par défaut)
+fn phone_actions_allowed(app: &App) -> bool {
+    meta(&app.db.conn(), "phone_actions").as_deref() == Some("1")
+}
+
+#[derive(Debug, Deserialize)]
+struct PhoneAction {
+    id: String,
+    kind: String,
+    payload: Value,
+}
+
+/// Exécute une demande d'un téléphone ; renvoie le message du résultat
+async fn run_phone_action(app: &Arc<App>, action: &PhoneAction) -> Result<String, String> {
+    if !phone_actions_allowed(app) {
+        return Err("Achats depuis le téléphone désactivés sur le PC (Paramètres → Synchronisation)".into());
+    }
+    if action.kind != "se_buy" {
+        return Err("Action inconnue de cette version de l'application".into());
+    }
+    let p = &action.payload;
+    let (Some(login), Some(channel), Some(giveaway), Some(tickets)) =
+        (str_of(p, "account"), str_of(p, "channel"), str_of(p, "giveaway"), int_of(p, "tickets"))
+    else {
+        return Err("Demande incomplète".into());
+    };
+    let account = app
+        .db
+        .accounts()
+        .map_err(db_err)?
+        .into_iter()
+        .find(|a| a.login.eq_ignore_ascii_case(&login))
+        .ok_or_else(|| format!("Compte {login} inconnu sur ce PC"))?;
+    let ch = app
+        .db
+        .channels(account.id)
+        .map_err(db_err)?
+        .into_iter()
+        .find(|c| c.in_se && c.login.eq_ignore_ascii_case(&channel))
+        .ok_or_else(|| format!("{channel} n'est pas dans la page StreamElements de {login}"))?;
+    let total = crate::commands::buy_tickets(app, account.id, ch.id, &giveaway, tickets).await?;
+    Ok(format!("{tickets} ticket(s) acheté(s) sur {channel} pour {login} ({total} au total)"))
+}
+
+/// Demandes des téléphones (serveur 0.8 et plus) : lues à chaque annonce du serveur et toutes les
+/// minutes, exécutées une par une, résultat rendu au serveur
+fn spawn_phone_actions(app: Arc<App>) {
+    tauri::async_runtime::spawn(async move {
+        let mut unsupported: Option<(String, std::time::Instant)> = None;
+        loop {
+            tokio::select! {
+                _ = app.sync.phone_action.notified() => {}
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+            }
+            let Some(cfg) = config(&app) else { continue };
+            if unsupported.as_ref().is_some_and(|(url, at)| *url == cfg.url && at.elapsed() < STATE_UNSUPPORTED_PAUSE) {
+                continue;
+            }
+            let Ok(id) = instance_id(&app.db.conn()) else { continue };
+            let list: Vec<PhoneAction> = match request(app.http.get(format!("{}/api/v1/instances/{id}/actions", cfg.url)), &cfg.code).await {
+                Ok(list) => list,
+                Err(e) if e == NOT_SYNC_SERVER => {
+                    unsupported = Some((cfg.url.clone(), std::time::Instant::now()));
+                    continue;
+                }
+                Err(e) => {
+                    tracing::debug!("demandes des téléphones : {e}");
+                    continue;
+                }
+            };
+            for action in list {
+                let outcome = run_phone_action(&app, &action).await;
+                let (ok, message) = match &outcome {
+                    Ok(m) => (true, m.clone()),
+                    Err(e) => (false, e.clone()),
+                };
+                let kind = if ok { crate::app::EventKind::Info } else { crate::app::EventKind::Error };
+                app.log("téléphone", kind, format!("Demande du téléphone : {message}"));
+                let req = app.http.put(format!("{}/api/v1/instances/{id}/actions/{}", cfg.url, action.id)).json(&json!({ "ok": ok, "message": message }));
+                if let Err(e) = send(req, &cfg.code).await {
+                    tracing::debug!("résultat d'une demande du téléphone : {e}");
+                }
+            }
+        }
+    });
+}
+
+/// Achats depuis le téléphone (pages de la web app) autorisés ou non
+#[tauri::command]
+pub fn set_phone_actions(app: State<'_, Arc<App>>, enabled: bool) -> Result<(), String> {
+    set_meta(&app.db.conn(), "phone_actions", if enabled { "1" } else { "0" }).map_err(db_err)?;
+    app.sync.state_changed();
+    Ok(())
 }
 
 /// Envoie les alertes aux téléphones (serveur 0.7 et plus ; plus ancien : alertes oubliées,
@@ -1771,6 +1960,8 @@ pub struct SyncConfigView {
     default_name: String,
     /// Adresse de la web app choisie (vide : celle du serveur suivie de /app)
     web_url: String,
+    /// Achats de tickets StreamElements depuis le téléphone autorisés
+    phone_actions: bool,
 }
 
 #[tauri::command]
@@ -1784,6 +1975,7 @@ pub fn get_sync_config(app: State<'_, Arc<App>>) -> SyncConfigView {
         instance_name: meta(&conn, "instance_name").unwrap_or_default(),
         default_name,
         web_url: meta(&conn, "web_url").unwrap_or_default(),
+        phone_actions: meta(&conn, "phone_actions").as_deref() == Some("1"),
     }
 }
 
@@ -1907,6 +2099,9 @@ mod tests {
         // Autres événements et données illisibles : ignorés
         assert!(p.feed(b"event: autre\ndata: {\"seq\":1}\n\ndata: pas du json\n\n").is_empty());
         assert_eq!(p.feed(b"data: {\"seq\":45}\n\n"), vec![45]);
+        // Demande d'un téléphone : application visée retenue
+        assert!(p.feed(b"event: action\ndata: {\"instance\":\"abc-123\"}\n\n").is_empty());
+        assert_eq!(p.actions, vec!["abc-123".to_owned()]);
     }
 
     #[test]
@@ -2399,6 +2594,11 @@ mod tests {
         assert_ne!(instance_id(&Db::memory().unwrap().conn()).unwrap(), id);
         assert_eq!(default_instance_name(Some("alice".into())), "PC alice");
         assert!(!default_instance_name(None).is_empty());
+    }
+
+    #[test]
+    fn viewers_rounded_for_the_phone() {
+        assert_eq!([round_viewers(7), round_viewers(99), round_viewers(123), round_viewers(1_287), round_viewers(45_678)], [7, 99, 120, 1_300, 46_000]);
     }
 
     #[test]

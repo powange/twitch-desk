@@ -1640,11 +1640,17 @@ pub async fn buy_se_tickets(
     giveaway_id: String,
     tickets: i64,
 ) -> CmdResult<i64> {
+    let app: Arc<App> = app.inner().clone();
+    buy_tickets(&app, account_id, channel_id, &giveaway_id, tickets).await
+}
+
+/// Achète des tickets StreamElements pour un compte (page StreamElements, ou téléphone) ; renvoie
+/// le total de tickets du compte sur ce giveaway
+pub async fn buy_tickets(app: &Arc<App>, account_id: i64, channel_id: i64, giveaway_id: &str, tickets: i64) -> CmdResult<i64> {
     if !(1..=100_000).contains(&tickets) {
         return Err("Nombre de tickets invalide".into());
     }
-    let app: Arc<App> = app.inner().clone();
-    let account = find_account(&app, account_id)?;
+    let account = find_account(app, account_id)?;
     let channel = app
         .db
         .channels(account_id)
@@ -1661,14 +1667,14 @@ pub async fn buy_se_tickets(
         SeError::Unauthorized => "Jeton StreamElements expiré : reconnecte StreamElements dans Comptes".to_owned(),
         e => e.to_string(),
     };
-    streamelements::enter(&app.http, &token, &se_channel, &giveaway_id, tickets).await.map_err(se_err)?;
-    let total = streamelements::my_entry(&app.http, &token, &se_channel, &giveaway_id).await.map_err(se_err)?;
+    streamelements::enter(&app.http, &token, &se_channel, giveaway_id, tickets).await.map_err(se_err)?;
+    let total = streamelements::my_entry(&app.http, &token, &se_channel, giveaway_id).await.map_err(se_err)?;
     app.log(
         &account.login,
         EventKind::Info,
         format!("{tickets} ticket(s) acheté(s) sur {} ({total} au total)", channel.login),
     );
-    app.send(account_id, MinerCommand::SeTickets { channel_id, giveaway_id, tickets: total });
+    app.send(account_id, MinerCommand::SeTickets { channel_id, giveaway_id: giveaway_id.to_owned(), tickets: total });
     Ok(total)
 }
 

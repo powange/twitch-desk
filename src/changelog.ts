@@ -14,6 +14,17 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.41.0',
+    date: '2026-11-03',
+    title: 'Points et StreamElements sur le téléphone',
+    changes: [
+      { kind: 'new', text: 'Web app du téléphone : onglets en bas de l\'écran avec deux nouvelles pages, Points de chaîne et StreamElements, pour chaque compte du PC (état, soldes, gains du jour, live, giveaway StreamElements en cours).' },
+      { kind: 'new', text: 'Achat de tickets StreamElements depuis le téléphone : le PC fait l\'achat et le résultat s\'affiche sur le téléphone. À autoriser dans Paramètres → Synchronisation (désactivé par défaut).' },
+      { kind: 'improved', text: 'Web app : les giveaways défilent comme des diapositives, un par écran, en glissant à gauche ou à droite.' },
+      { kind: 'improved', text: 'Web app plus légère : une mise à jour des participations ou des soldes ne recharge plus les giveaways ni leurs images.' }
+    ]
+  },
+  {
     version: '0.40.7',
     date: '2026-11-03',
     changes: [

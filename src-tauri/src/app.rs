@@ -436,7 +436,7 @@ impl App {
     }
 
     /// Comptes dans l'ordre de la base ; un compte sans superviseur apparaît quand même
-    fn account_views(&self) -> Vec<AccountView> {
+    pub(crate) fn account_views(&self) -> Vec<AccountView> {
         let views = self.views.read().unwrap();
         self.db
             .accounts()

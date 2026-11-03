@@ -333,6 +333,7 @@ pub fn run() {
             commands::refresh_giveaways,
             commands::create_past_giveaway,
             past_import::import_past_giveaways,
+            sync::set_phone_actions,
             win_reply::cancel_win_reply,
             commands::game_box_arts,
             commands::save_streamer,
