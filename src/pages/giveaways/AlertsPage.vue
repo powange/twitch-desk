@@ -27,6 +27,21 @@ const watchStream = useWatchStream()
 
 const view = computed(() => snapshot.value?.giveaways)
 const giveaways = computed(() => view.value?.giveaways ?? [])
+// Deux tableaux : en cours (ouverts, puis en pause) et passés (terminés)
+const tables = computed(() => [
+  {
+    key: 'current',
+    title: 'Giveaways en cours',
+    list: [...giveaways.value.filter(g => g.status === 'open'), ...giveaways.value.filter(g => g.status === 'paused')],
+    empty: 'Aucun giveaway en cours. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».'
+  },
+  {
+    key: 'past',
+    title: 'Giveaways passés',
+    list: giveaways.value.filter(g => g.status === 'closed'),
+    empty: 'Aucun giveaway terminé pour l\'instant.'
+  }
+])
 // Live en cours d'une chaîne surveillée (catégorie, spectateurs), indexé une fois par mise à jour
 const liveByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, c.live])))
 const liveOf = (channel: string) => liveByLogin.value.get(channel) ?? null
@@ -305,9 +320,11 @@ function share(g: GiveawayView) {
       </div>
     </section>
 
-    <!-- Giveaways récents -->
-    <section class="flex flex-col gap-2">
-      <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">Giveaways récents</h2>
+    <!-- Giveaways en cours (ouverts et en pause), puis passés : mêmes colonnes -->
+    <section v-for="group in tables" :key="group.key" class="flex flex-col gap-2">
+      <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">
+        {{ group.title }} <span v-if="group.list.length" class="text-primary">({{ group.list.length }})</span>
+      </h2>
       <div class="border border-default rounded-lg overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
@@ -327,7 +344,7 @@ function share(g: GiveawayView) {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="g in giveaways" :key="g.id" class="border-t border-default" :class="g.winnerOurs ? 'bg-success/10' : ''">
+            <tr v-for="g in group.list" :key="g.id" class="border-t border-default" :class="g.winnerOurs ? 'bg-success/10' : ''">
               <td class="px-3 py-2 whitespace-nowrap text-muted">{{ timeAgo(g.detectedAt, now) }}</td>
               <td class="px-2 py-2">
                 <UButton v-if="liveOf(g.channel)" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${g.channel}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(g.channel)" />
@@ -461,8 +478,8 @@ function share(g: GiveawayView) {
                 </div>
               </td>
             </tr>
-            <tr v-if="giveaways.length === 0">
-              <td colspan="16" class="px-3 py-8 text-center text-muted">Aucun giveaway pour l'instant. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».</td>
+            <tr v-if="group.list.length === 0">
+              <td colspan="16" class="px-3 py-8 text-center text-muted">{{ group.empty }}</td>
             </tr>
           </tbody>
         </table>
