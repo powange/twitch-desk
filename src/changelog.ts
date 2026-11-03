@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.47.0',
+    date: '2026-11-03',
+    title: 'Pseudo StreamElements et mises à jour automatiques',
+    changes: [
+      { kind: 'new', text: 'Fiche du streamer : « Pseudo StreamElements », à remplir quand sa page StreamElements n\'a pas son pseudo Twitch (par exemple streamelements.com/0riginalpiratematerial pour theoriginalpiratematerial). Ses points, ses giveaways StreamElements, le scanner et les liens utilisent alors la bonne page. Le pseudo ou l\'adresse de la page sont acceptés, et il est partagé avec tes amis.' },
+      { kind: 'new', text: 'Paramètres → Mises à jour : « Installer automatiquement ». Une nouvelle version est installée dès qu\'elle est trouvée, sans cliquer, et l\'application redémarre seule. Le délai de vérification se règle en minutes, de 1 à 360.' }
+    ]
+  },
+  {
     version: '0.46.0',
     date: '2026-11-03',
     title: 'Journal du chat par giveaway',

@@ -91,8 +91,9 @@ const seStateLabel = computed(() => {
   }
 })
 
-// Page StreamElements publique du streamer (ses giveaways, sa boutique)
-const seStreamerUrl = computed(() => `https://streamelements.com/${encodeURIComponent(form.value.channel.trim().replace(/^@/, '').toLowerCase())}`)
+// Page StreamElements publique du streamer (ses giveaways, sa boutique) : son pseudo
+// StreamElements s'il diffère de son pseudo Twitch
+const seStreamerUrl = computed(() => `https://streamelements.com/${encodeURIComponent((streamerSeName.value.trim() || form.value.channel.trim().replace(/^@/, '')).toLowerCase())}`)
 
 // Gagnants : pseudo tapé ajouté à la liste (sans doublon)
 const winnerInput = ref('')
@@ -235,7 +236,8 @@ watch(open, (isOpen) => {
   streamerIgnored.value = []
   streamerWinReply.value = ''
   streamerWinDelay.value = null
-  streamerLoaded.value = { discord: '', notes: '', ignored: '', winReply: '', winDelay: null }
+  streamerSeName.value = ''
+  streamerLoaded.value = { discord: '', notes: '', ignored: '', winReply: '', winDelay: null, seName: '' }
   const g = props.giveaway
   const channel = g?.channel ?? props.channel ?? ''
   // La chaîne remplie ici ne relance pas l'inspection retardée : elle est faite tout de suite, une fois
@@ -292,6 +294,8 @@ interface ChannelSuggestion {
     // Réponse automatique au gain (présence requise), propre à ce PC
     winReply: string | null
     winReplyDelay: number | null
+    // Pseudo de sa page StreamElements s'il diffère de son pseudo Twitch
+    seName: string | null
   } | null
 }
 
@@ -304,8 +308,10 @@ const streamerIgnored = ref<string[]>([])
 const WIN_REPLY_DELAY = 10
 const streamerWinReply = ref('')
 const streamerWinDelay = ref<number | null>(null)
+// Pseudo StreamElements s'il diffère du pseudo Twitch (vide : le même)
+const streamerSeName = ref('')
 // Valeurs chargées, pour n'enregistrer que si elles changent
-const streamerLoaded = ref({ discord: '', notes: '', ignored: '', winReply: '', winDelay: null as number | null })
+const streamerLoaded = ref({ discord: '', notes: '', ignored: '', winReply: '', winDelay: null as number | null, seName: '' })
 const inspecting = ref(false)
 let inspectTimer: ReturnType<typeof setTimeout> | null = null
 let inspectSeq = 0
@@ -383,7 +389,7 @@ async function inspect(login: string) {
   const f = form.value
   const before = {
     discord: streamerDiscord.value, notes: streamerNotes.value, ignored: streamerIgnored.value.join(),
-    winReply: streamerWinReply.value, winDelay: streamerWinDelay.value,
+    winReply: streamerWinReply.value, winDelay: streamerWinDelay.value, seName: streamerSeName.value,
     follow: f.follow, followDays: f.followDays, presence: f.presence, discordCond: f.discord, greeting: f.greeting,
     chatTime: f.chatTime, chatMinutes: f.chatMinutes
   }
@@ -395,8 +401,9 @@ async function inspect(login: string) {
     // Fiche du streamer : ce qu'on a noté, sinon le lien Discord trouvé sur sa chaîne
     streamerLoaded.value = {
       discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '', ignored: (found.streamer?.ignoredCommands ?? []).join(),
-      winReply: found.streamer?.winReply ?? '', winDelay: found.streamer?.winReplyDelay ?? null
+      winReply: found.streamer?.winReply ?? '', winDelay: found.streamer?.winReplyDelay ?? null, seName: found.streamer?.seName ?? ''
     }
+    if (streamerSeName.value === before.seName) streamerSeName.value = found.streamer?.seName ?? ''
     if (streamerWinReply.value === before.winReply) streamerWinReply.value = found.streamer?.winReply ?? ''
     if (streamerWinDelay.value === before.winDelay) streamerWinDelay.value = found.streamer?.winReplyDelay ?? null
     if (streamerDiscord.value === before.discord) streamerDiscord.value = found.streamer?.discordUrl ?? found.profile?.discord ?? ''
@@ -515,7 +522,8 @@ async function saveStreamer() {
         requireGreeting: fromTri(f.greeting),
         minChatMinutes: f.chatTime === 'yes' ? (f.chatMinutes ?? null) : f.chatTime === 'no' ? 0 : null,
         winReply: streamerWinReply.value.trim() || null,
-        winReplyDelay: streamerWinDelay.value
+        winReplyDelay: streamerWinDelay.value,
+        seName: streamerSeName.value.trim() || null
       }
     })
     toast.add({ title: `Fiche de ${f.channel} enregistrée`, color: 'success', icon: 'i-lucide-check' })
@@ -561,7 +569,7 @@ async function save() {
   // jamais si elle n'a pas été chargée (elle serait effacée)
   const loaded = streamerLoaded.value
   const streamerChanged = !!suggestion.value && (streamerDiscord.value !== loaded.discord || streamerNotes.value !== loaded.notes || streamerIgnored.value.join() !== loaded.ignored
-    || streamerWinReply.value.trim() !== loaded.winReply || streamerWinDelay.value !== loaded.winDelay)
+    || streamerWinReply.value.trim() !== loaded.winReply || streamerWinDelay.value !== loaded.winDelay || streamerSeName.value.trim() !== loaded.seName)
   if (pastMode.value && !pastAt.value) {
     toast.add({ title: 'Date du giveaway manquante', description: 'Indique quand ce giveaway a eu lieu.', color: 'error' })
     section.value = 'giveaway'
@@ -616,7 +624,7 @@ async function save() {
       await invoke('save_streamer', {
         streamer: {
           ...(existing ?? {}), login: f.channel, discordUrl: streamerDiscord.value.trim() || null, notes: streamerNotes.value || null, ignoredCommands: streamerIgnored.value,
-          winReply: streamerWinReply.value.trim() || null, winReplyDelay: streamerWinDelay.value
+          winReply: streamerWinReply.value.trim() || null, winReplyDelay: streamerWinDelay.value, seName: streamerSeName.value.trim() || null
         }
       })
     }
@@ -707,6 +715,9 @@ async function save() {
                   <UInput id="gw-streamer-discord" v-model="streamerDiscord" icon="i-simple-icons-discord" placeholder="https://discord.gg/…" class="flex-1" />
                   <UButton v-if="streamerDiscord.startsWith('https://')" icon="i-lucide-external-link" color="neutral" variant="soft" aria-label="Ouvrir le Discord" @click="openExternal(streamerDiscord)" />
                 </div>
+              </UFormField>
+              <UFormField label="Pseudo StreamElements" help="Seulement si sa page StreamElements n'a pas son pseudo Twitch (streamelements.com/pseudo) : sert à suivre ses points, ses giveaways et ses liens. Le pseudo ou l'adresse de la page.">
+                <UInput id="gw-streamer-se-name" v-model="streamerSeName" icon="i-lucide-ticket" :placeholder="form.channel ? form.channel.toLowerCase() : 'pseudo'" class="w-full" />
               </UFormField>
               <UFormField label="Commandes ignorées" help="Commandes de son chat qui ne déclenchent jamais d'alerte de giveaway (!points, !discord…)">
                 <IgnoredCommandsEditor id="gw-streamer-ignored" v-model="streamerIgnored" />

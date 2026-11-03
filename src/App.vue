@@ -64,9 +64,9 @@ installLogin()
 
 // Mises à jour automatiques : selon le réglage (chargé au démarrage, suivi s'il change)
 const { settings } = useSettings()
-watch(() => settings.value?.autoUpdate, (on) => {
+watch(() => [settings.value?.autoUpdate, settings.value?.autoInstall, settings.value?.updateCheckMinutes] as const, ([on, install, minutes]) => {
   if (on === undefined) return
-  if (on) updater.startAutoCheck()
+  if (on) updater.startAutoCheck(!!install, minutes ?? 360)
   else updater.stopAutoCheck()
 }, { immediate: true })
 

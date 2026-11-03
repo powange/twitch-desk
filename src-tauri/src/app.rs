@@ -80,6 +80,8 @@ pub struct ChannelView {
     pub se_earned_today: i64,
     /// Photo de profil (connue après la première relecture du statut live)
     pub profile_image: Option<String>,
+    /// Pseudo de sa page StreamElements (son pseudo Twitch, sauf fiche du streamer)
+    pub se_page: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

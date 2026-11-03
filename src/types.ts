@@ -46,6 +46,8 @@ export interface ChannelView {
   seEarnedToday: number
   // Photo de profil (connue après la première relecture du statut live)
   profileImage: string | null
+  // Pseudo de sa page StreamElements (son pseudo Twitch, sauf fiche du streamer)
+  sePage: string
 }
 
 export interface AccountView {
@@ -160,6 +162,9 @@ export interface Settings {
   closeToTray: boolean
   startMinimized: boolean
   autoUpdate: boolean
+  // Mise à jour trouvée installée sans confirmation, vérifiée toutes les updateCheckMinutes (1 à 360)
+  autoInstall: boolean
+  updateCheckMinutes: number
   notifications: boolean
   autoParticipate: boolean
   autoDelayMin: number
@@ -353,6 +358,8 @@ export interface GiveawayView extends GiveawayDetails {
   // Réponse écrite automatiquement si un de nos comptes gagne (présence requise), délai en s
   winReply: string | null
   winReplyDelay: number | null
+  // Pseudo de sa page StreamElements s'il diffère de son pseudo Twitch
+  seName: string | null
 }
 
 export interface MentionView {

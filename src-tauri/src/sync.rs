@@ -477,7 +477,7 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
         "streamers" => conn
             .prepare_cached(
                 "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_days, require_presence,
-                        require_discord, require_greeting, min_chat_minutes
+                        require_discord, require_greeting, min_chat_minutes, se_name
                  FROM streamers WHERE ?1 IS NULL OR login = ?1",
             )?
             .query_map([only], |r| {
@@ -488,6 +488,7 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                         "discordUrl": r.get::<_, Option<String>>(1)?,
                         "notes": r.get::<_, Option<String>>(2)?,
                         "ignoredCommands": ignored,
+                        "seName": r.get::<_, Option<String>>(10)?,
                         "conditions": {
                             "requireFollow": r.get::<_, Option<bool>>(4)?,
                             "followMinDays": r.get::<_, Option<i64>>(5)?,
@@ -963,6 +964,18 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                         int_of(c, "minChatMinutes"),
                     ],
                 )?;
+            }
+            // Pseudo StreamElements (absent : version plus ancienne, celui d'ici reste) ; changé :
+            // identifiant StreamElements de ses chaînes à retrouver
+            if data.get("seName").is_some() {
+                let name = str_of(data, "seName").map(|n| n.to_lowercase()).filter(|n| valid_login(n));
+                let changed = conn.execute(
+                    "UPDATE streamers SET se_name = ?2 WHERE login = ?1 AND se_name IS NOT ?2",
+                    params![id, name],
+                )?;
+                if changed > 0 {
+                    conn.execute("UPDATE channels SET se_channel_id = NULL WHERE login = ?1", [id])?;
+                }
             }
             if data.get("ignoredCommands").is_some() {
                 let ignored = serde_json::to_string(&strings_of(data, "ignoredCommands")).expect("liste sérialisable");

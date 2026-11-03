@@ -301,6 +301,7 @@ pub fn get_settings(app: AppState) -> Settings {
 
 #[tauri::command]
 pub fn save_settings(app: AppState, settings: Settings) -> CmdResult<()> {
+    let settings = Settings { update_check_minutes: settings.update_check_minutes.clamp(1, 360), ..settings };
     app.db.save_settings(&settings).map_err(db_err)?;
     crate::usage::set_enabled(app.handle(), settings.show_usage);
     app.giveaways.send(MonitorCmd::Reload);
@@ -1023,7 +1024,7 @@ pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdRe
     // Meilleur effort : StreamElements injoignable = pas de suggestion
     let streamelements = match streamelements::channel_id(&app.http, &login).await {
         Ok(Some(se_id)) => streamelements::active_giveaway(&app.http, &se_id).await.ok().flatten().map(|g| SeSuggestion {
-            url: format!("https://streamelements.com/{login}/giveaway/{}", g.id),
+            url: format!("https://streamelements.com/{}/giveaway/{}", streamelements::page_name(&login), g.id),
             title: g.title,
             description: g.description,
             command: g.command,
@@ -1069,12 +1070,48 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
     if streamer.win_reply_delay.is_some_and(|d| !(0..=600).contains(&d)) {
         return Err("Délai de la réponse invalide (0 à 600 secondes)".into());
     }
+    // Pseudo StreamElements : celui de l'adresse streamelements.com/<pseudo> (lien collé accepté) ;
+    // identique au pseudo Twitch : rien à retenir
+    let se_name = match streamer.se_name.as_deref().map(se_page_name).transpose()? {
+        Some(n) if n != login => Some(n),
+        _ => None,
+    };
+    let se_changed = app.db.streamer(&login).map_err(db_err)?.and_then(|s| s.se_name) != se_name;
     app.db
-        .save_streamer(&crate::db::Streamer { login, discord_url, notes, ignored_commands, follow_min_days, win_reply, ..streamer })
+        .save_streamer(&crate::db::Streamer { login: login.clone(), discord_url, notes, ignored_commands, follow_min_days, win_reply, se_name, ..streamer })
         .map_err(db_err)?;
+    if se_changed {
+        refresh_se_names(&app, &login);
+    }
     app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();
     Ok(())
+}
+
+/// Pseudo StreamElements saisi (« 0riginalpiratematerial », ou l'adresse de sa page) ; vide : None
+fn se_page_name(input: &str) -> CmdResult<String> {
+    let s = input.trim().trim_end_matches('/');
+    let lower = s.to_lowercase();
+    let name = ["https://streamelements.com/", "http://streamelements.com/", "streamelements.com/"]
+        .iter()
+        .find_map(|p| lower.strip_prefix(p))
+        .map(|rest| rest.split(['/', '?', '#']).next().unwrap_or("").to_owned())
+        .unwrap_or_else(|| lower.trim_start_matches('@').to_owned());
+    if name.is_empty() || name.len() > 25 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err("Pseudo StreamElements invalide (lettres, chiffres et _ ; ou l'adresse de sa page)".into());
+    }
+    Ok(name)
+}
+
+/// Pseudos StreamElements des fiches relus ; identifiant StreamElements de `login` à retrouver
+/// (comptes, scanner, analyses de chaînes)
+pub(crate) fn refresh_se_names(app: &App, login: &str) {
+    crate::streamelements::set_page_names(&app.db.se_names().unwrap_or_default());
+    for account in app.db.forget_se_channel(login).unwrap_or_default() {
+        app.send(account, MinerCommand::Reload);
+    }
+    app.insights.lock().unwrap().forget_se(login);
+    app.scanner.lock().unwrap().forget_se(login);
 }
 
 /// Conditions habituelles d'une fiche de streamer, sous la forme de celles d'un giveaway
@@ -1693,7 +1730,16 @@ pub async fn buy_tickets(app: &Arc<App>, account_id: i64, channel_id: i64, givea
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_login;
+    use super::{normalize_login, se_page_name};
+
+    #[test]
+    fn streamelements_page_names() {
+        assert_eq!(se_page_name(" 0riginalPirateMaterial ").as_deref(), Ok("0riginalpiratematerial"));
+        assert_eq!(se_page_name("https://streamelements.com/0riginalpiratematerial/").as_deref(), Ok("0riginalpiratematerial"));
+        assert_eq!(se_page_name("StreamElements.com/Saenz203/giveaway/6ae9").as_deref(), Ok("saenz203"));
+        assert!(se_page_name("https://streamelements.com/").is_err());
+        assert!(se_page_name("pas un pseudo").is_err());
+    }
 
     #[test]
     fn logins() {

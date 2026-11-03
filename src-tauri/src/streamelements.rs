@@ -292,9 +292,24 @@ pub fn parse_giveaway_url(url: &str) -> Option<(String, String)> {
     ok.then(|| (channel.to_lowercase(), id.to_owned()))
 }
 
+/// Pseudos StreamElements des streamers dont la page n'a pas leur pseudo Twitch (fiches des
+/// streamers) : pseudo Twitch → pseudo StreamElements
+static PAGE_NAMES: LazyLock<std::sync::RwLock<std::collections::HashMap<String, String>>> = LazyLock::new(Default::default);
+
+pub fn set_page_names(names: &[(String, String)]) {
+    *PAGE_NAMES.write().unwrap() = names.iter().map(|(l, n)| (l.to_lowercase(), n.to_lowercase())).collect();
+}
+
+/// Pseudo de la page StreamElements d'une chaîne Twitch (le même, sauf fiche du streamer)
+pub fn page_name(login: &str) -> String {
+    let login = login.to_lowercase();
+    PAGE_NAMES.read().unwrap().get(&login).cloned().unwrap_or(login)
+}
+
 /// Identifiant StreamElements d'une chaîne Twitch (None : la chaîne n'utilise pas StreamElements)
 pub async fn channel_id(http: &reqwest::Client, login: &str) -> Result<Option<String>, reqwest::Error> {
-    let res = http.get(format!("{API}/kappa/v2/channels/{login}")).send().await?;
+    let name = page_name(login);
+    let res = http.get(format!("{API}/kappa/v2/channels/{name}")).send().await?;
     if res.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
@@ -405,6 +420,14 @@ pub fn parse_ticket_message(text: &str, my_login: &str) -> Option<TicketUpdate> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn page_names_follow_streamer_sheets() {
+        super::set_page_names(&[("TheOriginalPirateMaterial".into(), "0riginalPirateMaterial".into())]);
+        assert_eq!(super::page_name("theoriginalpiratematerial"), "0riginalpiratematerial");
+        assert_eq!(super::page_name("Saenz203"), "saenz203");
+        super::set_page_names(&[]);
+    }
+
     use super::*;
 
     #[test]

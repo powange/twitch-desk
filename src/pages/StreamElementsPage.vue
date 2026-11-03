@@ -279,7 +279,7 @@ function affordable(channel: ChannelView): number | null {
                 <div class="flex flex-col items-start gap-1">
                   <UBadge :color="status(channel).color" variant="subtle" :label="status(channel).label" size="sm" class="whitespace-nowrap" />
                   <UTooltip v-if="channel.seGiveaway" :text="`${channel.seGiveaway.title || 'Giveaway StreamElements'} : ouvrir la page du giveaway`">
-                    <button type="button" class="cursor-pointer" @click="openExternal(giveawayUrl(channel.login, channel.seGiveaway.id))">
+                    <button type="button" class="cursor-pointer" @click="openExternal(giveawayUrl(channel.sePage || channel.login, channel.seGiveaway.id))">
                       <UBadge icon="i-lucide-gift" label="Giveaway en cours" color="primary" variant="subtle" size="sm" class="whitespace-nowrap hover:bg-primary/20" />
                     </button>
                   </UTooltip>
@@ -287,7 +287,7 @@ function affordable(channel: ChannelView): number | null {
               </td>
               <td class="px-1.5 py-2 text-right whitespace-nowrap">
                 <div>{{ channel.seEnabled === false ? '—' : formatNumber(channel.sePoints) }}</div>
-                <button v-if="channel.seRank" class="text-xs text-muted hover:underline" title="Rang au classement de la chaîne" @click="openExternal(leaderboardUrl(channel.login))">
+                <button v-if="channel.seRank" class="text-xs text-muted hover:underline" title="Rang au classement de la chaîne" @click="openExternal(leaderboardUrl(channel.sePage || channel.login))">
                   {{ formatNumber(channel.seRank) }}<sup>e</sup>
                 </button>
               </td>
@@ -321,7 +321,7 @@ function affordable(channel: ChannelView): number | null {
                 <template v-if="channel.seGiveaway">
                   <div class="flex items-center gap-1.5">
                     <span class="font-mono">{{ channel.seGiveaway.command ?? '—' }}</span>
-                    <UButton icon="i-lucide-external-link" size="xs" variant="ghost" color="neutral" aria-label="Voir le giveaway" @click="openExternal(giveawayUrl(channel.login, channel.seGiveaway.id))" />
+                    <UButton icon="i-lucide-external-link" size="xs" variant="ghost" color="neutral" aria-label="Voir le giveaway" @click="openExternal(giveawayUrl(channel.sePage || channel.login, channel.seGiveaway.id))" />
                   </div>
                   <div class="text-xs text-muted">
                     {{ formatNumber(channel.seGiveaway.cost) }} pts<template v-if="channel.seGiveaway.freeTicket"> · 1 gratuit</template>

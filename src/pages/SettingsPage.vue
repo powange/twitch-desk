@@ -154,9 +154,26 @@ async function checkUpdates() {
             <div class="flex items-center justify-between gap-4 px-4 py-3">
               <div>
                 <div class="font-medium">Chercher les mises à jour automatiquement</div>
-                <div class="text-sm text-muted">Au démarrage puis toutes les 6 heures. L'installation se lance quand tu la confirmes.</div>
+                <div class="text-sm text-muted">Au démarrage puis toutes les 6 heures (ou au délai choisi ci-dessous). Sans installation automatique, elle se lance quand tu la confirmes.</div>
               </div>
               <USwitch v-model="settings.autoUpdate" aria-label="Mises à jour automatiques" />
+            </div>
+            <div v-if="settings.autoUpdate" class="flex items-center justify-between gap-4 px-4 py-3 pl-8">
+              <div>
+                <div class="font-medium">Installer automatiquement</div>
+                <div class="text-sm text-muted">Une nouvelle version est installée dès qu'elle est trouvée, sans cliquer : l'application redémarre seule.</div>
+              </div>
+              <USwitch v-model="settings.autoInstall" aria-label="Installer les mises à jour automatiquement" />
+            </div>
+            <div v-if="settings.autoUpdate && settings.autoInstall" class="flex items-center justify-between gap-4 px-4 py-3 pl-8">
+              <div>
+                <div class="font-medium">Vérifier toutes les</div>
+                <div class="text-sm text-muted">En minutes, de 1 à 360 (6 heures).</div>
+              </div>
+              <div class="flex items-center gap-2">
+                <UInputNumber id="update-check-minutes" v-model="settings.updateCheckMinutes" :min="1" :max="360" :step="1" class="w-32" />
+                <span class="text-sm text-muted">min</span>
+              </div>
             </div>
             <div class="flex items-center justify-between gap-4 px-4 py-3">
               <div>

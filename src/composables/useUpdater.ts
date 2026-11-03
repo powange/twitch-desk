@@ -3,7 +3,8 @@ import { check, type Update } from '@tauri-apps/plugin-updater'
 import { invoke } from '@tauri-apps/api/core'
 import { relaunch } from '@tauri-apps/plugin-process'
 
-// Mise à jour automatique : vérification au démarrage puis toutes les 6 h.
+// Mise à jour automatique : vérification au démarrage puis toutes les 6 h ; installation sans
+// confirmation (réglage) : vérification toutes les N minutes, mise à jour installée dès trouvée.
 // Le paquet est signé ; l'updater refuse tout fichier qui ne porte pas notre signature.
 const CHECK_EVERY = 6 * 3600 * 1000
 
@@ -16,6 +17,8 @@ const progress = ref(0)
 const lastCheck = ref<Date | null>(null)
 const error = ref<string | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
+// Réglage du minuteur en cours : relancé seulement s'il change
+let timerKey = ''
 
 // Messages du module de mise à jour traduits en phrases compréhensibles
 export function friendlyUpdateError(e: unknown): string {
@@ -80,15 +83,27 @@ async function install() {
   }
 }
 
-function startAutoCheck() {
-  if (timer) return
-  void checkNow()
-  timer = setInterval(() => void checkNow(), CHECK_EVERY)
+async function checkAndMaybeInstall(autoInstall: boolean) {
+  if (await checkNow() && autoInstall) await install()
+}
+
+// `minutes` : intervalle quand `autoInstall` (sinon CHECK_EVERY)
+function startAutoCheck(autoInstall = false, minutes = 360) {
+  const every = autoInstall ? Math.min(360, Math.max(1, Math.round(minutes))) * 60_000 : CHECK_EVERY
+  const key = `${autoInstall}:${every}`
+  if (timer && key === timerKey) return
+  const first = !timer
+  if (timer) clearInterval(timer)
+  timerKey = key
+  // Premier lancement, ou installation automatique cochée : vérification tout de suite
+  if (first || autoInstall) void checkAndMaybeInstall(autoInstall)
+  timer = setInterval(() => void checkAndMaybeInstall(autoInstall), every)
 }
 
 function stopAutoCheck() {
   if (timer) clearInterval(timer)
   timer = null
+  timerKey = ''
 }
 
 export function useUpdater() {

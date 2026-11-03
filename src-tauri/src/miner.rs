@@ -1215,6 +1215,7 @@ impl Miner {
                 se_points: c.ch.se_points,
                 se_earned_today: c.se_earned_today,
                 profile_image: self.app.lives.avatar(&c.ch.login),
+                se_page: crate::streamelements::page_name(&c.ch.login),
             })
             .collect();
         self.app.set_view(AccountView {

@@ -413,6 +413,9 @@ const MIGRATIONS: &[&str] = &[r#"
     CREATE TRIGGER giveaways_reopened AFTER UPDATE OF status ON giveaways
         WHEN NEW.status <> 'closed' AND OLD.status = 'closed'
         BEGIN UPDATE giveaways SET ended_at = NULL WHERE id = NEW.id; END;
+"#, r#"
+    -- Pseudo StreamElements du streamer quand il diffère de son pseudo Twitch
+    ALTER TABLE streamers ADD COLUMN se_name TEXT;
 "#];
 
 /// Types de giveaway
@@ -485,13 +488,15 @@ pub struct Streamer {
     pub win_reply: Option<String>,
     /// Délai avant cette réponse, en secondes (None : WIN_REPLY_DELAY)
     pub win_reply_delay: Option<i64>,
+    /// Pseudo de sa page StreamElements s'il diffère de son pseudo Twitch
+    pub se_name: Option<String>,
 }
 
 /// Délai par défaut avant la réponse au gain, en secondes
 pub const WIN_REPLY_DELAY: i64 = 10;
 
 const STREAMER_SELECT: &str = "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_days,
-     require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay FROM streamers";
+     require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name FROM streamers";
 
 fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
     Ok(Streamer {
@@ -507,6 +512,7 @@ fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
         min_chat_minutes: r.get(9)?,
         win_reply: r.get(10)?,
         win_reply_delay: r.get(11)?,
+        se_name: r.get(12)?,
     })
 }
 
@@ -833,6 +839,10 @@ pub struct Settings {
     pub start_minimized: bool,
     /// Chercher et proposer les mises à jour automatiquement
     pub auto_update: bool,
+    /// Mise à jour trouvée installée tout de suite, sans la confirmer (l'application redémarre)
+    pub auto_install: bool,
+    /// Vérification des mises à jour toutes les N minutes (1 à 360) quand `auto_install` est coché
+    pub update_check_minutes: u64,
     /// Notifications Windows (giveaway détecté, mention, victoire)
     pub notifications: bool,
     /// Participation automatique aux giveaways détectés (désactivée par défaut)
@@ -893,6 +903,8 @@ impl Default for Settings {
             close_to_tray: true,
             start_minimized: false,
             auto_update: true,
+            auto_install: false,
+            update_check_minutes: 360,
             notifications: true,
             auto_participate: false,
             auto_delay_min: 8,
@@ -1727,17 +1739,34 @@ impl Db {
         Ok(rows)
     }
 
+    /// Pseudos StreamElements différents du pseudo Twitch : (pseudo Twitch, pseudo StreamElements)
+    pub fn se_names(&self) -> DbResult<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT login, se_name FROM streamers WHERE se_name IS NOT NULL AND se_name <> ''")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Identifiant StreamElements oublié sur les chaînes de ce streamer (pseudo StreamElements changé)
+    pub fn forget_se_channel(&self, login: &str) -> DbResult<Vec<i64>> {
+        let conn = self.conn();
+        conn.execute("UPDATE channels SET se_channel_id = NULL WHERE login = ?1", [login])?;
+        let mut stmt = conn.prepare("SELECT DISTINCT account_id FROM channels WHERE login = ?1")?;
+        let rows = stmt.query_map([login], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
     pub fn save_streamer(&self, s: &Streamer) -> DbResult<()> {
         self.conn().execute(
             "INSERT INTO streamers (login, discord_url, notes, ignored_commands, require_follow, follow_min_days,
-                 require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(login) DO UPDATE SET discord_url = excluded.discord_url, notes = excluded.notes,
                  ignored_commands = excluded.ignored_commands, require_follow = excluded.require_follow,
                  follow_min_days = excluded.follow_min_days, require_presence = excluded.require_presence,
                  require_discord = excluded.require_discord, require_greeting = excluded.require_greeting,
                  min_chat_minutes = excluded.min_chat_minutes, win_reply = excluded.win_reply,
-                 win_reply_delay = excluded.win_reply_delay",
+                 win_reply_delay = excluded.win_reply_delay, se_name = excluded.se_name",
             params![
                 s.login,
                 s.discord_url,
@@ -1750,7 +1779,8 @@ impl Db {
                 s.require_greeting,
                 s.min_chat_minutes,
                 s.win_reply,
-                s.win_reply_delay
+                s.win_reply_delay,
+                s.se_name
             ],
         )?;
         Ok(())

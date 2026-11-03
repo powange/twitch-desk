@@ -46,6 +46,11 @@ pub struct InsightsState {
 }
 
 impl InsightsState {
+    /// Pseudo StreamElements de la chaîne changé : identifiant à retrouver
+    pub fn forget_se(&mut self, login: &str) {
+        self.se_ids.remove(login);
+    }
+
     pub fn view(&self) -> HashMap<String, ChannelInsight> {
         self.view.clone()
     }

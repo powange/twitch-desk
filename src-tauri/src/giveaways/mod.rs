@@ -384,6 +384,9 @@ impl Monitor {
         let settings = self.app.db.settings();
         self.detector.set_params(detect::DetectParams::from_settings(&settings));
         bots::set_extra_bots(&self.app.db.detection_rules("bot").unwrap_or_default());
+        // Pseudos StreamElements des fiches : identifiants StreamElements à retrouver
+        crate::streamelements::set_page_names(&self.app.db.se_names().unwrap_or_default());
+        self.se_channels.clear();
         for e in bots::set_custom_patterns(&self.app.db.detection_rules("winner").unwrap_or_default()) {
             tracing::warn!("formulation de gagnant écartée : {e}");
         }

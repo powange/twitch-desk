@@ -116,6 +116,11 @@ pub struct ScannerState {
 }
 
 impl ScannerState {
+    /// Pseudo StreamElements de la chaîne changé : identifiant à retrouver
+    pub fn forget_se(&mut self, login: &str) {
+        self.se_ids.remove(login);
+    }
+
     pub fn view(&self) -> ScannerView {
         self.view.clone()
     }
