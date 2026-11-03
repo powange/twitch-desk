@@ -314,6 +314,7 @@ pub fn run() {
             commands::resolve_category,
             commands::search_categories,
             commands::channel_rewards,
+            commands::reopen_giveaway,
             commands::game_box_arts,
             commands::save_streamer,
             commands::get_streamers,

@@ -47,6 +47,8 @@ pub enum MonitorCmd {
     /// Retirer un giveaway de la file d'alertes sans participer
     Dismiss(i64),
     Close(i64),
+    /// Giveaway terminé rouvert à la main (gagnant retiré)
+    Reopen(i64),
     Delete(i64),
     DismissMention(u64),
     /// Gagnant désigné à la main (journal du chat) : giveaway choisi, sinon ouvert de la chaîne,
@@ -319,7 +321,10 @@ impl Monitor {
                     self.update_anonymous();
                     let now = chrono::Utc::now();
                     let at = |d: chrono::Duration| (now - d).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-                    let closed = self.app.db.close_giveaways_before(&at(AUTO_CLOSE_AFTER)).unwrap_or(0);
+                    let closed = self.app.db.close_giveaways_before(&at(AUTO_CLOSE_AFTER), &at(PAUSED_MAX_AGE)).unwrap_or(0);
+                    if closed > 0 {
+                        self.app.log("giveaways", EventKind::Info, format!("{closed} giveaway(s) ouvert(s) depuis longtemps, clos"));
+                    }
                     let expired = self.app.db.expire_paused_giveaways(&at(PAUSED_DRAW_GRACE), &at(PAUSED_MAX_AGE)).unwrap_or(0);
                     if expired > 0 {
                         self.app.log("giveaways", EventKind::Info, format!("{expired} giveaway(s) en pause expiré(s), clos"));
@@ -490,6 +495,15 @@ impl Monitor {
                 }
                 changed |= out.closed + out.paused > 0;
             }
+            // Hors ligne sans fin de live vue (application fermée à ce moment, ou giveaway saisi
+            // hors live) : giveaways sur plusieurs lives en pause plutôt que clos à l'ancienneté
+            if info.is_none() {
+                let paused = self.app.db.pause_offline_giveaways(&channel).unwrap_or(0);
+                if paused > 0 {
+                    self.app.log("giveaways", EventKind::Info, format!("{channel} est hors ligne : {paused} giveaway(s) en pause"));
+                    changed = true;
+                }
+            }
             if !was_live && info.is_some() {
                 // De retour en live : giveaways en pause repris, sans nouvelle alerte
                 for g in self.app.db.resume_channel_giveaways(&channel, &now_rfc3339()).unwrap_or_default() {
@@ -585,6 +599,14 @@ impl Monitor {
             MonitorCmd::Close(id) => {
                 let _ = self.app.db.close_giveaway(id);
                 self.publish();
+            }
+            MonitorCmd::Reopen(id) => {
+                // Chaîne en live (ou statut pas encore relu) : ouvert ; hors ligne : en pause
+                let live = self.app.db.giveaway(id).ok().flatten().is_none_or(|g| self.live.get(&g.channel).is_none_or(|l| l.info.is_some()));
+                if self.app.db.reopen_closed_giveaway(id, live, &now_rfc3339()).unwrap_or(false) {
+                    self.app.log("giveaways", EventKind::Info, if live { "Giveaway rouvert" } else { "Giveaway rouvert, en pause jusqu'au prochain live" });
+                    self.publish();
+                }
             }
             MonitorCmd::Delete(id) => {
                 let _ = self.app.db.delete_giveaway(id);

@@ -47,6 +47,10 @@ function toLocalInput(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// Giveaway terminé : rouvert à l'enregistrement (gagnant retiré)
+const reopen = ref(false)
+const closed = computed(() => props.giveaway?.status === 'closed')
+
 const form = ref({
   channel: '',
   kind: 'command' as GiveawayInput['kind'],
@@ -186,6 +190,7 @@ watch(open, (isOpen) => {
     giftIds: [...(g?.giftIds ?? [])],
     winner: g?.winner ?? ''
   }
+  reopen.value = false
   giftSearch.value = ''
   // Chaîne connue (modification, fiche du streamer, chaîne pré-remplie) : fiche chargée tout de suite,
   // même si c'est la même chaîne qu'à la dernière ouverture
@@ -472,9 +477,11 @@ async function save() {
     const id = editId.value
     if (id !== null) {
       await invoke('update_giveaway', { id, input })
+      // Rouvert : ouvert si la chaîne est en live, sinon en pause ; gagnant retiré
+      if (reopen.value && closed.value) await invoke('reopen_giveaway', { id })
       // Gagnant changé à la main : désigné (le giveaway est clos), ou retiré (il est rouvert)
       const winner = f.winner.trim().replace(/^@/, '').toLowerCase()
-      if (props.giveaway && props.giveaway.id === id && winner !== (props.giveaway.winner ?? '').toLowerCase()) {
+      if (!reopen.value && props.giveaway && props.giveaway.id === id && winner !== (props.giveaway.winner ?? '').toLowerCase()) {
         if (winner) await invoke('set_manual_winner', { channel: f.channel, winner, giveawayId: id })
         else await invoke('clear_giveaway_winner', { id })
       }
@@ -674,12 +681,19 @@ async function save() {
                 <UInput id="gw-draw" v-model="form.drawAt" type="datetime-local" class="w-full" />
               </UFormField>
               <UFormField v-if="giveaway" label="Gagnant" help="Le vider retire le gagnant et rouvre le giveaway" class="max-w-xs">
-                <UInput id="gw-winner" v-model="form.winner" icon="i-lucide-trophy" placeholder="Pas encore tiré" class="w-full">
+                <UInput id="gw-winner" v-model="form.winner" :disabled="reopen" icon="i-lucide-trophy" placeholder="Pas encore tiré" class="w-full">
                   <template v-if="form.winner" #trailing>
                     <UButton icon="i-lucide-x" size="xs" color="neutral" variant="link" aria-label="Retirer le gagnant" @click="form.winner = ''" />
                   </template>
                 </UInput>
               </UFormField>
+            </div>
+            <div v-if="closed" class="flex items-start gap-3 rounded-md border border-default p-3">
+              <USwitch
+                v-model="reopen"
+                label="Rouvrir ce giveaway"
+                :description="`Il est terminé${giveaway?.winner ? ` (gagnant : ${giveaway.winner}, qui sera retiré)` : ''}. Rouvert, il est ouvert si la chaîne est en live, sinon en pause jusqu'à son prochain live.`"
+              />
             </div>
             <UAlert
               v-if="form.kind === 'channelpoints'"

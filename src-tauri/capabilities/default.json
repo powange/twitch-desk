@@ -83,6 +83,7 @@
     "allow-resolve-category",
     "allow-search-categories",
     "allow-channel-rewards",
+    "allow-reopen-giveaway",
     "allow-game-box-arts",
     "allow-save-streamer",
     "allow-get-streamers",

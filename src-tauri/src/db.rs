@@ -1774,12 +1774,37 @@ impl Db {
         Ok(n > 0)
     }
 
-    /// Clôt les giveaways ouverts détectés avant `before` (date RFC 3339), sauf tirage annoncé plus tard
-    pub fn close_giveaways_before(&self, before: &str) -> DbResult<usize> {
+    /// Clôt les giveaways ouverts détectés avant `before` (date RFC 3339), sauf tirage annoncé plus
+    /// tard ; ceux sur plusieurs lives (saisis à la main, StreamElements) seulement s'ils ont été
+    /// détectés avant `long_before`
+    pub fn close_giveaways_before(&self, before: &str, long_before: &str) -> DbResult<usize> {
         self.conn().execute(
-            &format!("UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND detected_at < ?1 AND {DRAW_NOT_AHEAD}"),
-            [before],
+            &format!(
+                "UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND {DRAW_NOT_AHEAD}
+                 AND ((detected_at < ?1 AND manual = 0 AND kind <> 'streamelements') OR detected_at < ?2)"
+            ),
+            [before, long_before],
         )
+    }
+
+    /// Chaîne hors ligne alors que des giveaways sur plusieurs lives sont ouverts (fin du live
+    /// manquée : application fermée à ce moment) : mis en pause comme à la fin d'un live
+    pub fn pause_offline_giveaways(&self, channel: &str) -> DbResult<usize> {
+        self.conn().execute(
+            &format!("UPDATE giveaways SET status = 'paused' WHERE status = 'open' AND channel = ?1 AND {PAUSE_ON_OFFLINE}"),
+            [channel],
+        )
+    }
+
+    /// Giveaway terminé rouvert à la main : gagnant retiré, ouvert (`live`) ou en pause jusqu'au
+    /// prochain live, ancienneté repartie de `at`
+    pub fn reopen_closed_giveaway(&self, id: i64, live: bool, at: &str) -> DbResult<bool> {
+        let n = self.conn().execute(
+            "UPDATE giveaways SET status = ?2, winner = NULL, winner_chance = NULL, drawn_at = NULL, detected_at = ?3
+             WHERE id = ?1 AND status = 'closed'",
+            params![id, if live { "open" } else { "paused" }, at],
+        )?;
+        Ok(n > 0)
     }
 
     pub fn delete_giveaway(&self, id: i64) -> DbResult<()> {
@@ -2147,7 +2172,7 @@ mod tests {
         assert_eq!(row.entries.len(), 1);
         assert!(row.entries[0].auto);
 
-        assert_eq!(db.close_giveaways_before("2026-11-01T00:00:00Z").unwrap(), 1);
+        assert_eq!(db.close_giveaways_before("2026-11-01T00:00:00Z", "2026-10-01T00:00:00Z").unwrap(), 1);
         assert!(!db.giveaway(old).unwrap().unwrap().open);
         let input = GiveawayInput {
             channel: "lunarsea".into(),
@@ -2254,7 +2279,10 @@ mod tests {
         assert_eq!(db.giveaway(past).unwrap().unwrap().status, "closed");
         let row = db.giveaway(ahead).unwrap().unwrap();
         assert!(row.status == "paused" && !row.open);
-        assert_eq!(db.close_giveaways_before("2026-11-01T00:00:00Z").unwrap(), 1);
+        // StreamElements (plusieurs lives) : pas clos par l'ancienneté de 12 h, seulement par la longue
+        assert_eq!(db.close_giveaways_before("2026-11-01T00:00:00Z", "2026-10-01T00:00:00Z").unwrap(), 0);
+        assert!(db.giveaway(other).unwrap().unwrap().open);
+        assert_eq!(db.close_giveaways_before("2026-11-01T00:00:00Z", "2026-11-01T00:00:00Z").unwrap(), 1);
         assert_eq!(db.giveaway(ahead).unwrap().unwrap().status, "paused");
         assert!(!db.giveaway(other).unwrap().unwrap().open);
 
@@ -2308,9 +2336,24 @@ mod tests {
         assert_eq!(status(other), "open");
         assert_eq!(db.paused_giveaways(Some("lunarsea")).unwrap().len(), 3);
         assert!(db.open_giveaways(Some("lunarsea")).unwrap().is_empty());
-        // L'ancienneté ne touche que les ouverts
-        assert_eq!(db.close_giveaways_before("2099-01-01T00:00:00Z").unwrap(), 1);
+        // L'ancienneté ne touche que les ouverts ; StreamElements : seulement au bout de la longue durée
+        assert_eq!(db.close_giveaways_before("2099-01-01T00:00:00Z", "2026-10-01T00:00:00Z").unwrap(), 0);
+        assert_eq!(status(other), "open");
+        // Chaîne vue hors ligne sans fin de live (application fermée) : en pause
+        assert_eq!(db.pause_offline_giveaways("kraken_tv").unwrap(), 1);
+        assert_eq!(status(other), "paused");
+        db.conn().execute("UPDATE giveaways SET status = 'open' WHERE id = ?1", [other]).unwrap();
+        assert_eq!(db.close_giveaways_before("2099-01-01T00:00:00Z", "2099-01-01T00:00:00Z").unwrap(), 1);
         assert_eq!(status(se), "paused");
+        // Réouverture à la main : gagnant retiré, ouvert ou en pause selon le live
+        assert!(db.reopen_closed_giveaway(drawn, false, "2026-11-02T08:00:00Z").unwrap());
+        let row = db.giveaway(drawn).unwrap().unwrap();
+        assert!(row.status == "paused" && row.winner.is_none() && row.detected_at == "2026-11-02T08:00:00Z");
+        assert!(!db.reopen_closed_giveaway(drawn, true, now).unwrap());
+        db.close_giveaway(drawn).unwrap();
+        assert!(db.reopen_closed_giveaway(drawn, true, now).unwrap());
+        assert_eq!(status(drawn), "open");
+        db.close_giveaway(drawn).unwrap();
 
         // Retour en live : rouverts, file d'alertes et participations inchangées
         let resumed = db.resume_channel_giveaways("lunarsea", "2026-11-02T18:00:00Z").unwrap();

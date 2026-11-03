@@ -1343,6 +1343,14 @@ pub fn close_giveaway(app: AppState, id: i64) {
     app.sync.poke();
 }
 
+/// Giveaway terminé rouvert (gagnant retiré) : ouvert si la chaîne est en live, sinon en pause
+/// jusqu'au prochain live
+#[tauri::command]
+pub fn reopen_giveaway(app: AppState, id: i64) {
+    app.giveaways.send(MonitorCmd::Reopen(id));
+    app.sync.poke();
+}
+
 #[tauri::command]
 pub fn delete_giveaway(app: AppState, id: i64) {
     app.giveaways.send(MonitorCmd::Delete(id));
