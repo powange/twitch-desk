@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.46.0',
+    date: '2026-11-03',
+    title: 'Journal du chat par giveaway',
+    changes: [
+      { kind: 'new', text: 'Journal du chat découpé par giveaway : chaque section rappelle le giveaway (type, commande, cadeaux, gagnants, période) et regroupe les messages écrits pendant celui-ci. Un giveaway se termine à l\'annonce de son dernier gagnant, ou à sa clôture ; les messages d\'après vont au giveaway suivant de la chaîne.' },
+      { kind: 'new', text: 'Page Alertes : le bouton Journal du chat d\'un giveaway ouvre le journal directement sur sa section, en cours comme passé (« Voir les plus récents » pour revenir aux derniers messages).' }
+    ]
+  },
+  {
     version: '0.45.0',
     date: '2026-11-03',
     title: 'Mentions sur le téléphone',

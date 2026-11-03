@@ -318,6 +318,7 @@ pub fn run() {
             commands::get_chat_log,
             commands::set_giveaway_command,
             commands::get_chat_log_meta,
+            commands::get_chat_log_sections,
             commands::set_manual_winner,
             commands::clear_giveaway_winner,
             commands::streamer_discord,

@@ -402,6 +402,17 @@ const MIGRATIONS: &[&str] = &[r#"
     -- Chance de chaque gagnant (objet JSON pseudo → « 20.92% ») ; winner_chance garde celle du premier
     ALTER TABLE giveaways ADD COLUMN winner_chances TEXT NOT NULL DEFAULT '{}';
     UPDATE giveaways SET winner_chances = json_object(winner, winner_chance) WHERE winner IS NOT NULL AND winner_chance IS NOT NULL;
+"#, r#"
+    -- Fin d'un giveaway (journal du chat découpé par giveaway) : dernier gagnant annoncé, sinon
+    -- clôture ; effacée s'il est rouvert. Giveaways déjà clos : heure du tirage
+    ALTER TABLE giveaways ADD COLUMN ended_at TEXT;
+    UPDATE giveaways SET ended_at = drawn_at WHERE status = 'closed';
+    CREATE TRIGGER giveaways_ended AFTER UPDATE OF status ON giveaways
+        WHEN NEW.status = 'closed' AND OLD.status <> 'closed' AND NEW.ended_at IS NULL
+        BEGIN UPDATE giveaways SET ended_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.id; END;
+    CREATE TRIGGER giveaways_reopened AFTER UPDATE OF status ON giveaways
+        WHEN NEW.status <> 'closed' AND OLD.status = 'closed'
+        BEGIN UPDATE giveaways SET ended_at = NULL WHERE id = NEW.id; END;
 "#];
 
 /// Types de giveaway
@@ -610,6 +621,23 @@ pub struct BotReply {
     /// Dernier changement du message, et dernière fois qu'il a été vu
     pub updated_at: String,
     pub seen_at: String,
+}
+
+/// Giveaway qui découpe le journal du chat : ses messages sont ceux d'avant sa fin (et d'après
+/// la fin du précédent)
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLogSection {
+    pub id: i64,
+    pub kind: String,
+    pub command: Option<String>,
+    pub status: String,
+    pub detected_at: String,
+    /// Dernier gagnant annoncé, sinon clôture (None : encore ouvert ou en pause)
+    pub ended_at: Option<String>,
+    pub winners: Vec<String>,
+    /// Cadeaux rattachés (titres)
+    pub gifts: Vec<String>,
 }
 
 /// Message du journal du chat
@@ -1927,7 +1955,7 @@ impl Db {
         }
         conn.execute(
             "UPDATE giveaways SET winners = ?2, winner = COALESCE(winner, ?3), winner_chance = CASE WHEN winner IS NULL THEN ?4 ELSE winner_chance END,
-                 drawn_at = COALESCE(drawn_at, ?5), status = 'closed', winner_chances = ?6 WHERE id = ?1",
+                 drawn_at = COALESCE(drawn_at, ?5), ended_at = ?5, status = 'closed', winner_chances = ?6 WHERE id = ?1",
             params![id, serde_json::to_string(&winners).expect("liste"), winner, chance, at, serde_json::to_string(&chances).expect("objet")],
         )?;
         Ok(true)
@@ -2119,6 +2147,7 @@ impl Db {
         author: Option<&str>,
         text: Option<&str>,
         before_id: Option<i64>,
+        before_at: Option<&str>,
         limit: usize,
     ) -> DbResult<Vec<ChatLogEntry>> {
         let conn = self.conn();
@@ -2131,6 +2160,7 @@ impl Db {
                AND (?4 IS NULL OR id < ?4)
                AND (?6 IS NULL OR instr(author, ?6) > 0)
                AND NOT EXISTS (SELECT 1 FROM json_each(?7) w WHERE instr(lower(message), w.value) = 0)
+               AND (?8 IS NULL OR at <= ?8)
              ORDER BY id DESC LIMIT ?5",
         )?;
         let author = author.map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty());
@@ -2138,7 +2168,7 @@ impl Db {
         // Mots-clés : tous présents dans le message, sans tenir compte des majuscules
         let words: Vec<String> = text.map(|t| t.to_lowercase().split_whitespace().map(str::to_owned).collect()).unwrap_or_default();
         let words_json = serde_json::to_string(&words).expect("liste sérialisable");
-        let rows = stmt.query_map(params![channel, kinds_json, commands_json, before_id, limit as i64, author, words_json], |r| {
+        let rows = stmt.query_map(params![channel, kinds_json, commands_json, before_id, limit as i64, author, words_json, before_at], |r| {
             Ok(ChatLogEntry {
                 id: r.get(0)?,
                 channel: r.get(1)?,
@@ -2147,6 +2177,32 @@ impl Db {
                 kind: r.get(4)?,
                 command: r.get(5)?,
                 message: r.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Giveaways d'une chaîne qui découpent son journal du chat (encore ouverts, ou finis depuis
+    /// `since`), les plus récents d'abord
+    pub fn chat_log_sections(&self, channel: &str, since: &str) -> DbResult<Vec<ChatLogSection>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT g.id, g.kind, g.command, g.status, g.detected_at, COALESCE(g.ended_at, CASE WHEN g.status = 'closed' THEN g.drawn_at END),
+                    g.winners, (SELECT json_group_array(f.title) FROM giveaway_gifts gg JOIN gifts f ON f.id = gg.gift_id WHERE gg.giveaway_id = g.id)
+             FROM giveaways g
+             WHERE g.channel = ?1 AND (g.status <> 'closed' OR COALESCE(g.ended_at, g.drawn_at) >= ?2)
+             ORDER BY COALESCE(g.ended_at, g.drawn_at, '9999') DESC, g.id DESC",
+        )?;
+        let rows = stmt.query_map(params![channel, since], |r| {
+            Ok(ChatLogSection {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                command: r.get(2)?,
+                status: r.get(3)?,
+                detected_at: r.get(4)?,
+                ended_at: r.get(5)?,
+                winners: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
+                gifts: serde_json::from_str(&r.get::<_, String>(7)?).unwrap_or_default(),
             })
         })?;
         rows.collect()
@@ -2696,16 +2752,16 @@ mod tests {
             e("winner", "streamelements", None, "Le gagnant est bob", "2026-11-01T10:00:03Z"),
         ])
         .unwrap();
-        assert_eq!(db.chat_log("lunarsea", &[], &[], None, None, None, 10).unwrap().len(), 4);
-        assert_eq!(db.chat_log("lunarsea", &["own".into(), "winner".into()], &[], None, None, None, 10).unwrap().len(), 2);
-        let joins = db.chat_log("lunarsea", &[], &["!join".into()], None, None, None, 10).unwrap();
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, None, None, None, 10).unwrap().len(), 4);
+        assert_eq!(db.chat_log("lunarsea", &["own".into(), "winner".into()], &[], None, None, None, None, 10).unwrap().len(), 2);
+        let joins = db.chat_log("lunarsea", &[], &["!join".into()], None, None, None, None, 10).unwrap();
         assert_eq!(joins.iter().map(|x| x.author.as_str()).collect::<Vec<_>>(), vec!["eve", "bob"]);
-        assert_eq!(db.chat_log("lunarsea", &[], &[], None, None, Some(joins[0].id), 10).unwrap().len(), 1);
-        assert_eq!(db.chat_log("lunarsea", &[], &[], Some(" EV "), None, None, 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, None, Some(joins[0].id), None, 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], Some(" EV "), None, None, None, 10).unwrap().len(), 1);
         // Mots-clés : tous dans le message, sans tenir compte des majuscules
-        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some("GAGNANT bob"), None, 10).unwrap().len(), 1);
-        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some("gagnant eve"), None, 10).unwrap().len(), 0);
-        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some("  "), None, 10).unwrap().len(), 4);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some("GAGNANT bob"), None, None, 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some("gagnant eve"), None, None, 10).unwrap().len(), 0);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some("  "), None, None, 10).unwrap().len(), 4);
         assert_eq!(db.chat_log_commands("lunarsea").unwrap(), vec![("!join".to_owned(), 2)]);
         assert_eq!(db.prune_chat_log("2026-11-01T10:00:02Z").unwrap(), 2);
 
@@ -2789,6 +2845,38 @@ mod tests {
             (d.require_follow, d.require_presence, d.require_discord, d.min_chat_minutes),
             (Some(false), Some(true), Some(true), Some(30))
         );
+    }
+
+    #[test]
+    fn chat_log_sections_end_at_last_winner_or_closing() {
+        let db = Db::memory().unwrap();
+        let new = |at: &str| NewGiveaway {
+            channel: "lunarsea".into(),
+            kind: "command".into(),
+            command: Some("!coffre".into()),
+            url: None,
+            evidence: None,
+            detected_at: at.into(),
+        };
+        let drawn = db.insert_giveaway(&new("2026-11-03T10:00:00Z")).unwrap();
+        db.set_giveaway_winner(drawn, "alice", None, "2026-11-03T10:30:00Z").unwrap();
+        // Deuxième gagnant : la fin recule à sa date
+        db.set_giveaway_winner(drawn, "bob", None, "2026-11-03T10:35:00Z").unwrap();
+        let closed = db.insert_giveaway(&new("2026-11-03T11:00:00Z")).unwrap();
+        db.close_giveaway(closed).unwrap();
+        let open = db.insert_giveaway(&new("2026-11-03T12:00:00Z")).unwrap();
+        let list = db.chat_log_sections("lunarsea", "2026-11-01T00:00:00Z").unwrap();
+        assert_eq!(list.iter().map(|s| s.id).collect::<Vec<_>>(), [open, closed, drawn]);
+        assert_eq!(list[2].ended_at.as_deref(), Some("2026-11-03T10:35:00Z"));
+        assert_eq!(list[2].winners, ["alice", "bob"]);
+        // Clos sans gagnant : heure de la clôture ; encore ouvert : pas de fin
+        assert!(list[1].ended_at.is_some());
+        assert!(list[0].ended_at.is_none());
+        // Rouvert : sa fin est effacée
+        db.reopen_closed_giveaway(closed, true, "2026-11-03T13:00:00Z").unwrap();
+        assert!(db.chat_log_sections("lunarsea", "2026-11-01T00:00:00Z").unwrap().iter().find(|s| s.id == closed).unwrap().ended_at.is_none());
+        // Fini avant `since` : absent
+        assert_eq!(db.chat_log_sections("lunarsea", "2026-11-03T10:40:00Z").unwrap().len(), 2);
     }
 
     #[test]

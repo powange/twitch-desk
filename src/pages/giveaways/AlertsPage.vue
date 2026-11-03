@@ -127,11 +127,13 @@ async function confirmDelete() {
   if (await run('delete', 'Giveaway non supprimé', () => invoke('delete_giveaway', { id: g.id }))) toDelete.value = null
 }
 
-// Journal du chat d'une chaîne
+// Journal du chat d'une chaîne, ouvert sur la section du giveaway
 const logChannel = ref<string | null>(null)
+const logGiveaway = ref<number | null>(null)
 const logOpen = ref(false)
-function openLog(login: string) {
+function openLog(login: string, giveawayId: number) {
   logChannel.value = login
+  logGiveaway.value = giveawayId
   logOpen.value = true
 }
 
@@ -600,7 +602,7 @@ function share(g: GiveawayView) {
                     :loading="participating === g.id"
                     @click="askBuy(g, accounts.map(a => a.id))"
                   />
-                  <UButton icon="i-lucide-scroll-text" size="xs" color="neutral" variant="ghost" :aria-label="`Journal du chat de ${g.channel}`" title="Journal du chat" @click="openLog(g.channel)" />
+                  <UButton icon="i-lucide-scroll-text" size="xs" color="neutral" variant="ghost" :aria-label="`Journal du chat de ${g.channel}`" title="Journal du chat (pendant ce giveaway)" @click="openLog(g.channel, g.id)" />
                   <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
                   <UButton v-if="g.status !== 'closed'" label="Clore" size="xs" color="neutral" variant="ghost" :loading="busy(`close-${g.id}`)" @click="closeGiveaway(g)" />
                   <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" aria-label="Supprimer" @click="toDelete = g" />
@@ -622,7 +624,7 @@ function share(g: GiveawayView) {
 
     <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" :past="formPast" />
     <ImportPastModal v-model:open="importOpen" />
-    <ChatLogModal v-model:open="logOpen" :channel="logChannel" />
+    <ChatLogModal v-model:open="logOpen" :channel="logChannel" :giveaway-id="logGiveaway" />
 
     <UModal v-model:open="pastFilterOpen" title="Filtrer les giveaways passés" description="Appliqués tout de suite, sur tous les giveaways terminés">
       <template #body>

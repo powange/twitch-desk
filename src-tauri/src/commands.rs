@@ -442,8 +442,10 @@ pub struct ChatLogMeta {
     replies: Vec<crate::db::BotReply>,
 }
 
-/// Messages enregistrés d'une chaîne (200 par page, les plus récents d'abord)
+/// Messages enregistrés d'une chaîne (200 par page, les plus récents d'abord ; `before_at` :
+/// jusqu'à cette heure, pour ouvrir le journal sur un giveaway)
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // un paramètre par filtre du journal
 pub async fn get_chat_log(
     app: AppState<'_>,
     channel: String,
@@ -452,10 +454,21 @@ pub async fn get_chat_log(
     author: Option<String>,
     text: Option<String>,
     before_id: Option<i64>,
+    before_at: Option<String>,
 ) -> CmdResult<Vec<crate::db::ChatLogEntry>> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
-    blocking(&app, move |app| app.db.chat_log(&channel, &kinds, &commands, author.as_deref(), text.as_deref(), before_id, 200).map_err(db_err))
-        .await?
+    blocking(&app, move |app| {
+        app.db.chat_log(&channel, &kinds, &commands, author.as_deref(), text.as_deref(), before_id, before_at.as_deref(), 200).map_err(db_err)
+    })
+    .await?
+}
+
+/// Giveaways de la chaîne qui découpent son journal du chat (sur la durée du journal)
+#[tauri::command]
+pub fn get_chat_log_sections(app: AppState, channel: String) -> CmdResult<Vec<crate::db::ChatLogSection>> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    let since = (chrono::Utc::now() - chrono::Duration::days(15)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    app.db.chat_log_sections(&channel, &since).map_err(db_err)
 }
 
 /// Gagnant désigné à la main (tirage non détecté) : giveaway choisi (`giveaway_id`, facultatif),

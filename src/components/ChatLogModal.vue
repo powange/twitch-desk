@@ -1,17 +1,31 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../composables/useSnapshot'
 import { GIVEAWAY_KIND } from '../utils/giveaways'
+import type { GiveawayKind } from '../types'
 import { usePersisted } from '../composables/usePersisted'
 
 // Journal du chat d'une chaîne : commandes des spectateurs, nos messages, annonces de gagnant
-// et réponses des bots aux commandes d'information (!giveaway…), gardés 14 jours
+// et réponses des bots aux commandes d'information (!giveaway…), gardés 14 jours. Découpé par
+// giveaway : un message va au premier giveaway de la chaîne fini après lui (dernier gagnant
+// annoncé, sinon clôture), sinon au giveaway en cours
 interface ChatLogEntry { id: number, channel: string, at: string, author: string, kind: Kind, command: string | null, message: string }
+interface ChatLogSection {
+  id: number
+  kind: GiveawayKind
+  command: string | null
+  status: 'open' | 'paused' | 'closed'
+  detectedAt: string
+  endedAt: string | null
+  winners: string[]
+  gifts: string[]
+}
 interface BotReply { channel: string, command: string, bot: string, message: string, askedBy: string, updatedAt: string, seenAt: string }
 type Kind = 'command' | 'own' | 'streamer' | 'bot' | 'winner' | 'reply'
 
-const props = defineProps<{ channel: string | null }>()
+// `giveawayId` : journal ouvert sur la section de ce giveaway
+const props = defineProps<{ channel: string | null, giveawayId?: number | null }>()
 const open = defineModel<boolean>('open', { required: true })
 const toast = useToast()
 
@@ -36,6 +50,9 @@ const kindItems = [
 const entries = ref<ChatLogEntry[]>([])
 const commands = ref<[string, number][]>([])
 const replies = ref<BotReply[]>([])
+const sections = ref<ChatLogSection[]>([])
+// Ouvert sur un giveaway fini : messages jusqu'à sa fin (les plus récents sur demande)
+const beforeAt = ref<string | null>(null)
 // Types de message retenus sur ce poste, pour toutes les chaînes ; les commandes non : elles
 // changent d'un giveaway à l'autre (un filtre « !join » retenu cacherait le « !gw » suivant)
 const kinds = usePersisted('chatLog.kinds', [] as Kind[], {
@@ -56,7 +73,7 @@ const commandItems = computed(() => commands.value.map(([c, n]) => ({ label: `${
 let loadSeq = 0
 // Filtres de la dernière lecture demandée
 let requestedKey = ''
-const filterKey = () => JSON.stringify([props.channel, kinds.value, selectedCommands.value, author.value.trim(), text.value.trim()])
+const filterKey = () => JSON.stringify([props.channel, kinds.value, selectedCommands.value, author.value.trim(), text.value.trim(), beforeAt.value])
 
 async function load(append = false) {
   if (!props.channel) return
@@ -74,7 +91,8 @@ async function load(append = false) {
       commands: selectedCommands.value,
       author: author.value.trim() || null,
       text: text.value.trim() || null,
-      beforeId: before
+      beforeId: before,
+      beforeAt: beforeAt.value
     })
     if (seq !== loadSeq) return
     entries.value = append ? [...entries.value, ...page] : page
@@ -99,7 +117,62 @@ async function refresh() {
   } catch {
     // Les filtres restent ceux d'avant
   }
+  try {
+    sections.value = await invoke<ChatLogSection[]>('get_chat_log_sections', { channel: props.channel })
+  } catch {
+    // Journal affiché sans découpage
+  }
   await load()
+}
+
+// Heures enregistrées à la seconde : un message de la même seconde que la fin en fait partie
+const SAME_MOMENT_MS = 2000
+// Giveaways finis, du plus ancien au plus récent ; en cours (ouvert ou en pause) : le plus récent
+const ended = computed(() => sections.value.filter(s => s.endedAt).map(s => ({ s, end: Date.parse(s.endedAt!) })).sort((a, b) => a.end - b.end))
+const current = computed(() => sections.value.find(s => !s.endedAt) ?? null)
+function sectionOf(e: ChatLogEntry): ChatLogSection | null {
+  const at = Date.parse(e.at)
+  return ended.value.find(x => at <= x.end + SAME_MOMENT_MS)?.s ?? current.value
+}
+// Messages (les plus récents d'abord) regroupés par giveaway, dans le même ordre
+const groups = computed(() => {
+  const list: { key: string, section: ChatLogSection | null, entries: ChatLogEntry[] }[] = []
+  for (const e of entries.value) {
+    const s = sectionOf(e)
+    const key = s ? `g${s.id}` : 'none'
+    const last = list.at(-1)
+    if (last?.key === key) last.entries.push(e)
+    else list.push({ key, section: s, entries: [e] })
+  }
+  return list
+})
+// Fin du giveaway précédent : début de la section
+function startOf(s: ChatLogSection): string | null {
+  const end = s.endedAt ? Date.parse(s.endedAt) : Infinity
+  const before = ended.value.filter(x => x.end < end).at(-1)
+  return before ? before.s.endedAt : null
+}
+// « du 3 nov. 20:10:00 au 21:30:12 (tirage) », « depuis … · en cours »
+function periodOf(s: ChatLogSection) {
+  const start = startOf(s)
+  const from = start ? `du ${time(start)}` : ''
+  if (!s.endedAt) return `${start ? `depuis le ${time(start)} · ` : ''}${s.status === 'paused' ? 'en pause' : 'en cours'}`
+  const end = `${time(s.endedAt)} (${s.winners.length ? 'tirage' : 'clos'})`
+  return start ? `${from} au ${end}` : `jusqu'au ${end}`
+}
+function sectionTitle(s: ChatLogSection) {
+  return `${GIVEAWAY_KIND[s.kind]?.label ?? s.kind}${s.command ? ` ${s.command}` : ''}`
+}
+
+// Section du giveaway demandé, montrée une fois le journal lu
+async function showSection() {
+  if (!props.giveawayId) return
+  await nextTick()
+  document.getElementById(`chat-log-g${props.giveawayId}`)?.scrollIntoView({ block: 'start' })
+}
+function showRecent() {
+  beforeAt.value = null
+  void load()
 }
 
 watch(open, (isOpen) => {
@@ -111,11 +184,21 @@ watch(open, (isOpen) => {
   author.value = ''
   text.value = ''
   entries.value = []
+  sections.value = []
   more.value = false
+  beforeAt.value = null
   // Filtres remis à zéro (types de message retenus gardés) : leurs observateurs ne relancent
   // pas de lecture, refresh() en fait une seule
   requestedKey = filterKey()
-  void refresh()
+  void refresh().then(async () => {
+    // Giveaway fini : messages jusqu'à sa fin, sa section en tête
+    const s = sections.value.find(x => x.id === props.giveawayId)
+    if (s?.endedAt) {
+      beforeAt.value = new Date(Date.parse(s.endedAt) + SAME_MOMENT_MS).toISOString()
+      await load()
+    }
+    await showSection()
+  })
 })
 watch([kinds, selectedCommands], reloadIfChanged, { deep: true })
 // Clic sur une commande du tableau : ajoutée au filtre, ou retirée
@@ -217,6 +300,12 @@ function time(iso: string) {
           <UButton icon="i-lucide-refresh-cw" color="neutral" variant="soft" :loading="loading" aria-label="Actualiser" title="Actualiser" @click="refresh" />
         </div>
 
+        <div v-if="beforeAt" class="flex items-center gap-3 border border-primary/40 bg-primary/10 rounded-lg px-3 py-2 text-sm">
+          <UIcon name="i-lucide-scroll-text" class="size-4 text-primary shrink-0" />
+          <span class="flex-1">Journal ouvert sur ce giveaway : messages jusqu'à son tirage ou sa clôture.</span>
+          <UButton label="Voir les plus récents" size="xs" color="neutral" variant="soft" @click="showRecent" />
+        </div>
+
         <div class="border border-default rounded-lg overflow-auto max-h-[55vh]">
           <table class="w-full text-sm">
             <thead class="bg-elevated/60 text-xs uppercase text-muted sticky top-0">
@@ -229,8 +318,24 @@ function time(iso: string) {
                 <th class="text-center px-3 py-2">Gagnant</th>
               </tr>
             </thead>
-            <tbody>
-              <tr v-for="e in entries" :key="e.id" class="border-t border-default align-top">
+            <tbody v-for="grp in groups" :key="grp.key">
+              <!-- En-tête de section : le giveaway pendant lequel ces messages ont été écrits -->
+              <tr :id="grp.section ? `chat-log-g${grp.section.id}` : undefined" class="border-t border-default bg-primary/5 scroll-mt-10" :class="grp.section && grp.section.id === giveawayId ? 'bg-primary/15' : ''">
+                <td colspan="6" class="px-3 py-2">
+                  <div v-if="grp.section" class="flex items-center gap-x-3 gap-y-1 flex-wrap text-sm">
+                    <UIcon name="i-lucide-gift" class="size-4 text-primary shrink-0" />
+                    <span class="font-semibold">{{ sectionTitle(grp.section) }}</span>
+                    <span v-if="grp.section.gifts.length" class="text-muted">{{ grp.section.gifts.join(', ') }}</span>
+                    <span v-if="grp.section.winners.length"><UIcon name="i-lucide-trophy" class="size-3.5 text-success align-[-2px]" /> {{ grp.section.winners.join(', ') }}</span>
+                    <span class="text-xs text-muted">{{ periodOf(grp.section) }}</span>
+                  </div>
+                  <div v-else class="flex items-center gap-2 text-sm text-muted">
+                    <UIcon name="i-lucide-clock" class="size-4 shrink-0" />
+                    {{ sections.length ? 'Depuis le dernier tirage (aucun giveaway en cours)' : 'Aucun giveaway connu sur cette chaîne pendant ces messages' }}
+                  </div>
+                </td>
+              </tr>
+              <tr v-for="e in grp.entries" :key="e.id" class="border-t border-default align-top">
                 <td class="px-3 py-1.5 whitespace-nowrap text-muted tabular-nums">{{ time(e.at) }}</td>
                 <td class="px-3 py-1.5 whitespace-nowrap font-medium">{{ e.author }}</td>
                 <td class="px-3 py-1.5"><UBadge :label="KINDS[e.kind]?.label ?? e.kind" :color="KINDS[e.kind]?.color ?? 'neutral'" variant="subtle" size="sm" class="whitespace-nowrap" /></td>
@@ -263,7 +368,9 @@ function time(iso: string) {
                   </div>
                 </td>
               </tr>
-              <tr v-if="!loading && entries.length === 0">
+            </tbody>
+            <tbody v-if="!loading && entries.length === 0">
+              <tr>
                 <td colspan="6" class="px-3 py-8 text-center text-muted">Rien d'enregistré pour l'instant sur cette chaîne avec ces filtres.</td>
               </tr>
             </tbody>

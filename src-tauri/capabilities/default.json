@@ -71,6 +71,7 @@
     "allow-get-chat-log",
     "allow-set-giveaway-command",
     "allow-get-chat-log-meta",
+    "allow-get-chat-log-sections",
     "allow-set-manual-winner",
     "allow-clear-giveaway-winner",
     "allow-streamer-discord",
