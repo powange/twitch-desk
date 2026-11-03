@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::streamelements::{Giveaway, Loyalty};
@@ -207,6 +207,8 @@ pub struct Lives {
     pub se_loyalty: SharedCache<Option<Loyalty>>,
     /// Identifiant StreamElements → giveaway en cours
     pub se_giveaway: SharedCache<Option<Giveaway>>,
+    /// login (minuscules) → photo de profil, relevée avec le statut live
+    avatars: RwLock<HashMap<String, String>>,
 }
 
 impl Lives {
@@ -214,8 +216,13 @@ impl Lives {
     /// sans compte, sinon une par une avec les clients donnés (jeton refusé : client suivant)
     pub async fn streams_status(&self, http: &reqwest::Client, gqls: &[Gql], wanted: &[(String, Instant)]) -> LiveFetch {
         let refused = AtomicBool::new(false);
-        let results = self.streams.get_many(wanted, |logins| fetch_streams(http, gqls, logins, &refused)).await;
+        let results = self.streams.get_many(wanted, |logins| fetch_streams(http, gqls, logins, &refused, &self.avatars)).await;
         LiveFetch { results, refused: refused.into_inner() }
+    }
+
+    /// Photo de profil d'une chaîne, si son statut live a déjà été relu
+    pub fn avatar(&self, login: &str) -> Option<String> {
+        self.avatars.read().unwrap().get(&login.to_lowercase()).cloned()
     }
 }
 
@@ -224,10 +231,14 @@ async fn fetch_streams(
     gqls: &[Gql],
     logins: Vec<String>,
     refused: &AtomicBool,
+    avatars: &RwLock<HashMap<String, String>>,
 ) -> HashMap<String, Result<Option<StreamInfo>>> {
     let mut out: HashMap<String, Result<Option<StreamInfo>>> = HashMap::new();
     match gql::streams_info(http, &logins).await {
-        Ok(found) => out.extend(found.into_iter().map(|(login, info)| (login, Ok(info)))),
+        Ok(found) => {
+            avatars.write().unwrap().extend(found.avatars);
+            out.extend(found.live.into_iter().map(|(login, info)| (login, Ok(info))));
+        }
         Err(e) => tracing::debug!("statut live groupé : {e}"),
     }
     let pending: Vec<String> = logins.into_iter().filter(|l| !out.contains_key(l)).take(FALLBACK_PER_CALL).collect();

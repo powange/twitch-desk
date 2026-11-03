@@ -30,6 +30,8 @@ const giveaways = computed(() => view.value?.giveaways ?? [])
 // Live en cours d'une chaîne surveillée (catégorie, spectateurs), indexé une fois par mise à jour
 const liveByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, c.live])))
 const liveOf = (channel: string) => liveByLogin.value.get(channel) ?? null
+const avatarByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, c.profileImage])))
+const avatarOf = (channel: string) => avatarByLogin.value.get(channel) ?? null
 
 // Conditions : follow, bonjour, Discord (giveaways ouverts ou en pause : rien à faire sur un giveaway clos)
 const cond = useConditionActions(() => giveaways.value.filter(g => g.status !== 'closed'))
@@ -290,15 +292,20 @@ function share(g: GiveawayView) {
                 <UButton v-if="liveOf(g.channel)" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${g.channel}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(g.channel)" />
               </td>
               <td class="px-3 py-2">
-                <div class="flex items-center gap-1.5">
-                  <ChannelFlag :login="g.channel" />
-                  <button class="font-medium hover:underline" @click="openExternal(channelUrl(g.channel))">{{ g.channel }}</button>
-                </div>
-                <div v-if="liveOf(g.channel)" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
-                  <span class="truncate max-w-[220px]" :title="liveOf(g.channel)?.gameName ?? 'Sans catégorie'">{{ liveOf(g.channel)?.gameName ?? 'Sans catégorie' }}</span>
-                  <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(liveOf(g.channel)?.viewers ?? 0)} spectateurs`">
-                    <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(liveOf(g.channel)?.viewers ?? 0) }}
-                  </span>
+                <div class="flex items-center gap-2">
+                  <img v-if="avatarOf(g.channel)" :src="avatarOf(g.channel)!" alt="" class="size-7 rounded-full shrink-0">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-1.5">
+                      <ChannelFlag :login="g.channel" />
+                      <button class="font-medium hover:underline" @click="openExternal(channelUrl(g.channel))">{{ g.channel }}</button>
+                    </div>
+                    <div v-if="liveOf(g.channel)" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
+                      <span class="truncate max-w-[220px]" :title="liveOf(g.channel)?.gameName ?? 'Sans catégorie'">{{ liveOf(g.channel)?.gameName ?? 'Sans catégorie' }}</span>
+                      <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(liveOf(g.channel)?.viewers ?? 0)} spectateurs`">
+                        <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(liveOf(g.channel)?.viewers ?? 0) }}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </td>
               <td class="px-3 py-2">

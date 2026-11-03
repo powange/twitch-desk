@@ -650,16 +650,24 @@ pub async fn box_arts(http: &reqwest::Client, ids: &[String]) -> Result<HashMap<
 /// Chaînes au plus par requête de statut live groupée
 pub const STREAMS_BATCH: usize = 50;
 
+/// Statut live de plusieurs chaînes et leur photo de profil
+#[derive(Debug, Default)]
+pub struct StreamsBatch {
+    pub live: HashMap<String, Option<StreamInfo>>,
+    /// login (minuscules) → photo de profil (en live ou non)
+    pub avatars: HashMap<String, String>,
+}
+
 /// Statut live de plusieurs chaînes, sans compte, en une requête par lot de 50 (mêmes champs que
-/// `stream_info`). Une chaîne demandée absente de la réponse n'existe pas : hors ligne. Les
-/// logins invalides ne sont pas demandés (absents du résultat)
-pub async fn streams_info(http: &reqwest::Client, logins: &[String]) -> Result<HashMap<String, Option<StreamInfo>>> {
-    let mut out = HashMap::new();
+/// `stream_info`), avec leur photo de profil. Une chaîne demandée absente de la réponse n'existe
+/// pas : hors ligne. Les logins invalides ne sont pas demandés (absents du résultat)
+pub async fn streams_info(http: &reqwest::Client, logins: &[String]) -> Result<StreamsBatch> {
+    let mut out = StreamsBatch::default();
     let valid: Vec<&String> = logins.iter().filter(|l| is_login(l)).collect();
     for chunk in valid.chunks(STREAMS_BATCH) {
         let list: Vec<String> = chunk.iter().map(|l| format!("\"{l}\"")).collect();
         let query = format!(
-            "query {{ users(logins: [{}]) {{ login stream {{ id viewersCount }} \
+            "query {{ users(logins: [{}]) {{ login profileImageURL(width: 70) stream {{ id viewersCount }} \
              broadcastSettings {{ title game {{ id displayName }} }} }} }}",
             list.join(",")
         );
@@ -669,10 +677,24 @@ pub async fn streams_info(http: &reqwest::Client, logins: &[String]) -> Result<H
             TwitchError::Gql(format!("statut live groupé : {why}"))
         })?;
         for login in chunk {
-            out.insert((*login).clone(), found.get(&login.to_lowercase()).cloned().flatten());
+            out.live.insert((*login).clone(), found.get(&login.to_lowercase()).cloned().flatten());
         }
+        out.avatars.extend(parse_avatars(&value));
     }
     Ok(out)
+}
+
+/// login (minuscules) → photo de profil, adresse https seulement
+fn parse_avatars(value: &Value) -> HashMap<String, String> {
+    let Some(users) = value.pointer("/data/users").and_then(Value::as_array) else { return HashMap::new() };
+    users
+        .iter()
+        .filter_map(|u| {
+            let login = u.get("login")?.as_str()?.to_lowercase();
+            let image = u.get("profileImageURL")?.as_str().filter(|i| i.starts_with("https://"))?;
+            Some((login, image.to_owned()))
+        })
+        .collect()
 }
 
 /// login (minuscules) → statut live ; None si la réponse n'a pas de liste
@@ -1090,8 +1112,8 @@ mod tests {
     #[test]
     fn batched_streams() {
         let value = json!({"data":{"users":[
-            {"login":"Alpha","stream":{"id":"7","viewersCount":12},"broadcastSettings":{"title":"t","game":{"id":"1","displayName":"Jeu"}}},
-            {"login":"beta","stream":null,"broadcastSettings":{"title":"x","game":null}},
+            {"login":"Alpha","profileImageURL":"https://static-cdn.jtvnw.net/a.png","stream":{"id":"7","viewersCount":12},"broadcastSettings":{"title":"t","game":{"id":"1","displayName":"Jeu"}}},
+            {"login":"beta","profileImageURL":"http://x/b.png","stream":null,"broadcastSettings":{"title":"x","game":null}},
             null
         ]}});
         let map = parse_streams(&value).unwrap();
@@ -1100,6 +1122,10 @@ mod tests {
         assert_eq!((alpha.broadcast_id.as_str(), alpha.viewers, alpha.game_name.as_deref()), ("7", 12, Some("Jeu")));
         assert_eq!(map["beta"], None);
         assert_eq!(parse_streams(&json!({"errors":[{"message":"x"}]})), None);
+        // Photos de profil, hors ligne compris ; https seulement
+        let avatars = parse_avatars(&value);
+        assert_eq!(avatars.len(), 1);
+        assert_eq!(avatars["alpha"], "https://static-cdn.jtvnw.net/a.png");
     }
 
     #[test]

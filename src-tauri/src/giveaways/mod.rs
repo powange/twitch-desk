@@ -106,6 +106,8 @@ pub struct GiveawayChannelView {
     pub live: Option<StreamInfo>,
     /// En live dans une des catégories choisies (ou aucune catégorie choisie)
     pub in_category: bool,
+    /// Photo de profil (connue après la première relecture du statut live)
+    pub profile_image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -991,6 +993,7 @@ impl Monitor {
                 live_checked: self.live.contains_key(&c.login),
                 live: self.live.get(&c.login).and_then(|l| l.info.clone()),
                 in_category: self.live.get(&c.login).is_some_and(|l| l.info.is_some()) && self.in_category(&c.login),
+                profile_image: self.app.lives.avatar(&c.login),
             })
             .collect()
     }

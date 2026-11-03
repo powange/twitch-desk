@@ -2400,6 +2400,7 @@ mod tests {
                     viewers: 42,
                 }),
                 in_category: true,
+                profile_image: None,
             }],
             ..Default::default()
         };

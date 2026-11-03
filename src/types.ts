@@ -364,6 +364,8 @@ export interface GiveawayChannelView {
   // En live (null : hors ligne ou pas encore vérifié)
   live: StreamInfo | null
   inCategory: boolean
+  // Photo de profil (connue après la première relecture du statut live)
+  profileImage: string | null
 }
 
 export interface GiveawayGame {
