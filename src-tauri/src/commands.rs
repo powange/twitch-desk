@@ -1102,15 +1102,21 @@ pub async fn create_past_giveaway(app: AppState<'_>, input: crate::db::GiveawayI
     }
     let at = at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let winners = winner_list(&winners)?;
-    let id = app.db.insert_manual_giveaway(&input, &at).map_err(db_err)?;
-    app.db.close_giveaway(id).map_err(db_err)?;
-    // Tiré au moment du tirage indiqué, sinon à la date du giveaway
-    let drawn = input.details.draw_at.clone().unwrap_or_else(|| at.clone());
-    if !winners.is_empty() {
-        app.db.set_giveaway_winners(id, &winners, &drawn).map_err(db_err)?;
-    }
+    let id = insert_past_giveaway(&app, &input, &at, &winners)?;
     app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();
+    Ok(id)
+}
+
+/// Ancien giveaway enregistré terminé à `at`, avec ses gagnants (tirés à l'heure du tirage
+/// indiquée, sinon à `at`) ; fiche déjà validée
+pub fn insert_past_giveaway(app: &App, input: &crate::db::GiveawayInput, at: &str, winners: &[(String, Option<String>)]) -> CmdResult<i64> {
+    let id = app.db.insert_manual_giveaway(input, at).map_err(db_err)?;
+    app.db.close_giveaway(id).map_err(db_err)?;
+    let drawn = input.details.draw_at.clone().unwrap_or_else(|| at.to_owned());
+    if !winners.is_empty() {
+        app.db.set_giveaway_winners(id, winners, &drawn).map_err(db_err)?;
+    }
     Ok(id)
 }
 

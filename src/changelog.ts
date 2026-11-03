@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.40.7',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'new', text: 'Page Alertes : « Importer par lot (JSON) », sous les giveaways passés. Colle ou ouvre un fichier JSON, vérifie chaque giveaway (erreurs et cadeaux inconnus signalés), puis importe-les d\'un coup. Le format attendu est expliqué dans la fenêtre, avec un exemple ; un giveaway déjà présent n\'est pas importé deux fois.' }
+    ]
+  },
+  {
     version: '0.40.6',
     date: '2026-11-03',
     changes: [

@@ -6,6 +6,7 @@ mod giveaways;
 mod insights;
 mod lives;
 mod miner;
+mod past_import;
 mod scanner;
 mod secrets;
 mod streamelements;
@@ -331,6 +332,7 @@ pub fn run() {
             commands::refresh_channels,
             commands::refresh_giveaways,
             commands::create_past_giveaway,
+            past_import::import_past_giveaways,
             win_reply::cancel_win_reply,
             commands::game_box_arts,
             commands::save_streamer,

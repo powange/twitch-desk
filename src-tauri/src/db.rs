@@ -1458,6 +1458,15 @@ impl Db {
         )
     }
 
+    /// Giveaway déjà enregistré sur la chaîne à cette date (import d'anciens giveaways)
+    pub fn giveaway_at(&self, channel: &str, at: &str) -> DbResult<bool> {
+        self.conn()
+            .query_row("SELECT COUNT(*) FROM giveaways WHERE channel = ?1 AND julianday(detected_at) = julianday(?2)", [channel, at], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n > 0)
+    }
+
     /// Giveaway tiré depuis `since` (date RFC 3339) sur la chaîne, sans giveaway ajouté depuis sur
     /// cette chaîne : une nouvelle annonce de gagnant s'y ajoute (plusieurs gagnants)
     pub fn recent_drawn_giveaway(&self, channel: &str, since: &str) -> DbResult<Option<GiveawayRow>> {

@@ -12,6 +12,7 @@ import type { GiveawayKind, GiveawayView, ParticipationResult } from '../../type
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayConditions from '../../components/GiveawayConditions.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
+import ImportPastModal from '../../components/ImportPastModal.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, GIVEAWAY_KIND_ITEMS, formatDrawAt } from '../../utils/giveaways'
@@ -263,8 +264,9 @@ const { openGift } = useGiftPreview()
 // Formulaire : null = nouveau giveaway
 const formOpen = ref(false)
 const editing = ref<GiveawayView | null>(null)
-// Ancien giveaway ajouté après coup (sous les giveaways passés)
+// Ancien giveaway ajouté après coup (sous les giveaways passés), un à un ou par lot (JSON)
 const formPast = ref(false)
+const importOpen = ref(false)
 function openPastForm() {
   editing.value = null
   formPast.value = true
@@ -612,12 +614,14 @@ function share(g: GiveawayView) {
         </table>
       </div>
       <!-- Giveaways passés : en ajouter un ancien, déjà terminé, pour garder l'historique -->
-      <div v-if="group.key === 'past'">
+      <div v-if="group.key === 'past'" class="flex items-center gap-1">
         <UButton label="Ajouter un ancien giveaway" icon="i-lucide-history" size="xs" color="neutral" variant="link" @click="openPastForm" />
+        <UButton label="Importer par lot (JSON)" icon="i-lucide-file-json" size="xs" color="neutral" variant="link" @click="importOpen = true" />
       </div>
     </section>
 
     <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" :past="formPast" />
+    <ImportPastModal v-model:open="importOpen" />
     <ChatLogModal v-model:open="logOpen" :channel="logChannel" />
 
     <UModal v-model:open="pastFilterOpen" title="Filtrer les giveaways passés" description="Appliqués tout de suite, sur tous les giveaways terminés">
