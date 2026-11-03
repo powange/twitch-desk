@@ -206,6 +206,44 @@ pub async fn enter(
     Ok(())
 }
 
+/// Giveaway StreamElements précis : en cours ou non, et pseudos tirés (dans l'ordre du tirage ;
+/// un gagnant apparaît dès le tirage, avant que le streamer ne termine le giveaway)
+#[derive(Debug, Clone, PartialEq)]
+pub struct GiveawayOutcome {
+    pub running: bool,
+    pub winners: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OutcomeRaw {
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    winners: Vec<WinnerRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WinnerRaw {
+    #[serde(default)]
+    username: String,
+}
+
+fn to_outcome(raw: OutcomeRaw) -> GiveawayOutcome {
+    GiveawayOutcome {
+        running: raw.state == "running",
+        winners: raw.winners.into_iter().map(|w| w.username.trim().to_lowercase()).filter(|w| !w.is_empty()).collect(),
+    }
+}
+
+/// État d'un giveaway par son identifiant (None : inconnu de StreamElements), sans compte
+pub async fn giveaway_outcome(http: &reqwest::Client, se_channel: &str, id: &str) -> Result<Option<GiveawayOutcome>, reqwest::Error> {
+    let res = http.get(format!("{API}/kappa/v3/giveaways/{se_channel}/{id}")).send().await?;
+    if res.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    Ok(Some(to_outcome(res.error_for_status()?.json::<OutcomeRaw>().await?)))
+}
+
 /// Identifiant StreamElements d'une chaîne Twitch (None : la chaîne n'utilise pas StreamElements)
 pub async fn channel_id(http: &reqwest::Client, login: &str) -> Result<Option<String>, reqwest::Error> {
     let res = http.get(format!("{API}/kappa/v2/channels/{login}")).send().await?;
@@ -342,6 +380,10 @@ mod tests {
         assert_eq!(g.command.as_deref(), Some("!ticket"));
         assert_eq!((g.cost, g.max_tickets, g.total_tickets, g.total_users), (1000, Some(210), 227, 6));
         assert!(g.free_ticket);
+        let drawn: OutcomeRaw = serde_json::from_str(r#"{"_id":"1","state":"running","winners":[{"username":"DreKing_","tickets":189}]}"#).unwrap();
+        assert_eq!(to_outcome(drawn), GiveawayOutcome { running: true, winners: vec!["dreking_".into()] });
+        let done: OutcomeRaw = serde_json::from_str(r#"{"_id":"1","state":"completed"}"#).unwrap();
+        assert_eq!(to_outcome(done), GiveawayOutcome { running: false, winners: vec![] });
         let ended = r#"{"_id":"1","state":"ended","maxTickets":0}"#;
         assert_eq!(to_giveaway(serde_json::from_str(ended).unwrap()), None);
     }

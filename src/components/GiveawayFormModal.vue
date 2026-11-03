@@ -47,6 +47,9 @@ function toLocalInput(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// Identifiant StreamElements lu dans le lien (…/giveaway/<id>) : giveaway suivi par l'application
+const seGiveawayId = computed(() => /\/giveaway\/([0-9a-f]+)\/?$/i.exec(form.value.url.trim())?.[1] ?? null)
+
 // Giveaway terminé : rouvert à l'enregistrement (gagnant retiré)
 const reopen = ref(false)
 const closed = computed(() => props.giveaway?.status === 'closed')
@@ -671,7 +674,10 @@ async function save() {
             </div>
 
             <div v-if="form.kind === 'streamelements'" class="grid grid-cols-2 gap-4">
-              <UFormField label="Lien du giveaway StreamElements">
+              <UFormField
+                label="Lien du giveaway StreamElements"
+                :help="seGiveawayId ? `Giveaway StreamElements n° ${seGiveawayId} : clos dès que StreamElements annonce son gagnant` : 'Avec le lien, le giveaway est clos dès que StreamElements annonce son gagnant'"
+              >
                 <UInput id="gw-url" v-model="form.url" placeholder="https://streamelements.com/…/giveaway/…" class="w-full" />
               </UFormField>
               <UFormField label="Tickets maximum par personne">

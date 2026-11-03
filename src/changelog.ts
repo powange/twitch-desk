@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.39.1',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'new', text: 'Giveaway StreamElements : l\'application suit le giveaway StreamElements rattaché (par son lien) et le clôt dès que StreamElements désigne un gagnant, avec ce gagnant ; terminé sans gagnant, il est clos aussi. Le numéro du giveaway StreamElements est affiché dans sa fiche.' },
+      { kind: 'fixed', text: 'Une annonce de gagnant du bot StreamElements pour un autre tirage ne clôt plus le giveaway StreamElements en cours.' }
+    ]
+  },
+  {
     version: '0.39.0',
     date: '2026-11-03',
     title: 'Réponse automatique quand tu gagnes, et page Alertes plus claire',

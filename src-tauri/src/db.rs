@@ -1358,6 +1358,15 @@ impl Db {
     }
 
     /// Giveaways en pause (d'une chaîne, ou de toutes), les plus récents d'abord
+    /// Giveaways StreamElements ouverts ou en pause avec leur lien (identifiant du giveaway
+    /// StreamElements), les plus récents d'abord
+    pub fn se_giveaways_to_check(&self) -> DbResult<Vec<GiveawayRow>> {
+        self.select_giveaways(
+            "WHERE kind = 'streamelements' AND url IS NOT NULL AND status IN ('open', 'paused') ORDER BY detected_at DESC LIMIT 50",
+            [],
+        )
+    }
+
     pub fn paused_giveaways(&self, channel: Option<&str>) -> DbResult<Vec<GiveawayRow>> {
         match channel {
             Some(c) => self.select_giveaways("WHERE status = 'paused' AND channel = ?1 ORDER BY detected_at DESC", [c]),
