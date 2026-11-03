@@ -39,18 +39,7 @@ export function participationConditions(d: GiveawayDetails, kind: GiveawayKind):
           suffix: d.ticketMax ? `×${d.ticketMax}` : undefined
         })
   }
-  if (d.requireFollow !== null) {
-    out.push(d.requireFollow
-      ? {
-          key: 'follow',
-          icon: 'i-lucide-heart',
-          label: d.followMinDays ? `Follow requis depuis au moins ${d.followMinDays} jour(s)` : 'Follow requis pour participer',
-          colorClass: 'text-pink-600 dark:text-pink-400',
-          strike: false,
-          suffix: d.followMinDays ? `${d.followMinDays} j` : undefined
-        }
-      : { key: 'follow', icon: 'i-lucide-heart-off', label: 'Follow non requis', colorClass: 'text-muted', strike: false })
-  }
+  // Dans l'ordre des colonnes des tableaux : présence, Discord, follow, bonjour, temps dans le chat
   if (d.requirePresence !== null) {
     out.push(d.requirePresence
       ? { key: 'presence', icon: 'i-lucide-user-check', label: 'Présence requise au moment du tirage', colorClass: 'text-emerald-600 dark:text-emerald-400', strike: false }
@@ -64,6 +53,18 @@ export function participationConditions(d: GiveawayDetails, kind: GiveawayKind):
       colorClass: d.requireDiscord ? 'text-indigo-600 dark:text-indigo-400' : 'text-muted',
       strike: !d.requireDiscord
     })
+  }
+  if (d.requireFollow !== null) {
+    out.push(d.requireFollow
+      ? {
+          key: 'follow',
+          icon: 'i-lucide-heart',
+          label: d.followMinDays ? `Follow requis depuis au moins ${d.followMinDays} jour(s)` : 'Follow requis pour participer',
+          colorClass: 'text-pink-600 dark:text-pink-400',
+          strike: false,
+          suffix: d.followMinDays ? `${d.followMinDays} j` : undefined
+        }
+      : { key: 'follow', icon: 'i-lucide-heart-off', label: 'Follow non requis', colorClass: 'text-muted', strike: false })
   }
   if (d.requireGreeting !== null) {
     out.push(d.requireGreeting

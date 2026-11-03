@@ -28,11 +28,11 @@ const TRI_OPTIONS: { label: string, value: TriState, title: string }[] = [
   { label: 'Non', value: 'no', title: 'Non requis' },
   { label: '?', value: 'unknown', title: 'On ne sait pas' }
 ]
-// Une condition par ligne
+// Une condition par ligne, dans l'ordre des colonnes des tableaux (ConditionHeaders)
 const CONDITIONS = [
-  { key: 'follow', label: 'Follow requis', icon: 'i-lucide-heart' },
   { key: 'presence', label: 'Présence au tirage', icon: 'i-lucide-user-check' },
   { key: 'discord', label: 'Discord du streamer', icon: 'i-simple-icons-discord' },
+  { key: 'follow', label: 'Follow requis', icon: 'i-lucide-heart' },
   { key: 'greeting', label: 'Avoir dit bonjour dans le chat', icon: 'i-lucide-hand' },
   { key: 'chatTime', label: 'Temps de présence minimum dans le chat', icon: 'i-lucide-timer' }
 ] as const
@@ -338,18 +338,18 @@ async function inspect(login: string) {
     if (streamerNotes.value === before.notes) streamerNotes.value = found.streamer?.notes ?? ''
     if (streamerIgnored.value.join() === before.ignored) streamerIgnored.value = [...(found.streamer?.ignoredCommands ?? [])]
     const st = found.streamer
-    // Fiche du streamer : ses conditions habituelles ; nouveau giveaway : elles pré-remplissent
-    // celles encore inconnues (jamais celles changées pendant le chargement)
+    // Fiche du streamer, et nouveau giveaway : toutes les conditions reprises de la fiche (jamais
+    // celles changées pendant le chargement). Elles y sont gardées à jour quand on les change sur
+    // un giveaway en cours
     if (st && (props.streamerOnly || !props.giveaway)) {
-      const only = props.streamerOnly
-      if (f.follow === before.follow && (only || f.follow === 'unknown')) f.follow = toTri(st.requireFollow)
-      if (f.followDays === before.followDays && (only || !f.followDays) && st.followMinDays) f.followDays = st.followMinDays
-      if (f.presence === before.presence && (only || f.presence === 'unknown')) f.presence = toTri(st.requirePresence)
-      if (f.discord === before.discordCond && (only || f.discord === 'unknown')) f.discord = toTri(st.requireDiscord)
-      if (f.greeting === before.greeting && (only || f.greeting === 'unknown')) f.greeting = toTri(st.requireGreeting)
-      if (f.chatTime === before.chatTime && f.chatMinutes === before.chatMinutes && (only || f.chatTime === 'unknown') && st.minChatMinutes !== null) {
-        f.chatTime = st.minChatMinutes > 0 ? 'yes' : 'no'
-        f.chatMinutes = st.minChatMinutes > 0 ? st.minChatMinutes : null
+      if (f.follow === before.follow) f.follow = toTri(st.requireFollow)
+      if (f.followDays === before.followDays) f.followDays = st.followMinDays ?? null
+      if (f.presence === before.presence) f.presence = toTri(st.requirePresence)
+      if (f.discord === before.discordCond) f.discord = toTri(st.requireDiscord)
+      if (f.greeting === before.greeting) f.greeting = toTri(st.requireGreeting)
+      if (f.chatTime === before.chatTime && f.chatMinutes === before.chatMinutes) {
+        f.chatTime = st.minChatMinutes === null ? 'unknown' : st.minChatMinutes > 0 ? 'yes' : 'no'
+        f.chatMinutes = st.minChatMinutes && st.minChatMinutes > 0 ? st.minChatMinutes : null
       }
     }
     // En modification (ou fiche du streamer), la fiche de la chaîne suffit : on ne remplace pas ce qui a été saisi

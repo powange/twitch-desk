@@ -1335,13 +1335,52 @@ impl Db {
         )
     }
 
+    /// Giveaway détecté : conditions reprises de la fiche du streamer
     pub fn insert_giveaway(&self, g: &NewGiveaway) -> DbResult<i64> {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO giveaways (channel, kind, command, url, evidence, detected_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![g.channel, g.kind, g.command, g.url, g.evidence, g.detected_at],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "UPDATE giveaways SET require_follow = s.require_follow, follow_min_days = s.follow_min_days,
+                 require_presence = s.require_presence, require_discord = s.require_discord,
+                 require_greeting = s.require_greeting, min_chat_minutes = s.min_chat_minutes
+             FROM (SELECT * FROM streamers WHERE login = ?2) AS s WHERE giveaways.id = ?1",
+            params![id, g.channel],
+        )?;
+        Ok(id)
+    }
+
+    /// Conditions changées entre `before` et `after` (None : inconnue avant, à la création)
+    /// recopiées dans la fiche du streamer, créée au besoin ; renvoie si la fiche a changé
+    pub fn save_streamer_conditions(&self, channel: &str, before: Option<&GiveawayDetails>, after: &GiveawayDetails) -> DbResult<bool> {
+        let b = before.cloned().unwrap_or_default();
+        let mut sets: Vec<&str> = vec![];
+        let mut values: Vec<rusqlite::types::Value> = vec![channel.to_owned().into()];
+        let mut set = |column: &'static str, changed: bool, value: rusqlite::types::Value| {
+            if changed {
+                values.push(value);
+                sets.push(column);
+            }
+        };
+        let flag = |v: Option<bool>| v.map_or(rusqlite::types::Value::Null, |v| (v as i64).into());
+        let num = |v: Option<i64>| v.map_or(rusqlite::types::Value::Null, Into::into);
+        set("require_follow", b.require_follow != after.require_follow, flag(after.require_follow));
+        set("follow_min_days", b.follow_min_days != after.follow_min_days, num(after.follow_min_days));
+        set("require_presence", b.require_presence != after.require_presence, flag(after.require_presence));
+        set("require_discord", b.require_discord != after.require_discord, flag(after.require_discord));
+        set("require_greeting", b.require_greeting != after.require_greeting, flag(after.require_greeting));
+        set("min_chat_minutes", b.min_chat_minutes != after.min_chat_minutes, num(after.min_chat_minutes));
+        if sets.is_empty() {
+            return Ok(false);
+        }
+        let assignments: Vec<String> = sets.iter().enumerate().map(|(i, c)| format!("{c} = ?{}", i + 2)).collect();
+        let conn = self.conn();
+        conn.execute("INSERT INTO streamers (login) VALUES (?1) ON CONFLICT(login) DO NOTHING", [channel])?;
+        conn.execute(&format!("UPDATE streamers SET {} WHERE login = ?1", assignments.join(", ")), rusqlite::params_from_iter(values))?;
+        Ok(true)
     }
 
     /// Giveaways récents (ouverts d'abord), avec leurs participations
@@ -2588,6 +2627,40 @@ mod tests {
         assert!(db.settings().close_to_tray);
         let bak: String = db.conn().query_row("SELECT value FROM settings WHERE key = 'app.bak'", [], |r| r.get(0)).unwrap();
         assert_eq!(bak, "{abîmé");
+    }
+
+    #[test]
+    fn streamer_sheet_conditions_follow_giveaways() {
+        let db = Db::memory().unwrap();
+        let new = || NewGiveaway {
+            channel: "lunarsea".into(),
+            kind: "command".into(),
+            command: Some("!coffre".into()),
+            url: None,
+            evidence: None,
+            detected_at: "2026-11-03T10:00:00Z".into(),
+        };
+        // Sans fiche : conditions inconnues
+        let g = db.insert_giveaway(&new()).unwrap();
+        assert_eq!(db.giveaway(g).unwrap().unwrap().details.require_presence, None);
+        // Conditions changées sur un giveaway : recopiées dans la fiche (créée), seulement celles-là
+        let before = db.giveaway(g).unwrap().unwrap().details;
+        let after = GiveawayDetails { require_presence: Some(true), min_chat_minutes: Some(30), notes: Some("x".into()), ..before.clone() };
+        assert!(db.save_streamer_conditions("lunarsea", Some(&before), &after).unwrap());
+        assert!(!db.save_streamer_conditions("lunarsea", Some(&after), &after).unwrap());
+        let sheet = db.streamer("lunarsea").unwrap().unwrap();
+        assert_eq!((sheet.require_presence, sheet.min_chat_minutes, sheet.require_follow), (Some(true), Some(30), None));
+        db.save_streamer(&Streamer { require_follow: Some(false), win_reply: Some("Merci !".into()), ..sheet }).unwrap();
+        let only_discord = GiveawayDetails { require_discord: Some(true), ..after.clone() };
+        db.save_streamer_conditions("lunarsea", Some(&after), &only_discord).unwrap();
+        let sheet = db.streamer("lunarsea").unwrap().unwrap();
+        assert_eq!((sheet.require_follow, sheet.require_discord, sheet.win_reply.as_deref()), (Some(false), Some(true), Some("Merci !")));
+        // Giveaway détecté ensuite : toutes les conditions de la fiche
+        let d = db.giveaway(db.insert_giveaway(&new()).unwrap()).unwrap().unwrap().details;
+        assert_eq!(
+            (d.require_follow, d.require_presence, d.require_discord, d.min_chat_minutes),
+            (Some(false), Some(true), Some(true), Some(30))
+        );
     }
 
     #[test]

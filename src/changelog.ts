@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.39.4',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'improved', text: 'Un nouveau giveaway reprend toutes les conditions de la fiche du streamer, y compris un giveaway détecté dans le chat. Quand tu changes les conditions d\'un giveaway en cours, la fiche du streamer est mise à jour pour ses prochains giveaways.' },
+      { kind: 'improved', text: 'Dans le formulaire d\'un giveaway et la fiche du streamer, les conditions sont dans le même ordre que les colonnes des tableaux : présence au tirage, Discord, follow, bonjour, temps dans le chat.' }
+    ]
+  },
+  {
     version: '0.39.3',
     date: '2026-11-03',
     changes: [

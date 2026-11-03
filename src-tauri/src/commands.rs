@@ -995,6 +995,30 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
     Ok(())
 }
 
+/// Conditions habituelles d'une fiche de streamer, sous la forme de celles d'un giveaway
+fn conditions_of(s: &crate::db::Streamer) -> crate::db::GiveawayDetails {
+    crate::db::GiveawayDetails {
+        require_follow: s.require_follow,
+        follow_min_days: s.follow_min_days,
+        require_presence: s.require_presence,
+        require_discord: s.require_discord,
+        require_greeting: s.require_greeting,
+        min_chat_minutes: s.min_chat_minutes,
+        ..Default::default()
+    }
+}
+
+/// Création : une condition laissée inconnue ne vide pas celle de la fiche
+fn keep_known(wanted: &mut crate::db::GiveawayDetails, sheet: Option<&crate::db::GiveawayDetails>) {
+    let Some(s) = sheet else { return };
+    wanted.require_follow = wanted.require_follow.or(s.require_follow);
+    wanted.follow_min_days = wanted.follow_min_days.or(s.follow_min_days);
+    wanted.require_presence = wanted.require_presence.or(s.require_presence);
+    wanted.require_discord = wanted.require_discord.or(s.require_discord);
+    wanted.require_greeting = wanted.require_greeting.or(s.require_greeting);
+    wanted.min_chat_minutes = wanted.min_chat_minutes.or(s.min_chat_minutes);
+}
+
 #[tauri::command]
 pub async fn create_giveaway(app: AppState<'_>, input: crate::db::GiveawayInput) -> CmdResult<i64> {
     let app: Arc<App> = app.inner().clone();
@@ -1002,6 +1026,11 @@ pub async fn create_giveaway(app: AppState<'_>, input: crate::db::GiveawayInput)
     input.gift_ids = known_gifts(&app, &input.gift_ids);
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let id = app.db.insert_manual_giveaway(&input, &at).map_err(db_err)?;
+    // Conditions qui diffèrent de la fiche du streamer (pré-remplies depuis elle) : fiche mise à jour
+    let sheet = app.db.streamer(&input.channel).map_err(db_err)?.map(|s| conditions_of(&s));
+    let mut wanted = input.details.clone();
+    keep_known(&mut wanted, sheet.as_ref());
+    app.db.save_streamer_conditions(&input.channel, sheet.as_ref(), &wanted).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();
     add_giveaway_channel_to_lists(&app, &input).await;
@@ -1013,7 +1042,13 @@ pub async fn update_giveaway(app: AppState<'_>, id: i64, input: crate::db::Givea
     let app: Arc<App> = app.inner().clone();
     let mut input = crate::giveaways::validate_input(input)?;
     input.gift_ids = known_gifts(&app, &input.gift_ids);
+    let before = app.db.giveaway(id).map_err(db_err)?;
     app.db.update_giveaway(id, &input).map_err(db_err)?;
+    // Giveaway en cours : ses conditions changées deviennent celles de la fiche du streamer (reprises
+    // par ses prochains giveaways)
+    if let Some(before) = before.filter(|g| g.status != "closed" && g.channel == input.channel) {
+        app.db.save_streamer_conditions(&input.channel, Some(&before.details), &input.details).map_err(db_err)?;
+    }
     app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();
     add_giveaway_channel_to_lists(&app, &input).await;
