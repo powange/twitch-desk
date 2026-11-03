@@ -205,6 +205,26 @@ impl Gql {
         Ok(Some((id, since)))
     }
 
+    /// Achète une récompense de points de chaîne (sans texte) ; Twitch vérifie le coût, le titre
+    /// et la description : récompense modifiée entre-temps, achat refusé
+    pub async fn redeem_reward(&self, reward: &ChannelReward) -> Result<()> {
+        let data = self
+            .query(
+                "mutation RedeemCustomReward($input: RedeemCommunityPointsCustomRewardInput!) { \
+                 redeemCommunityPointsCustomReward(input: $input) { error { code } redemption { id } } }",
+                json!({ "input": {
+                    "channelID": reward.channel_id,
+                    "cost": reward.cost,
+                    "prompt": reward.prompt,
+                    "rewardID": reward.id,
+                    "title": reward.title,
+                    "transactionID": uuid::Uuid::new_v4().simple().to_string(),
+                } }),
+            )
+            .await?;
+        check_redeem(&data)
+    }
+
     /// Suit une chaîne (notifications de live laissées à Twitch)
     pub async fn follow(&self, channel_id: &str) -> Result<()> {
         let data = self
@@ -589,6 +609,8 @@ fn parse_category_streams(value: &Value) -> Vec<CategoryStream> {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelReward {
+    /// Identifiant de la chaîne qui la propose
+    pub channel_id: String,
     pub id: String,
     pub title: String,
     pub cost: u64,
@@ -599,6 +621,8 @@ pub struct ChannelReward {
     pub paused: bool,
     /// Plus en stock (limite atteinte)
     pub in_stock: bool,
+    /// Demande un texte à l'achat
+    pub input_required: bool,
 }
 
 /// Récompenses de points de chaîne d'une chaîne (actives seulement), sans compte
@@ -607,8 +631,8 @@ pub async fn channel_rewards(http: &reqwest::Client, login: &str) -> Result<Vec<
         return Ok(vec![]);
     }
     let query = format!(
-        "query {{ user(login: \"{login}\") {{ channel {{ communityPointsSettings {{ customRewards {{ \
-         id title cost prompt backgroundColor isEnabled isPaused isInStock image {{ url }} defaultImage {{ url }} }} }} }} }} }}"
+        "query {{ user(login: \"{login}\") {{ id channel {{ communityPointsSettings {{ customRewards {{ \
+         id title cost prompt backgroundColor isEnabled isPaused isInStock isUserInputRequired image {{ url }} defaultImage {{ url }} }} }} }} }} }}"
     );
     let value = raw_query(http, &query).await?;
     Ok(parse_rewards(&value))
@@ -619,11 +643,13 @@ fn parse_rewards(value: &Value) -> Vec<ChannelReward> {
         return vec![];
     };
     let s = |v: &Value, p: &str| v.pointer(p).and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_owned);
+    let channel_id = s(value, "/data/user/id").unwrap_or_default();
     let mut rewards: Vec<ChannelReward> = list
         .iter()
         .filter(|r| r.get("isEnabled").and_then(Value::as_bool).unwrap_or(true))
         .filter_map(|r| {
             Some(ChannelReward {
+                channel_id: channel_id.clone(),
                 id: s(r, "/id")?,
                 title: s(r, "/title")?,
                 cost: r.get("cost")?.as_u64()?,
@@ -632,6 +658,7 @@ fn parse_rewards(value: &Value) -> Vec<ChannelReward> {
                 background: s(r, "/backgroundColor"),
                 paused: r.get("isPaused").and_then(Value::as_bool).unwrap_or(false),
                 in_stock: r.get("isInStock").and_then(Value::as_bool).unwrap_or(true),
+                input_required: r.get("isUserInputRequired").and_then(Value::as_bool).unwrap_or(false),
             })
         })
         .collect();
@@ -849,6 +876,30 @@ enum Outcome {
     UnknownHash,
     Unauthorized,
     Error(String),
+}
+
+/// Achat confirmé seulement si Twitch renvoie l'achat, sans erreur
+fn check_redeem(data: &Value) -> Result<()> {
+    let result = data.get("redeemCommunityPointsCustomReward").filter(|r| !r.is_null());
+    if let Some(code) = result.and_then(|r| r.pointer("/error/code")).and_then(Value::as_str) {
+        let why = match code {
+            "NOT_ENOUGH_POINTS" => "pas assez de points",
+            "STREAM_NOT_LIVE" => "la chaîne n'est pas en live",
+            "DISABLED" | "NOT_FOUND" => "récompense désactivée",
+            "PAUSED" | "REWARD_PAUSED" => "récompense en pause",
+            "OUT_OF_STOCK" | "MAX_PER_STREAM" => "plus disponible sur ce live",
+            "MAX_PER_USER_PER_STREAM" => "déjà achetée le nombre de fois permis sur ce live",
+            "GLOBAL_COOLDOWN" | "COOLDOWN" => "en recharge, réessaie un peu plus tard",
+            "PROPERTIES_MISMATCH" => "la récompense a changé : rouvre la fiche et choisis-la de nouveau",
+            "USER_BANNED" | "FORBIDDEN" => "compte banni ou restreint sur cette chaîne",
+            other => return Err(TwitchError::Gql(format!("achat refusé ({other})"))),
+        };
+        return Err(TwitchError::Gql(why.into()));
+    }
+    if result.and_then(|r| r.pointer("/redemption/id")).is_none_or(Value::is_null) {
+        return Err(TwitchError::Gql("achat non confirmé par Twitch".into()));
+    }
+    Ok(())
 }
 
 /// Bonus récupéré seulement si Twitch le confirme : `claimCommunityPoints` présent, sans erreur
@@ -1175,6 +1226,19 @@ mod tests {
         assert!(!list[0].in_stock && list[1].paused);
         assert_eq!(list[1].image.as_deref(), Some("https://static-cdn.jtvnw.net/default-1.png"));
         assert!(parse_rewards(&json!({"data":{"user":null}})).is_empty());
+        let with_id = json!({"data":{"user":{"id":"42","channel":{"communityPointsSettings":{"customRewards":[
+            {"id":"r","title":"Texte","cost":1,"isUserInputRequired":true}]}}}}});
+        let r = &parse_rewards(&with_id)[0];
+        assert_eq!((r.channel_id.as_str(), r.input_required), ("42", true));
+    }
+
+    #[test]
+    fn redeem_outcome() {
+        assert!(check_redeem(&json!({"redeemCommunityPointsCustomReward":{"error":null,"redemption":{"id":"x"}}})).is_ok());
+        let poor = check_redeem(&json!({"redeemCommunityPointsCustomReward":{"error":{"code":"NOT_ENOUGH_POINTS"},"redemption":null}}));
+        assert!(poor.unwrap_err().to_string().contains("pas assez de points"));
+        assert!(check_redeem(&json!({"redeemCommunityPointsCustomReward":null})).is_err());
+        assert!(check_redeem(&json!({})).is_err());
     }
 
     #[test]

@@ -112,10 +112,11 @@ async function participate(g: GiveawayView, ids = chosenFor(g)) {
   try {
     const results = await invoke<ParticipationResult[]>('participate_giveaway', { giveawayId: g.id, accountIds: todo })
     const failed = results.filter(r => !r.ok)
+    const done = g.kind === 'channelpoints' ? `« ${g.rewardName} » acheté sur ${g.channel}` : `${g.command} envoyé sur ${g.channel}`
     if (failed.length === 0) {
-      toast.add({ title: `${g.command} envoyé sur ${g.channel}`, description: results.map(r => r.login).join(', '), color: 'success', icon: 'i-lucide-check' })
+      toast.add({ title: done, description: results.map(r => r.login).join(', '), color: 'success', icon: 'i-lucide-check' })
     } else {
-      toast.add({ title: 'Participation incomplète', description: failed.map(r => `${r.login} : ${r.message}`).join(' · '), color: 'error' })
+      toast.add({ title: g.kind === 'channelpoints' ? 'Achat incomplet' : 'Participation incomplète', description: failed.map(r => `${r.login} : ${r.message}`).join(' · '), color: 'error' })
     }
   } catch (e) {
     toast.add({ title: 'Participation impossible', description: String(e), color: 'error' })
@@ -123,6 +124,21 @@ async function participate(g: GiveawayView, ids = chosenFor(g)) {
     participating.value = null
   }
 }
+
+// Points de chaîne : achat de la récompense, confirmé d'abord (des points sont dépensés)
+const toBuy = ref<{ giveaway: GiveawayView, ids: number[] } | null>(null)
+function askBuy(g: GiveawayView, ids = chosenFor(g)) {
+  const todo = ids.filter(id => !entered(g, id))
+  if (todo.length) toBuy.value = { giveaway: g, ids: todo }
+}
+const buyLogins = computed(() => (toBuy.value?.ids ?? []).map(id => accounts.value.find(a => a.id === id)?.login ?? '?').join(', '))
+async function confirmBuy() {
+  const b = toBuy.value
+  if (!b) return
+  toBuy.value = null
+  await participate(b.giveaway, b.ids)
+}
+const canBuy = (g: GiveawayView) => g.kind === 'channelpoints' && g.status !== 'closed' && !!g.rewardName && accounts.value.some(a => !entered(g, a.id))
 
 function evidenceText(g: GiveawayView) {
   const e = g.evidence
@@ -242,6 +258,31 @@ function share(g: GiveawayView) {
               @click="toggleAccount(g, a.id)"
             />
             <UButton label="Participer" icon="i-lucide-send" size="sm" :loading="participating === g.id" :disabled="!chosenFor(g).some(id => !entered(g, id))" @click="participate(g)" />
+          </template>
+          <span v-else-if="g.kind === 'channelpoints' && !g.rewardName" class="text-sm text-muted">
+            <UIcon name="i-lucide-coins" class="size-3.5 align-middle" /> Récompense à acheter pas encore renseignée : choisis-la dans la fiche du giveaway.
+          </span>
+          <template v-else-if="g.kind === 'channelpoints'">
+            <span class="text-sm text-muted">Acheter avec</span>
+            <UButton
+              v-for="a in accounts"
+              :key="a.id"
+              :label="a.login"
+              size="xs"
+              :icon="entered(g, a.id) ? 'i-lucide-check' : chosenFor(g).includes(a.id) ? 'i-lucide-square-check' : 'i-lucide-square'"
+              :color="entered(g, a.id) ? 'success' : 'neutral'"
+              :variant="chosenFor(g).includes(a.id) || entered(g, a.id) ? 'soft' : 'ghost'"
+              :disabled="entered(g, a.id)"
+              @click="toggleAccount(g, a.id)"
+            />
+            <UButton
+              :label="`Acheter « ${g.rewardName} »${g.rewardCost !== null ? ` (${formatNumber(g.rewardCost)} pts)` : ''}`"
+              icon="i-lucide-coins"
+              size="sm"
+              :loading="participating === g.id"
+              :disabled="!chosenFor(g).some(id => !entered(g, id))"
+              @click="askBuy(g)"
+            />
           </template>
           <template v-else>
             <UButton v-if="g.url" label="Voir le giveaway" icon="i-lucide-external-link" size="sm" @click="openExternal(g.url)" />
@@ -404,6 +445,15 @@ function share(g: GiveawayView) {
                     :loading="participating === g.id"
                     @click="participate(g)"
                   />
+                  <UButton
+                    v-else-if="canBuy(g)"
+                    label="Acheter"
+                    icon="i-lucide-coins"
+                    size="xs"
+                    :title="`Acheter « ${g.rewardName} » avec tes comptes`"
+                    :loading="participating === g.id"
+                    @click="askBuy(g, accounts.map(a => a.id))"
+                  />
                   <UButton icon="i-lucide-scroll-text" size="xs" color="neutral" variant="ghost" :aria-label="`Journal du chat de ${g.channel}`" title="Journal du chat" @click="openLog(g.channel)" />
                   <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
                   <UButton v-if="g.status !== 'closed'" label="Clore" size="xs" color="neutral" variant="ghost" :loading="busy(`close-${g.id}`)" @click="closeGiveaway(g)" />
@@ -421,6 +471,21 @@ function share(g: GiveawayView) {
 
     <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" />
     <ChatLogModal v-model:open="logOpen" :channel="logChannel" />
+
+    <UModal :open="toBuy !== null" title="Acheter la récompense ?" @update:open="v => { if (!v) toBuy = null }">
+      <template #body>
+        <p class="text-sm">
+          « {{ toBuy?.giveaway.rewardName }} » sera achetée sur {{ toBuy?.giveaway.channel }}<template v-if="toBuy?.giveaway.rewardCost !== null"> pour {{ formatNumber(toBuy?.giveaway.rewardCost ?? 0) }} points par compte</template>, avec : {{ buyLogins }}.
+        </p>
+        <p class="text-sm text-muted mt-2">Les points sont dépensés aussitôt. Si la récompense a changé de prix sur la chaîne, l'achat est refusé.</p>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Annuler" color="neutral" variant="ghost" @click="toBuy = null" />
+          <UButton label="Acheter" icon="i-lucide-coins" @click="confirmBuy" />
+        </div>
+      </template>
+    </UModal>
 
     <UModal :open="toDelete !== null" title="Supprimer le giveaway ?" @update:open="v => { if (!v) toDelete = null }">
       <template #body>

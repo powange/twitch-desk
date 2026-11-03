@@ -1118,6 +1118,97 @@ pub struct ParticipationResult {
     pub message: String,
 }
 
+/// Récompense du giveaway (par son nom, sans tenir compte de la casse), achetable telle quelle
+async fn giveaway_reward(app: &App, giveaway: &GiveawayRow) -> Result<crate::twitch::gql::ChannelReward, String> {
+    let name = giveaway.details.reward_name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    let Some(name) = name else {
+        return Err("Récompense à acheter non renseignée : modifie la fiche du giveaway".into());
+    };
+    let rewards = crate::twitch::gql::channel_rewards(&app.http, &giveaway.channel)
+        .await
+        .map_err(|e| format!("récompenses de {} : {e}", giveaway.channel))?;
+    let reward = rewards
+        .into_iter()
+        .find(|r| r.title.trim().eq_ignore_ascii_case(name))
+        .ok_or_else(|| format!("{} ne propose plus de récompense « {name} »", giveaway.channel))?;
+    if reward.channel_id.is_empty() {
+        return Err(format!("chaîne {} introuvable", giveaway.channel));
+    }
+    if reward.paused {
+        return Err(format!("« {name} » est en pause sur la chaîne"));
+    }
+    if !reward.in_stock {
+        return Err(format!("« {name} » n'est plus disponible"));
+    }
+    if reward.input_required {
+        return Err(format!("« {name} » demande un texte : achète-la depuis le chat Twitch"));
+    }
+    // Jamais plus cher que prévu sans le savoir
+    if let Some(cost) = giveaway.details.reward_cost.filter(|c| *c as u64 != reward.cost) {
+        return Err(format!(
+            "« {name} » coûte maintenant {} points (et non {cost}) : corrige le coût dans la fiche pour confirmer",
+            reward.cost
+        ));
+    }
+    Ok(reward)
+}
+
+/// Achète la récompense du giveaway avec les comptes choisis (une fois par compte)
+async fn redeem(app: &Arc<App>, giveaway: &GiveawayRow, account_ids: &[i64]) -> Result<Vec<ParticipationResult>, String> {
+    let reward = giveaway_reward(app, giveaway).await?;
+    let accounts = app.db.accounts().map_err(|e| e.to_string())?;
+    let mut results = vec![];
+    for (i, id) in account_ids.iter().enumerate() {
+        let Some(account) = accounts.iter().find(|a| a.id == *id) else { continue };
+        let result = |ok: bool, message: &str| ParticipationResult { account_id: *id, login: account.login.clone(), ok, message: message.into() };
+        let Some(_sending) = SendingGuard::take(app, giveaway.id, *id) else {
+            results.push(result(true, "achat déjà en cours"));
+            continue;
+        };
+        if i > 0 {
+            tokio::time::sleep(Duration::from_millis(rand::random_range(1500..4000))).await;
+        }
+        // Relu juste avant l'achat : clos, ou déjà inscrit (jamais deux achats pour un compte)
+        match app.db.giveaway(giveaway.id) {
+            Ok(Some(g)) if g.status == "closed" => {
+                results.push(result(false, "giveaway terminé"));
+                continue;
+            }
+            Ok(Some(g)) if g.entries.iter().any(|e| e.account_id == *id) => {
+                results.push(result(true, "déjà inscrit"));
+                continue;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => return Err("giveaway introuvable".into()),
+            Err(e) => return Err(e.to_string()),
+        }
+        let outcome = match app.secrets.load(&account.user_id) {
+            None => Err("jeton introuvable : reconnecte ce compte".to_owned()),
+            Some(tokens) => {
+                let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id.clone()));
+                gql.redeem_reward(&reward).await.map_err(|e| e.to_string())
+            }
+        };
+        match outcome {
+            Ok(()) => {
+                let _ = app.db.add_giveaway_entry(giveaway.id, *id, &now_rfc3339(), false);
+                app.log(
+                    &account.login,
+                    EventKind::Giveaway,
+                    format!("« {} » acheté sur {} ({} points)", reward.title, giveaway.channel, reward.cost),
+                );
+                results.push(result(true, "acheté"));
+            }
+            Err(e) => {
+                app.log(&account.login, EventKind::Error, format!("« {} » non acheté sur {} : {e}", reward.title, giveaway.channel));
+                results.push(result(false, &e));
+            }
+        }
+    }
+    refresh_view(app);
+    Ok(results)
+}
+
 /// Envoie la commande du giveaway depuis les comptes choisis (une fois par compte)
 pub async fn participate(app: &Arc<App>, giveaway_id: i64, account_ids: &[i64], auto: bool) -> Result<Vec<ParticipationResult>, String> {
     let giveaway = app.db.giveaway(giveaway_id).map_err(|e| e.to_string())?.ok_or("giveaway introuvable")?;
@@ -1127,10 +1218,9 @@ pub async fn participate(app: &Arc<App>, giveaway_id: i64, account_ids: &[i64], 
     }
     let command = match (giveaway.kind.as_str(), giveaway.command.clone()) {
         ("streamelements", _) => return Err("Giveaway StreamElements : les tickets s'achètent depuis la page StreamElements".into()),
-        ("channelpoints", _) => {
-            let reward = giveaway.details.reward_name.as_deref().unwrap_or("la récompense");
-            return Err(format!("Giveaway par points de chaîne : achète {reward} dans le chat Twitch"));
-        }
+        // Des points sont dépensés : jamais d'achat automatique
+        ("channelpoints", _) if auto => return Err("Giveaway par points de chaîne : la récompense ne s'achète qu'à la main".into()),
+        ("channelpoints", _) => return redeem(app, &giveaway, account_ids).await,
         (_, Some(c)) => c,
         (_, None) => return Err("Aucune commande renseignée pour ce giveaway : modifie sa fiche".into()),
     };
