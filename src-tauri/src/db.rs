@@ -394,6 +394,10 @@ const MIGRATIONS: &[&str] = &[r#"
     -- phrase écrite dans le chat et délai en secondes (propres à ce PC, non synchronisés)
     ALTER TABLE streamers ADD COLUMN win_reply TEXT;
     ALTER TABLE streamers ADD COLUMN win_reply_delay INTEGER;
+"#, r#"
+    -- Plusieurs gagnants par giveaway (liste JSON, dans l'ordre du tirage) ; winner garde le premier
+    ALTER TABLE giveaways ADD COLUMN winners TEXT NOT NULL DEFAULT '[]';
+    UPDATE giveaways SET winners = json_array(winner) WHERE winner IS NOT NULL;
 "#];
 
 /// Types de giveaway
@@ -664,9 +668,12 @@ pub struct GiveawayRow {
     pub open: bool,
     /// Participé ou ignoré : sort de la file d'alertes
     pub handled: bool,
+    /// Premier gagnant (voir `winners`)
     pub winner: Option<String>,
     pub winner_chance: Option<String>,
     pub drawn_at: Option<String>,
+    /// Tous les gagnants, dans l'ordre du tirage
+    pub winners: Vec<String>,
     pub entries: Vec<GiveawayEntry>,
     /// Cadeaux du catalogue rattachés au giveaway
     pub gift_ids: Vec<i64>,
@@ -1433,6 +1440,21 @@ impl Db {
         )
     }
 
+    /// Giveaway tiré depuis `since` (date RFC 3339) sur la chaîne, sans giveaway ajouté depuis sur
+    /// cette chaîne : une nouvelle annonce de gagnant s'y ajoute (plusieurs gagnants)
+    pub fn recent_drawn_giveaway(&self, channel: &str, since: &str) -> DbResult<Option<GiveawayRow>> {
+        Ok(self
+            .select_giveaways(
+                "WHERE channel = ?1 AND status = 'closed' AND winner IS NOT NULL AND drawn_at >= ?2
+                   AND NOT EXISTS (SELECT 1 FROM giveaways n WHERE n.channel = giveaways.channel AND n.id <> giveaways.id
+                                   AND n.detected_at > giveaways.drawn_at)
+                 ORDER BY drawn_at DESC LIMIT 1",
+                [channel, since],
+            )?
+            .into_iter()
+            .next())
+    }
+
     /// Dernier giveaway d'une chaîne ayant ce lien (ouvert ou clos)
     pub fn giveaway_by_url(&self, channel: &str, url: &str) -> DbResult<Option<GiveawayRow>> {
         Ok(self
@@ -1455,7 +1477,7 @@ impl Db {
             "SELECT id, channel, kind, command, url, evidence, detected_at, status, handled, winner, winner_chance, drawn_at,
                     ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                     require_follow, require_presence, require_discord, notes, manual, reminded,
-                    prize_received, prize_note, require_greeting, min_chat_minutes, follow_min_days
+                    prize_received, prize_note, require_greeting, min_chat_minutes, follow_min_days, winners
              FROM giveaways {filter}"
         ))?;
         let mut rows: Vec<GiveawayRow> = stmt
@@ -1475,6 +1497,7 @@ impl Db {
                     winner: r.get(9)?,
                     winner_chance: r.get(10)?,
                     drawn_at: r.get(11)?,
+                    winners: serde_json::from_str(&r.get::<_, String>(28)?).unwrap_or_default(),
                     entries: vec![],
                     details: GiveawayDetails {
                         ticket_unique: r.get(12)?,
@@ -1594,7 +1617,10 @@ impl Db {
         let marks = vec!["?"; logins.len()].join(",");
         let lower: Vec<String> = logins.iter().map(|l| l.to_lowercase()).collect();
         self.select_giveaways(
-            &format!("WHERE winner IS NOT NULL AND lower(winner) IN ({marks}) ORDER BY status = 'open' DESC, detected_at DESC"),
+            &format!(
+                "WHERE winner IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(giveaways.winners) w WHERE lower(w.value) IN ({marks}))
+                 ORDER BY status = 'open' DESC, detected_at DESC"
+            ),
             rusqlite::params_from_iter(lower),
         )
     }
@@ -1822,19 +1848,42 @@ impl Db {
         Ok(())
     }
 
-    pub fn set_giveaway_winner(&self, id: i64, winner: &str, chance: Option<&str>, at: &str) -> DbResult<()> {
-        self.conn().execute(
-            "UPDATE giveaways SET winner = ?2, winner_chance = ?3, drawn_at = ?4, status = 'closed' WHERE id = ?1",
-            params![id, winner, chance, at],
+    /// Gagnant ajouté aux gagnants du giveaway, qui est clos ; `false` : déjà gagnant (ou giveaway
+    /// inconnu). Le premier gagnant reste dans `winner`, avec sa chance et l'heure du tirage
+    pub fn set_giveaway_winner(&self, id: i64, winner: &str, chance: Option<&str>, at: &str) -> DbResult<bool> {
+        let conn = self.conn();
+        let Some(text) = conn.query_row("SELECT winners FROM giveaways WHERE id = ?1", [id], |r| r.get::<_, String>(0)).optional()? else {
+            return Ok(false);
+        };
+        let mut winners: Vec<String> = serde_json::from_str(&text).unwrap_or_default();
+        if winners.iter().any(|w| w.eq_ignore_ascii_case(winner)) {
+            return Ok(false);
+        }
+        winners.push(winner.to_owned());
+        conn.execute(
+            "UPDATE giveaways SET winners = ?2, winner = COALESCE(winner, ?3), winner_chance = CASE WHEN winner IS NULL THEN ?4 ELSE winner_chance END,
+                 drawn_at = COALESCE(drawn_at, ?5), status = 'closed' WHERE id = ?1",
+            params![id, serde_json::to_string(&winners).expect("liste"), winner, chance, at],
         )?;
-        Ok(())
+        Ok(true)
     }
 
-    /// Gagnant retiré (erreur de détection ou de saisie) : le giveaway est rouvert, les règles de
+    /// Gagnants choisis à la main (formulaire) : remplacent la liste ; aucun : giveaway rouvert
+    pub fn set_giveaway_winners(&self, id: i64, winners: &[String], at: &str) -> DbResult<bool> {
+        let Some(first) = winners.first() else { return self.clear_giveaway_winner(id) };
+        let n = self.conn().execute(
+            "UPDATE giveaways SET winners = ?2, winner_chance = CASE WHEN winner IS ?3 THEN winner_chance ELSE NULL END, winner = ?3,
+                 drawn_at = COALESCE(drawn_at, ?4), status = 'closed' WHERE id = ?1",
+            params![id, serde_json::to_string(winners).expect("liste"), first, at],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Gagnants retirés (erreur de détection ou de saisie) : le giveaway est rouvert, les règles de
     /// clôture habituelles s'appliquent ensuite
     pub fn clear_giveaway_winner(&self, id: i64) -> DbResult<bool> {
         let n = self.conn().execute(
-            "UPDATE giveaways SET winner = NULL, winner_chance = NULL, drawn_at = NULL, status = 'open' WHERE id = ?1",
+            "UPDATE giveaways SET winner = NULL, winners = '[]', winner_chance = NULL, drawn_at = NULL, status = 'open' WHERE id = ?1",
             [id],
         )?;
         Ok(n > 0)
@@ -1866,7 +1915,7 @@ impl Db {
     /// prochain live, ancienneté repartie de `at`
     pub fn reopen_closed_giveaway(&self, id: i64, live: bool, at: &str) -> DbResult<bool> {
         let n = self.conn().execute(
-            "UPDATE giveaways SET status = ?2, winner = NULL, winner_chance = NULL, drawn_at = NULL, detected_at = ?3
+            "UPDATE giveaways SET status = ?2, winner = NULL, winners = '[]', winner_chance = NULL, drawn_at = NULL, detected_at = ?3
              WHERE id = ?1 AND status = 'closed'",
             params![id, if live { "open" } else { "paused" }, at],
         )?;
@@ -2661,6 +2710,40 @@ mod tests {
             (d.require_follow, d.require_presence, d.require_discord, d.min_chat_minutes),
             (Some(false), Some(true), Some(true), Some(30))
         );
+    }
+
+    #[test]
+    fn several_winners() {
+        let db = Db::memory().unwrap();
+        let new = |at: &str| NewGiveaway {
+            channel: "lunarsea".into(),
+            kind: "command".into(),
+            command: Some("!coffre".into()),
+            url: None,
+            evidence: None,
+            detected_at: at.into(),
+        };
+        let g = db.insert_giveaway(&new("2026-11-03T10:00:00Z")).unwrap();
+        assert!(db.set_giveaway_winner(g, "alice", Some("2 %"), "2026-11-03T10:30:00Z").unwrap());
+        assert!(!db.set_giveaway_winner(g, "Alice", None, "2026-11-03T10:31:00Z").unwrap());
+        assert!(db.set_giveaway_winner(g, "bob", None, "2026-11-03T10:32:00Z").unwrap());
+        let row = db.giveaway(g).unwrap().unwrap();
+        assert_eq!(row.winners, ["alice", "bob"]);
+        assert_eq!((row.winner.as_deref(), row.winner_chance.as_deref(), row.drawn_at.as_deref(), row.status.as_str()), (Some("alice"), Some("2 %"), Some("2026-11-03T10:30:00Z"), "closed"));
+        assert_eq!(db.won_giveaways(&["bob".into()]).unwrap().len(), 1);
+        // Tiré il y a peu, sans giveaway ajouté depuis : une nouvelle annonce s'y ajoute
+        assert_eq!(db.recent_drawn_giveaway("lunarsea", "2026-11-03T10:20:00Z").unwrap().map(|r| r.id), Some(g));
+        assert!(db.recent_drawn_giveaway("lunarsea", "2026-11-03T10:45:00Z").unwrap().is_none());
+        let later = db.insert_giveaway(&new("2026-11-03T10:40:00Z")).unwrap();
+        assert!(db.recent_drawn_giveaway("lunarsea", "2026-11-03T10:20:00Z").unwrap().is_none());
+        db.delete_giveaway(later).unwrap();
+        // Formulaire : liste remplacée (premier gagnant changé : sa chance oubliée), vide : rouvert
+        assert!(db.set_giveaway_winners(g, &["bob".into(), "carol".into()], "2026-11-03T11:00:00Z").unwrap());
+        let row = db.giveaway(g).unwrap().unwrap();
+        assert_eq!((row.winner.as_deref(), row.winner_chance, row.winners.len()), (Some("bob"), None, 2));
+        assert!(db.set_giveaway_winners(g, &[], "2026-11-03T11:00:00Z").unwrap());
+        let row = db.giveaway(g).unwrap().unwrap();
+        assert!(row.winners.is_empty() && row.winner.is_none() && row.status == "open");
     }
 
     #[test]

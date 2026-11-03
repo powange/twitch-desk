@@ -474,6 +474,41 @@ pub fn set_manual_winner(app: AppState, channel: String, winner: String, giveawa
     Ok(())
 }
 
+/// Giveaway StreamElements d'après son lien (formulaire) : titre, description, participants,
+/// tickets, gagnants ; None : inconnu de StreamElements
+#[tauri::command]
+pub async fn se_giveaway_info(app: AppState<'_>, url: String) -> CmdResult<Option<crate::streamelements::GiveawayOutcome>> {
+    let (channel, id) = crate::streamelements::parse_giveaway_url(&url).ok_or("Lien de giveaway StreamElements invalide")?;
+    let se_channel = crate::streamelements::channel_id(&app.http, &channel)
+        .await
+        .map_err(|e| format!("StreamElements injoignable : {e}"))?
+        .ok_or_else(|| format!("{channel} n'utilise pas StreamElements"))?;
+    crate::streamelements::giveaway_outcome(&app.http, &se_channel, &id).await.map_err(|e| format!("StreamElements injoignable : {e}"))
+}
+
+/// Gagnants d'un giveaway choisis à la main (formulaire) : remplacent la liste ; aucun : giveaway
+/// rouvert
+#[tauri::command]
+pub fn set_giveaway_winners(app: AppState, id: i64, winners: Vec<String>) -> CmdResult<()> {
+    let mut list: Vec<String> = vec![];
+    for w in winners.iter().filter(|w| !w.trim().is_empty()) {
+        let login = normalize_login(w).ok_or_else(|| format!("Pseudo du gagnant invalide : {}", w.trim()))?;
+        if !list.contains(&login) {
+            list.push(login);
+        }
+    }
+    if list.len() > 100 {
+        return Err("100 gagnants au plus".into());
+    }
+    let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    if !app.db.set_giveaway_winners(id, &list, &at).map_err(db_err)? {
+        return Err("Ce giveaway n'existe plus".into());
+    }
+    app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
+    Ok(())
+}
+
 /// Gagnant retiré d'un giveaway, qui est rouvert
 #[tauri::command]
 pub fn clear_giveaway_winner(app: AppState, id: i64) -> CmdResult<()> {

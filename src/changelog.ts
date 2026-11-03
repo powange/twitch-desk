@@ -14,6 +14,20 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.40.0',
+    date: '2026-11-03',
+    title: 'Plusieurs gagnants par giveaway',
+    changes: [
+      { kind: 'new', text: 'Un giveaway peut avoir plusieurs gagnants : dans sa fiche, ajoute ou retire autant de gagnants que tu veux (tous retirés, il est rouvert).' },
+      { kind: 'new', text: 'Journal du chat : désigner un gagnant sur un giveaway qui en a déjà un l\'ajoute à la liste au lieu de le remplacer.' },
+      { kind: 'improved', text: 'Plusieurs annonces de gagnant à la suite dans le chat (dans les 15 minutes après le tirage) s\'ajoutent au même giveaway, sauf si un nouveau giveaway du streamer est arrivé entre-temps. Tous les gagnants d\'un giveaway StreamElements sont enregistrés.' },
+      { kind: 'improved', text: 'Pages Alertes et StreamElements : tous les gagnants sont affichés, les tiens en vert ; « Mes gains » compte un giveaway dès qu\'un de tes comptes est parmi les gagnants.' },
+      { kind: 'improved', text: 'Page StreamElements : le titre et la description du giveaway s\'affichent en entier, sans être coupés.' },
+      { kind: 'improved', text: 'Fiche d\'un giveaway StreamElements : le lien du giveaway en premier, puis ce qu\'en dit StreamElements (titre, description, participants, tickets achetés, état), puis les tickets maximum, le tirage et la commande. Les gagnants et les notes, communs à tous les types, sont séparés en bas.' },
+      { kind: 'fixed', text: 'Un giveaway StreamElements dont les participations sont fermées mais pas encore tiré reste ouvert dans l\'application, en attente du tirage.' }
+    ]
+  },
+  {
     version: '0.39.5',
     date: '2026-11-03',
     changes: [

@@ -350,21 +350,25 @@ function affordable(channel: ChannelView): number | null {
                 <UBadge v-if="giveawayState(channel)" :label="giveawayState(channel)!.label" :color="giveawayState(channel)!.color" variant="subtle" size="sm" class="whitespace-nowrap" />
                 <span v-else class="text-muted">—</span>
               </td>
-              <!-- Giveaway StreamElements en cours : titre en gras, puis la description sur trois
-                   lignes (le reste au survol) -->
-              <td class="px-1.5 py-2 min-w-[220px] max-w-[360px]">
+              <!-- Giveaway StreamElements en cours : titre en gras, puis la description, en entier -->
+              <td class="px-1.5 py-2 min-w-[260px] max-w-[420px]">
                 <template v-if="channel.seGiveaway?.title?.trim() || channel.seGiveaway?.description?.trim()">
-                  <p v-if="channel.seGiveaway.title?.trim()" class="text-xs font-semibold line-clamp-2">{{ channel.seGiveaway.title.trim() }}</p>
-                  <UTooltip v-if="channel.seGiveaway.description?.trim()" :text="channel.seGiveaway.description.trim()" :content="{ side: 'top' }" :ui="{ content: 'max-w-md h-auto whitespace-pre-line' }">
-                    <p class="text-xs line-clamp-3 whitespace-pre-line text-muted" tabindex="0">{{ channel.seGiveaway.description.trim() }}</p>
-                  </UTooltip>
+                  <p v-if="channel.seGiveaway.title?.trim()" class="text-xs font-semibold whitespace-pre-line break-words">{{ channel.seGiveaway.title.trim() }}</p>
+                  <p v-if="channel.seGiveaway.description?.trim()" class="text-xs whitespace-pre-line break-words text-muted">{{ channel.seGiveaway.description.trim() }}</p>
                 </template>
                 <span v-else class="text-muted">—</span>
               </td>
               <td class="px-1.5 py-2 whitespace-nowrap">
-                <span v-if="knownGiveaway(channel)?.winner" class="inline-flex items-center gap-1" :class="knownGiveaway(channel)?.winnerOurs ? 'text-success font-medium' : ''">
-                  <UIcon name="i-lucide-trophy" class="size-3.5" />{{ knownGiveaway(channel)!.winner }}
-                </span>
+                <div v-if="knownGiveaway(channel)?.winners.length" class="flex flex-col gap-0.5">
+                  <span
+                    v-for="w in knownGiveaway(channel)!.winners"
+                    :key="w"
+                    class="inline-flex items-center gap-1"
+                    :class="account && w.toLowerCase() === account.login.toLowerCase() ? 'text-success font-medium' : ''"
+                  >
+                    <UIcon name="i-lucide-trophy" class="size-3.5" />{{ w }}
+                  </span>
+                </div>
                 <span v-else class="text-muted">—</span>
               </td>
               <td class="px-1.5 py-2">

@@ -208,16 +208,25 @@ pub async fn enter(
 
 /// Giveaway StreamElements précis : en cours ou non, et pseudos tirés (dans l'ordre du tirage ;
 /// un gagnant apparaît dès le tirage, avant que le streamer ne termine le giveaway)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GiveawayOutcome {
+    /// Participations ouvertes (« running »)
     pub running: bool,
+    /// État donné par StreamElements : « running », « closed » (participations fermées, tirage
+    /// à venir), « completed » (tiré), « canceled »…
+    pub state: String,
     pub winners: Vec<String>,
     /// Titre et description (ils annoncent souvent les lots)
     pub title: String,
     pub description: String,
+    /// Tickets achetés et participants
+    pub total_tickets: i64,
+    pub total_users: i64,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct OutcomeRaw {
     #[serde(default)]
     state: String,
@@ -225,6 +234,10 @@ struct OutcomeRaw {
     title: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    total_amount: i64,
+    #[serde(default)]
+    total_users: i64,
     #[serde(default)]
     winners: Vec<WinnerRaw>,
 }
@@ -235,12 +248,22 @@ struct WinnerRaw {
     username: String,
 }
 
+impl GiveawayOutcome {
+    /// Terminé sans tirage à venir : tiré (completed) ou annulé ; « closed » attend son tirage
+    pub fn finished(&self) -> bool {
+        matches!(self.state.as_str(), "completed" | "ended" | "canceled" | "cancelled")
+    }
+}
+
 fn to_outcome(raw: OutcomeRaw) -> GiveawayOutcome {
     GiveawayOutcome {
         running: raw.state == "running",
+        state: raw.state.clone(),
         winners: raw.winners.into_iter().map(|w| w.username.trim().to_lowercase()).filter(|w| !w.is_empty()).collect(),
         title: raw.title.trim().to_owned(),
         description: raw.description.trim().to_owned(),
+        total_tickets: raw.total_amount,
+        total_users: raw.total_users,
     }
 }
 
@@ -251,6 +274,20 @@ pub async fn giveaway_outcome(http: &reqwest::Client, se_channel: &str, id: &str
         return Ok(None);
     }
     Ok(Some(to_outcome(res.error_for_status()?.json::<OutcomeRaw>().await?)))
+}
+
+/// Chaîne et identifiant d'un lien de giveaway (https://streamelements.com/<chaîne>/giveaway/<id>)
+pub fn parse_giveaway_url(url: &str) -> Option<(String, String)> {
+    let rest = url.trim().trim_end_matches('/').strip_prefix("https://streamelements.com/")?;
+    let mut parts = rest.split('/');
+    let (channel, kind, id) = (parts.next()?, parts.next()?, parts.next()?);
+    let ok = parts.next().is_none()
+        && kind == "giveaway"
+        && !channel.is_empty()
+        && channel.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !id.is_empty()
+        && id.chars().all(|c| c.is_ascii_hexdigit());
+    ok.then(|| (channel.to_lowercase(), id.to_owned()))
 }
 
 /// Identifiant StreamElements d'une chaîne Twitch (None : la chaîne n'utilise pas StreamElements)
@@ -389,13 +426,22 @@ mod tests {
         assert_eq!(g.command.as_deref(), Some("!ticket"));
         assert_eq!((g.cost, g.max_tickets, g.total_tickets, g.total_users), (1000, Some(210), 227, 6));
         assert!(g.free_ticket);
+        assert_eq!(
+            parse_giveaway_url("https://streamelements.com/Saenz203/giveaway/6ae91894a0a183147ae56a71/"),
+            Some(("saenz203".into(), "6ae91894a0a183147ae56a71".into()))
+        );
+        assert_eq!(parse_giveaway_url("https://streamelements.com/saenz203/store"), None);
+        assert_eq!(parse_giveaway_url("https://evil.com/saenz203/giveaway/6ae9"), None);
         let drawn: OutcomeRaw =
             serde_json::from_str(r#"{"_id":"1","state":"running","title":"Gilded Phoenix Ship Crest ","winners":[{"username":"DreKing_","tickets":189}]}"#).unwrap();
         let drawn = to_outcome(drawn);
         assert!(drawn.running && drawn.winners == ["dreking_"] && drawn.title == "Gilded Phoenix Ship Crest" && drawn.description.is_empty());
         let done: OutcomeRaw = serde_json::from_str(r#"{"_id":"1","state":"completed"}"#).unwrap();
         let done = to_outcome(done);
-        assert!(!done.running && done.winners.is_empty());
+        assert!(!done.running && done.finished() && done.winners.is_empty());
+        let waiting: OutcomeRaw = serde_json::from_str(r#"{"_id":"1","state":"closed"}"#).unwrap();
+        let waiting = to_outcome(waiting);
+        assert!(!waiting.running && !waiting.finished());
         let ended = r#"{"_id":"1","state":"ended","maxTickets":0}"#;
         assert_eq!(to_giveaway(serde_json::from_str(ended).unwrap()), None);
     }

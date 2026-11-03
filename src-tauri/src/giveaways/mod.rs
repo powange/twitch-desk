@@ -559,7 +559,8 @@ impl Monitor {
     }
 
     /// Giveaway StreamElements tiré (un gagnant, même s'il n'est pas encore terminé) : gagnant noté
-    /// et giveaway clos ; terminé sans gagnant : clos. Annonce du bot sans giveaway tiré : elle
+    /// et giveaway clos ; terminé ou annulé sans gagnant : clos ; participations fermées sans
+    /// gagnant (tirage à venir) : reste ouvert. Annonce du bot sans giveaway tiré : elle
     /// concernait un autre tirage
     fn on_se_report(&mut self, report: SeReport) {
         self.se_busy = None;
@@ -575,14 +576,19 @@ impl Monitor {
             }
             // Titre et description du giveaway StreamElements : cadeaux du catalogue repérés dedans
             self.gifts_from_se_giveaway(&g, &format!("{}\n{}", outcome.title, outcome.description));
-            // Le dernier tiré (nouveau tirage si le premier gagnant ne répond pas), sauf un des nôtres
-            let ours = outcome.winners.iter().find(|w| self.accounts.iter().any(|(_, l)| l == *w));
-            if let Some(winner) = ours.or(outcome.winners.last()).cloned() {
+            // Tous les gagnants tirés, dans l'ordre (déjà notés : ignorés)
+            if !outcome.winners.is_empty() {
                 drawn_channels.insert(g.channel.clone());
-                self.app.log("giveaways", EventKind::Info, format!("Giveaway StreamElements de {} tiré : {winner}", g.channel));
                 let channel = g.channel.clone();
-                self.record_winner(&channel, Some(g), &winner, None, true);
-            } else if !outcome.running {
+                for winner in &outcome.winners {
+                    let Ok(Some(row)) = self.app.db.giveaway(id) else { break };
+                    if row.winners.iter().any(|w| w.eq_ignore_ascii_case(winner)) {
+                        continue;
+                    }
+                    self.app.log("giveaways", EventKind::Info, format!("Giveaway StreamElements de {channel} tiré : {winner}"));
+                    self.record_winner(&channel, Some(row), winner, None, true);
+                }
+            } else if outcome.finished() {
                 let _ = self.app.db.close_giveaway(g.id);
                 self.app.log("giveaways", EventKind::Info, format!("Giveaway StreamElements de {} terminé sans gagnant", g.channel));
                 self.publish();
@@ -1093,11 +1099,15 @@ impl Monitor {
                 return;
             }
         }
-        // Aucun ouvert : giveaway en pause (même giveaway, tirage d'un live suivant), sinon clos
-        // récemment sans gagnant (fin du live juste avant le tirage)
+        // Aucun ouvert : giveaway en pause (même giveaway, tirage d'un live suivant), sinon tiré il y
+        // a moins de MORE_WINNERS_WITHIN sans nouveau giveaway depuis (plusieurs gagnants), sinon
+        // clos récemment sans gagnant (fin du live juste avant le tirage)
         let target = winner_target(&open, bot).cloned().or_else(|| {
             let paused = self.app.db.paused_giveaways(Some(channel)).unwrap_or_default();
             winner_target(&paused, bot).cloned()
+        }).or_else(|| {
+            let since = (chrono::Utc::now() - MORE_WINNERS_WITHIN).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            self.app.db.recent_drawn_giveaway(channel, &since).ok().flatten()
         }).or_else(|| {
             let since = (chrono::Utc::now() - chrono::Duration::hours(RECENT_UNDRAWN_HOURS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
             let recent = self.app.db.recent_undrawn_giveaways(channel, &since).unwrap_or_default();
@@ -1109,8 +1119,11 @@ impl Monitor {
     /// `announced` : gagnant annoncé dans le chat à l'instant (réponse automatique possible)
     fn record_winner(&mut self, channel: &str, target: Option<GiveawayRow>, winner: &str, chance: Option<&str>, announced: bool) {
         let target = target.as_ref();
+        // Ajouté aux gagnants du giveaway ; déjà gagnant (annonce répétée) : rien de neuf
         if let Some(g) = target {
-            let _ = self.app.db.set_giveaway_winner(g.id, winner, chance, &now_rfc3339());
+            if !self.app.db.set_giveaway_winner(g.id, winner, chance, &now_rfc3339()).unwrap_or(false) {
+                return;
+            }
         }
         let ours = self.accounts.iter().find(|(_, l)| l.eq_ignore_ascii_case(winner)).map(|(_, l)| l.clone());
         match ours {
@@ -1139,7 +1152,7 @@ impl Monitor {
     fn win_reply(&self, channel: &str, target: Option<&GiveawayRow>, login: &str, announced: bool) -> Option<(u64, String, u64)> {
         let target = target?;
         // Même gagnant déjà noté (annonce répétée par le bot) : une seule réponse
-        if !announced || target.details.require_presence != Some(true) || target.winner.as_deref().is_some_and(|w| w.eq_ignore_ascii_case(login)) {
+        if !announced || target.details.require_presence != Some(true) || target.winners.iter().any(|w| w.eq_ignore_ascii_case(login)) {
             return None;
         }
         let streamer = self.app.db.streamer(channel).ok().flatten()?;
@@ -1275,9 +1288,9 @@ fn rows_to_views(app: &App, rows: Vec<GiveawayRow>, accounts: &[(i64, String)]) 
                 evidence: row.evidence.as_deref().and_then(|e| serde_json::from_str(e).ok()),
                 entries_view,
                 winner_ours: row
-                    .winner
-                    .as_deref()
-                    .and_then(|w| accounts.iter().find(|(_, l)| l.eq_ignore_ascii_case(w)).map(|(_, l)| l.clone())),
+                    .winners
+                    .iter()
+                    .find_map(|w| accounts.iter().find(|(_, l)| l.eq_ignore_ascii_case(w)).map(|(_, l)| l.clone())),
                 row,
             }
         })
@@ -1520,6 +1533,9 @@ async fn fetch_lives(app: &App, gqls: &[Gql], due: Vec<String>) -> LiveReport {
 /// qui n'est pas StreamElements
 /// Gagnant annoncé sans giveaway ouvert : giveaway clos sans gagnant dans ces dernières heures
 const RECENT_UNDRAWN_HOURS: i64 = 6;
+/// Annonce d'un autre gagnant peu après un tirage : ajoutée au giveaway tiré (plusieurs gagnants),
+/// sauf si un nouveau giveaway de la chaîne est arrivé entre-temps
+const MORE_WINNERS_WITHIN: chrono::Duration = chrono::Duration::minutes(15);
 
 fn winner_target<'a>(open: &'a [GiveawayRow], bot: &str) -> Option<&'a GiveawayRow> {
     // StreamElements tire aussi ses giveaways par commande dans le chat (même annonce) : son

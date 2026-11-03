@@ -119,6 +119,9 @@ function entered(g: GiveawayView, id: number) {
   return g.entriesView.some(e => e.accountId === id)
 }
 const participating = ref<number | null>(null)
+// Gagnant qui est un de nos comptes
+const ourLogins = computed(() => new Set(accounts.value.map(a => a.login.toLowerCase())))
+const isOurs = (login: string) => ourLogins.value.has(login.toLowerCase())
 // Giveaway StreamElements terminé : adresse de sa page sur StreamElements
 const seClosedUrl = (g: GiveawayView) => g.kind === 'streamelements' && g.status === 'closed' && g.url?.startsWith('https://streamelements.com/') ? g.url : null
 
@@ -445,11 +448,14 @@ function share(g: GiveawayView) {
                 </div>
               </td>
               <td class="px-3 py-2">
-                <template v-if="g.winner">
-                  <span :class="g.winnerOurs ? 'text-success font-semibold' : ''">{{ g.winner }}</span>
-                  <span v-if="g.winnerChance" class="text-xs text-muted"> ({{ g.winnerChance }})</span>
-                  <UBadge v-if="g.winnerOurs" label="Gagné !" color="success" size="sm" class="ml-1" />
-                </template>
+                <!-- Tous les gagnants (plusieurs possibles), les nôtres en vert -->
+                <div v-if="g.winners.length" class="flex flex-col gap-0.5">
+                  <span v-for="(w, i) in g.winners" :key="w" class="whitespace-nowrap">
+                    <span :class="isOurs(w) ? 'text-success font-semibold' : ''">{{ w }}</span>
+                    <span v-if="i === 0 && g.winnerChance" class="text-xs text-muted"> ({{ g.winnerChance }})</span>
+                    <UBadge v-if="isOurs(w)" label="Gagné !" color="success" size="sm" class="ml-1" />
+                  </span>
+                </div>
                 <span v-else class="text-muted">—</span>
               </td>
               <td class="px-3 py-2">

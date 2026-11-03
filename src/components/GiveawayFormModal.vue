@@ -50,8 +50,59 @@ function toLocalInput(iso: string | null): string {
 // Identifiant StreamElements lu dans le lien (…/giveaway/<id>) : giveaway suivi par l'application
 const seGiveawayId = computed(() => /\/giveaway\/([0-9a-f]+)\/?$/i.exec(form.value.url.trim())?.[1] ?? null)
 
+// Giveaway StreamElements lu sur StreamElements d'après son lien : titre, description,
+// participants, tickets, gagnants, état
+interface SeGiveawayInfo { running: boolean, state: string, winners: string[], title: string, description: string, totalTickets: number, totalUsers: number }
+const seInfo = ref<SeGiveawayInfo | null>(null)
+const seInfoLoading = ref(false)
+const seInfoError = ref<string | null>(null)
+let seInfoTimer: ReturnType<typeof setTimeout> | null = null
+let seInfoSeq = 0
+watch(() => [open.value, form.value.kind, form.value.url.trim(), seGiveawayId.value] as const, ([isOpen, kind, url, id]) => {
+  if (seInfoTimer) clearTimeout(seInfoTimer)
+  if (!isOpen || kind !== 'streamelements' || !id) {
+    seInfo.value = null
+    seInfoError.value = null
+    return
+  }
+  seInfoTimer = setTimeout(async () => {
+    const seq = ++seInfoSeq
+    seInfoLoading.value = true
+    try {
+      const info = await invoke<SeGiveawayInfo | null>('se_giveaway_info', { url })
+      if (seq === seInfoSeq) { seInfo.value = info; seInfoError.value = null }
+    } catch (e) {
+      if (seq === seInfoSeq) { seInfo.value = null; seInfoError.value = String(e) }
+    } finally {
+      if (seq === seInfoSeq) seInfoLoading.value = false
+    }
+  }, 400)
+}, { immediate: true })
+const seStateLabel = computed(() => {
+  const i = seInfo.value
+  if (i?.winners.length) return { label: 'Tiré', color: 'success' as const }
+  switch (i?.state) {
+    case 'running': return { label: 'Participations ouvertes', color: 'primary' as const }
+    case 'closed': return { label: 'En attente du tirage', color: 'warning' as const }
+    case 'completed': case 'ended': return { label: 'Terminé', color: 'neutral' as const }
+    case 'canceled': case 'cancelled': return { label: 'Annulé', color: 'error' as const }
+    default: return { label: i?.state || 'Inconnu', color: 'neutral' as const }
+  }
+})
+
 // Page StreamElements publique du streamer (ses giveaways, sa boutique)
 const seStreamerUrl = computed(() => `https://streamelements.com/${encodeURIComponent(form.value.channel.trim().replace(/^@/, '').toLowerCase())}`)
+
+// Gagnants : pseudo tapé ajouté à la liste (sans doublon)
+const winnerInput = ref('')
+function addWinner() {
+  const login = winnerInput.value.trim().replace(/^@/, '').toLowerCase()
+  winnerInput.value = ''
+  if (login && !form.value.winners.some(w => w.toLowerCase() === login)) form.value.winners.push(login)
+}
+function removeWinner(login: string) {
+  form.value.winners = form.value.winners.filter(w => w !== login)
+}
 
 // Giveaway terminé : rouvert à l'enregistrement (gagnant retiré)
 const reopen = ref(false)
@@ -76,7 +127,7 @@ const form = ref({
   followDays: null as number | null,
   notes: '',
   giftIds: [] as number[],
-  winner: ''
+  winners: [] as string[]
 })
 
 // Ce que le cœur sait de la chaîne saisie (fiche Twitch, StreamElements, streamer)
@@ -196,9 +247,10 @@ watch(open, (isOpen) => {
     followDays: g?.followMinDays ?? null,
     notes: g?.notes ?? '',
     giftIds: [...(g?.giftIds ?? [])],
-    winner: g?.winner ?? ''
+    winners: [...(g?.winners ?? [])]
   }
   reopen.value = false
+  winnerInput.value = ''
   giftSearch.value = ''
   // Chaîne connue (modification, fiche du streamer, chaîne pré-remplie) : fiche chargée tout de suite,
   // même si c'est la même chaîne qu'à la dernière ouverture
@@ -512,10 +564,11 @@ async function save() {
       // Rouvert : ouvert si la chaîne est en live, sinon en pause ; gagnant retiré
       if (reopen.value && closed.value) await invoke('reopen_giveaway', { id })
       // Gagnant changé à la main : désigné (le giveaway est clos), ou retiré (il est rouvert)
-      const winner = f.winner.trim().replace(/^@/, '').toLowerCase()
-      if (!reopen.value && props.giveaway && props.giveaway.id === id && winner !== (props.giveaway.winner ?? '').toLowerCase()) {
-        if (winner) await invoke('set_manual_winner', { channel: f.channel, winner, giveawayId: id })
-        else await invoke('clear_giveaway_winner', { id })
+      // Pseudo tapé sans cliquer sur « Ajouter » : ajouté aussi
+      addWinner()
+      const before = (props.giveaway?.winners ?? []).map(w => w.toLowerCase()).join()
+      if (!reopen.value && props.giveaway && props.giveaway.id === id && f.winners.map(w => w.toLowerCase()).join() !== before) {
+        await invoke('set_giveaway_winners', { id, winners: f.winners })
       }
     }
     // Créé une seule fois : un nouvel essai modifie ce giveaway
@@ -654,6 +707,49 @@ async function save() {
               </div>
             </UFormField>
 
+            <!-- StreamElements : le lien d'abord, puis ce que StreamElements en dit, puis les réglages -->
+            <template v-if="form.kind === 'streamelements'">
+            <!-- Page StreamElements du streamer : ses giveaways, pour retrouver le lien du giveaway -->
+            <div v-if="form.kind === 'streamelements' && form.channel.trim()" class="flex items-center gap-2 text-sm">
+              <UIcon name="i-lucide-globe" class="size-4 text-muted shrink-0" />
+              <span class="text-muted">Page StreamElements de {{ form.channel.trim() }} :</span>
+              <button type="button" class="text-primary font-medium hover:underline inline-flex items-center gap-1 truncate" @click="openExternal(seStreamerUrl)">
+                {{ seStreamerUrl.replace('https://', '') }}<UIcon name="i-lucide-external-link" class="size-3.5 shrink-0" />
+              </button>
+            </div>
+              <UFormField
+                label="Lien du giveaway StreamElements"
+                :help="seGiveawayId ? `Giveaway StreamElements n° ${seGiveawayId} : clos dès que StreamElements annonce son gagnant` : 'Avec le lien, le giveaway est clos dès que StreamElements annonce son gagnant'"
+              >
+                <UInput id="gw-url" v-model="form.url" placeholder="https://streamelements.com/…/giveaway/…" class="w-full" />
+              </UFormField>
+              <div v-if="seGiveawayId" class="border border-default rounded-lg px-4 py-3 flex flex-col gap-2 text-sm">
+                <div v-if="seInfoLoading && !seInfo" class="flex items-center gap-2 text-muted">
+                  <UIcon name="i-lucide-loader" class="size-4 animate-spin" />Lecture du giveaway sur StreamElements…
+                </div>
+                <p v-else-if="seInfoError" class="text-error">{{ seInfoError }}</p>
+                <p v-else-if="!seInfo" class="text-muted">Giveaway introuvable sur StreamElements : vérifie le lien.</p>
+                <template v-else>
+                  <div class="flex items-start gap-2">
+                    <p class="font-semibold flex-1 whitespace-pre-line break-words">{{ seInfo.title || 'Sans titre' }}</p>
+                    <UBadge :label="seStateLabel.label" :color="seStateLabel.color" variant="subtle" size="sm" class="shrink-0" />
+                  </div>
+                  <p v-if="seInfo.description" class="text-muted whitespace-pre-line break-words">{{ seInfo.description }}</p>
+                  <div class="flex flex-wrap gap-x-5 gap-y-1">
+                    <span class="inline-flex items-center gap-1.5"><UIcon name="i-lucide-users" class="size-4 text-muted" />{{ formatNumber(seInfo.totalUsers) }} participant(s)</span>
+                    <span class="inline-flex items-center gap-1.5"><UIcon name="i-lucide-ticket" class="size-4 text-muted" />{{ formatNumber(seInfo.totalTickets) }} ticket(s) acheté(s)</span>
+                    <span v-if="seInfo.winners.length" class="inline-flex items-center gap-1.5 text-success"><UIcon name="i-lucide-trophy" class="size-4" />{{ seInfo.winners.join(', ') }}</span>
+                  </div>
+                </template>
+              </div>
+              <div class="grid grid-cols-2 gap-4">
+                <UFormField label="Tickets maximum par personne">
+                  <UInputNumber id="gw-se-max" v-model="form.ticketMax" :min="1" :max="100000" placeholder="Inconnu" class="w-full" />
+                </UFormField>
+              <UFormField label="Tirage" help="Un rappel est envoyé 5 min avant si la présence est requise">
+                <UInput id="gw-draw" v-model="form.drawAt" type="datetime-local" class="w-full" />
+              </UFormField>
+              </div>
             <UFormField
               v-if="form.kind === 'command' || form.kind === 'ticket' || form.kind === 'streamelements'"
               label="Commande à taper"
@@ -661,7 +757,16 @@ async function save() {
             >
               <UInput id="gw-command" v-model="form.command" placeholder="!coffre" class="w-full font-mono" />
             </UFormField>
+            </template>
 
+            <template v-else>
+            <UFormField
+              v-if="form.kind === 'command' || form.kind === 'ticket' || form.kind === 'streamelements'"
+              label="Commande à taper"
+              :help="form.kind !== 'streamelements' && !form.command.trim() ? 'Pas encore connue ? Laisse vide : elle sera remplie dès que la détection la repère dans le chat.' : undefined"
+            >
+              <UInput id="gw-command" v-model="form.command" placeholder="!coffre" class="w-full font-mono" />
+            </UFormField>
             <div v-if="form.kind === 'ticket'" class="grid grid-cols-2 gap-4">
               <UFormField label="Tickets">
                 <USelect
@@ -673,26 +778,6 @@ async function save() {
               </UFormField>
               <UFormField v-if="form.ticket === 'multi'" label="Tickets maximum par personne">
                 <UInputNumber id="gw-ticket-max" v-model="form.ticketMax" :min="1" :max="100000" placeholder="Inconnu" class="w-full" />
-              </UFormField>
-            </div>
-
-            <!-- Page StreamElements du streamer : ses giveaways, pour retrouver le lien du giveaway -->
-            <div v-if="form.kind === 'streamelements' && form.channel.trim()" class="flex items-center gap-2 text-sm">
-              <UIcon name="i-lucide-globe" class="size-4 text-muted shrink-0" />
-              <span class="text-muted">Page StreamElements de {{ form.channel.trim() }} :</span>
-              <button type="button" class="text-primary font-medium hover:underline inline-flex items-center gap-1 truncate" @click="openExternal(seStreamerUrl)">
-                {{ seStreamerUrl.replace('https://', '') }}<UIcon name="i-lucide-external-link" class="size-3.5 shrink-0" />
-              </button>
-            </div>
-            <div v-if="form.kind === 'streamelements'" class="grid grid-cols-2 gap-4">
-              <UFormField
-                label="Lien du giveaway StreamElements"
-                :help="seGiveawayId ? `Giveaway StreamElements n° ${seGiveawayId} : clos dès que StreamElements annonce son gagnant` : 'Avec le lien, le giveaway est clos dès que StreamElements annonce son gagnant'"
-              >
-                <UInput id="gw-url" v-model="form.url" placeholder="https://streamelements.com/…/giveaway/…" class="w-full" />
-              </UFormField>
-              <UFormField label="Tickets maximum par personne">
-                <UInputNumber id="gw-se-max" v-model="form.ticketMax" :min="1" :max="100000" placeholder="Inconnu" class="w-full" />
               </UFormField>
             </div>
 
@@ -722,18 +807,12 @@ async function save() {
               </UFormField>
             </div>
 
-            <div class="flex flex-wrap gap-4">
-              <UFormField label="Tirage" help="Un rappel est envoyé 5 min avant si la présence est requise" class="max-w-xs">
+              <div class="max-w-xs">
+              <UFormField label="Tirage" help="Un rappel est envoyé 5 min avant si la présence est requise">
                 <UInput id="gw-draw" v-model="form.drawAt" type="datetime-local" class="w-full" />
               </UFormField>
-              <UFormField v-if="giveaway" label="Gagnant" help="Le vider retire le gagnant et rouvre le giveaway" class="max-w-xs">
-                <UInput id="gw-winner" v-model="form.winner" icon="i-lucide-trophy" placeholder="Pas encore tiré" class="w-full">
-                  <template v-if="form.winner" #trailing>
-                    <UButton icon="i-lucide-x" size="xs" color="neutral" variant="link" aria-label="Retirer le gagnant" @click="form.winner = ''" />
-                  </template>
-                </UInput>
-              </UFormField>
-            </div>
+              </div>
+            </template>
             <UAlert
               v-if="form.kind === 'channelpoints'"
               icon="i-lucide-info"
@@ -748,6 +827,23 @@ async function save() {
               variant="subtle"
               title="La chaîne sera ajoutée à la page StreamElements de tes comptes (présence dans le chat, achat des tickets)."
             />
+
+            <!-- Communs à tous les types de giveaway -->
+            <USeparator label="Pour tous les types de giveaway" :ui="{ label: 'text-xs text-muted' }" />
+              <UFormField v-if="giveaway" label="Gagnants" help="Autant que nécessaire. Tous retirés : le giveaway est rouvert" class="max-w-sm">
+                <div class="flex flex-col gap-2">
+                  <div v-if="form.winners.length" class="flex flex-wrap gap-1.5">
+                    <UBadge v-for="w in form.winners" :key="w" color="success" variant="subtle" icon="i-lucide-trophy" class="pr-0.5">
+                      {{ w }}
+                      <UButton icon="i-lucide-x" size="xs" color="neutral" variant="link" :aria-label="`Retirer ${w} des gagnants`" @click="removeWinner(w)" />
+                    </UBadge>
+                  </div>
+                  <div class="flex gap-2">
+                    <UInput id="gw-winner" v-model="winnerInput" icon="i-lucide-trophy" :placeholder="form.winners.length ? 'Autre gagnant' : 'Pas encore tiré'" class="flex-1" @keydown.enter.prevent="addWinner" />
+                    <UButton label="Ajouter" icon="i-lucide-plus" color="neutral" variant="soft" :disabled="!winnerInput.trim()" @click="addWinner" />
+                  </div>
+                </div>
+              </UFormField>
             <UFormField label="Notes du giveaway">
               <UTextarea id="gw-notes" v-model="form.notes" :rows="3" autoresize placeholder="Lot, règles particulières de ce giveaway…" class="w-full" />
             </UFormField>
@@ -858,7 +954,7 @@ async function save() {
              pause jusqu'à son prochain live ; gagnant retiré) -->
         <UTooltip
           v-if="closed"
-          :text="`Enregistre et rouvre ce giveaway${giveaway?.winner ? ` (le gagnant ${giveaway.winner} est retiré)` : ''} : ouvert si la chaîne est en live, sinon en pause jusqu'à son prochain live`"
+          :text="`Enregistre et rouvre ce giveaway${giveaway?.winners.length ? ` (${giveaway.winners.length > 1 ? 'les gagnants sont retirés' : `le gagnant ${giveaway.winners[0]} est retiré`})` : ''} : ouvert si la chaîne est en live, sinon en pause jusqu'à son prochain live`"
         >
           <UButton label="Rouvrir" icon="i-lucide-rotate-ccw" color="neutral" variant="soft" class="mr-auto" :loading="saving && reopen" @click="reopenAndSave" />
         </UTooltip>

@@ -403,12 +403,12 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                 "SELECT gi.sync_id FROM giveaway_gifts gg JOIN gifts gi ON gi.id = gg.gift_id
                  WHERE gg.giveaway_id = ?1 AND gi.sync_id IS NOT NULL ORDER BY gi.sync_id",
             )?;
-            let rows: Vec<(i64, String, bool, Value)> = conn
+            let rows: Vec<(i64, String, bool, Value, String)> = conn
                 .prepare_cached(
                     "SELECT id, sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance, drawn_at,
                             ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                             require_follow, require_presence, require_discord, notes,
-                            require_greeting, min_chat_minutes, follow_min_days
+                            require_greeting, min_chat_minutes, follow_min_days, winners
                      FROM giveaways WHERE sync_id IS NOT NULL
                          AND (?2 IS NULL OR sync_id = ?2) AND (?3 = 0 OR status IN ('open', 'paused') OR detected_at >= ?1)",
                 )?
@@ -441,11 +441,18 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                             "minChatMinutes": r.get::<_, Option<i64>>(22)?,
                             "followMinDays": r.get::<_, Option<i64>>(23)?,
                         }),
+                        r.get::<_, String>(24)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<_>>()?;
             rows.into_iter()
-                .map(|(id, sync_id, paused, mut data)| {
+                .map(|(id, sync_id, paused, mut data, winners)| {
+                    // Plusieurs gagnants : liste ajoutée seulement là (empreinte des autres
+                    // inchangée) ; une version plus ancienne n'y voit que le premier
+                    let winners: Vec<String> = serde_json::from_str(&winners).unwrap_or_default();
+                    if winners.len() > 1 {
+                        data["winners"] = json!(winners);
+                    }
                     let list: Vec<String> = gifts.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
                     data["gifts"] = json!(list);
                     // En pause : champ ajouté seulement là (empreinte des autres inchangée) ;
@@ -883,6 +890,12 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                 )?;
             }
             let giveaway = local_id(conn, "giveaways", id)?.expect("giveaway enregistré");
+            // Gagnants : la liste (plusieurs), sinon le seul gagnant (versions plus anciennes)
+            let winners: Vec<String> = match data.get("winners").and_then(Value::as_array) {
+                Some(list) => list.iter().filter_map(Value::as_str).filter(|w| valid_login(w)).map(str::to_owned).collect(),
+                None => str_of(data, "winner").into_iter().collect(),
+            };
+            conn.execute("UPDATE giveaways SET winners = ?2 WHERE id = ?1", params![giveaway, serde_json::to_string(&winners).expect("liste")])?;
             // Sans lien envoyé (cadeaux non synchronisés) : les cadeaux locaux restent
             if data.get("gifts").is_none() {
                 return Ok(true);

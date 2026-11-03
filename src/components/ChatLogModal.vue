@@ -133,11 +133,13 @@ const channelGiveaways = computed(() => (snapshot.value?.giveaways.giveaways ?? 
   .filter(g => g.channel === props.channel)
   .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.detectedAt.localeCompare(a.detectedAt)))
 const giveawayItems = computed(() => channelGiveaways.value.map(g => ({
-  label: `${GIVEAWAY_KIND[g.kind].label}${g.command ? ` ${g.command}` : ''}${g.status === 'open' ? '' : g.status === 'paused' ? ' (en pause)' : ' (clos)'}${g.winner ? ` · gagnant : ${g.winner}` : ''}`,
+  label: `${GIVEAWAY_KIND[g.kind].label}${g.command ? ` ${g.command}` : ''}${g.status === 'open' ? '' : g.status === 'paused' ? ' (en pause)' : ' (clos)'}${g.winners.length ? ` · gagnant${g.winners.length > 1 ? 's' : ''} : ${g.winners.join(', ')}` : ''}`,
   value: g.id
 })))
 const confirmWinner = ref<string | null>(null)
 const winnerGiveaway = ref<number | undefined>(undefined)
+// Gagnants déjà notés sur le giveaway choisi : le nouveau s'y ajoute
+const chosenWinners = computed(() => channelGiveaways.value.find(g => g.id === winnerGiveaway.value)?.winners ?? [])
 function askWinner(e: ChatLogEntry) {
   const list = channelGiveaways.value
   const byCommand = e.command ? list.find(g => g.command?.toLowerCase() === e.command!.toLowerCase()) : undefined
@@ -150,7 +152,7 @@ async function setWinner() {
   confirmWinner.value = null
   try {
     await invoke('set_manual_winner', { channel: props.channel, winner, giveawayId: winnerGiveaway.value ?? null })
-    toast.add({ title: `${winner} désigné gagnant`, color: 'success', icon: 'i-lucide-trophy' })
+    toast.add({ title: `${winner} ajouté aux gagnants`, color: 'success', icon: 'i-lucide-trophy' })
   } catch (e) {
     toast.add({ title: 'Gagnant non enregistré', description: String(e), color: 'error' })
   }
@@ -266,7 +268,9 @@ function time(iso: string) {
           <USelect id="winner-giveaway" v-model="winnerGiveaway" :items="giveawayItems" class="w-full" />
         </UFormField>
         <p v-else>Aucun giveaway connu sur {{ channel }} : ajoute-le d'abord.</p>
-        <p class="text-muted">{{ confirmWinner }} sera enregistré comme gagnant de ce giveaway, qui sera clos.</p>
+        <p class="text-muted">
+          {{ confirmWinner }} sera ajouté aux gagnants de ce giveaway, qui sera clos<template v-if="chosenWinners.length"> (déjà gagnant{{ chosenWinners.length > 1 ? 's' : '' }} : {{ chosenWinners.join(', ') }})</template>.
+        </p>
       </div>
     </template>
     <template #footer>

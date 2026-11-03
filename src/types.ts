@@ -337,9 +337,12 @@ export interface GiveawayView extends GiveawayDetails {
   status: 'open' | 'paused' | 'closed'
   open: boolean
   handled: boolean
+  // Premier gagnant (voir winners)
   winner: string | null
   winnerChance: string | null
   drawnAt: string | null
+  // Tous les gagnants, dans l'ordre du tirage
+  winners: string[]
   evidence: GiveawayEvidence | null
   // Comptes inscrits ; tickets : giveaway StreamElements (relevés sur StreamElements)
   entriesView: { accountId: number, login: string, at: string, auto: boolean, tickets: number | null }[]
