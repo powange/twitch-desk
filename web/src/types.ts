@@ -43,11 +43,71 @@ export interface ChannelLive {
   title?: string | null
 }
 
+// Live d'une chaîne des pages Points et StreamElements (spectateurs arrondis)
+export interface ChannelLiveInfo {
+  viewers: number
+  category: string | null
+  title: string | null
+}
+
+export type PointsChannelState = 'watching' | 'waiting' | 'offline' | 'disabled' | 'balanceReached' | 'unknown'
+
+export interface PointsChannel {
+  login: string
+  avatar: string | null
+  state: PointsChannelState
+  balance: number | null
+  earnedToday: number
+  maxBalance: number | null
+  priority: boolean
+  live: ChannelLiveInfo | null
+}
+
+export interface SeGiveawayInfo {
+  id: string
+  title: string
+  description: string
+  command: string | null
+  cost: number
+  maxTickets: number | null
+  totalTickets: number
+  totalUsers: number
+}
+
+export interface SeChannel {
+  login: string
+  avatar: string | null
+  // null : pas encore vérifié ; false : la chaîne n'utilise pas StreamElements
+  enabled: boolean | null
+  points: number | null
+  earnedToday: number
+  inChat: boolean
+  live: ChannelLiveInfo | null
+  myTickets: number | null
+  giveaway: SeGiveawayInfo | null
+}
+
 // État publié par l'application du PC
 export interface InstanceState {
   accounts: string[]
   giveaways: Record<string, { participated: string[], handled: boolean }>
   live: Record<string, ChannelLive>
+  // Pages Points de chaîne et StreamElements (application 0.41 et plus)
+  points?: { login: string, enabled: boolean, channels: PointsChannel[] }[]
+  streamelements?: { login: string, connected: boolean, channels: SeChannel[] }[]
+  // Achats depuis le téléphone autorisés sur le PC
+  actionsAllowed?: boolean
+}
+
+// Demande envoyée au PC (achat de tickets StreamElements)
+export interface PhoneAction {
+  id: string
+  kind: string
+  payload: { account: string, channel: string, giveaway: string, tickets: number }
+  status: 'pending' | 'done' | 'failed'
+  message: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 export interface Overview {

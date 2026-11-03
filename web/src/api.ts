@@ -74,6 +74,24 @@ export function overview<T>(token: string): Promise<T> {
   return call<T>('/app/overview', { headers: authHeader(token) })
 }
 
+// État publié par le PC seul (léger, serveur 0.8 et plus)
+export function state<T>(token: string): Promise<{ state: T | null, stateAt: string | null }> {
+  return call('/app/state', { headers: authHeader(token) })
+}
+
+// Demande d'achat de tickets StreamElements, exécutée par le PC (serveur 0.8 et plus)
+export function buyTickets<T>(token: string, body: { account: string, channel: string, giveaway: string, tickets: number }): Promise<T> {
+  return call<T>('/app/actions', {
+    method: 'POST',
+    headers: { ...authHeader(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'se_buy', ...body })
+  })
+}
+
+export function actions<T>(token: string): Promise<T[]> {
+  return call<T[]>('/app/actions', { headers: authHeader(token) })
+}
+
 export type LiveStatus = 'connecting' | 'live' | 'reconnecting'
 
 interface StreamHandlers {

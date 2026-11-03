@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { DropdownMenuItem } from '@nuxt/ui'
-import { ApiError, loadDevice, openEvents, overview, saveDevice, type Device, type LiveStatus } from './api'
-import type { Overview } from './types'
+import { ApiError, actions as listActions, loadDevice, openEvents, overview, saveDevice, state as loadStateOnly, type Device, type LiveStatus } from './api'
+import type { InstanceState, Overview, PhoneAction } from './types'
 import { timeAgo } from './format'
 import PairScreen from './components/PairScreen.vue'
-import GiveawayCard from './components/GiveawayCard.vue'
+import GiveawayCarousel from './components/GiveawayCarousel.vue'
+import PointsView from './components/PointsView.vue'
+import SeView from './components/SeView.vue'
 import NotificationsModal from './components/NotificationsModal.vue'
 import { active as pushActive, disable as disablePush, refresh as refreshPush, serverTooOld, support as pushSupport } from './push'
 
@@ -18,6 +20,26 @@ const loading = ref(false)
 const status = ref<LiveStatus>('connecting')
 let events: ReturnType<typeof openEvents> | null = null
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
+
+// Onglet et comptes affichés, retenus sur ce téléphone
+type Tab = 'giveaways' | 'points' | 'se'
+function remembered(key: string, fallback: string) {
+  try { return localStorage.getItem(`twitch-desk:${key}`) ?? fallback } catch { return fallback }
+}
+function remember(key: string, value: string) {
+  try { localStorage.setItem(`twitch-desk:${key}`, value) } catch { /* stockage indisponible */ }
+}
+const tab = ref<Tab>((['giveaways', 'points', 'se'] as const).find(t => t === remembered('tab', 'giveaways')) ?? 'giveaways')
+const pointsAccount = ref(remembered('points-account', ''))
+const seAccount = ref(remembered('se-account', ''))
+watch(tab, t => remember('tab', t))
+watch(pointsAccount, a => remember('points-account', a))
+watch(seAccount, a => remember('se-account', a))
+const TABS: { key: Tab, label: string, icon: string }[] = [
+  { key: 'giveaways', label: 'Giveaways', icon: 'i-lucide-gift' },
+  { key: 'points', label: 'Points', icon: 'i-lucide-coins' },
+  { key: 'se', label: 'StreamElements', icon: 'i-lucide-ticket' }
+]
 
 const open = computed(() => data.value?.giveaways.filter(g => g.status === 'open') ?? [])
 const paused = computed(() => data.value?.giveaways.filter(g => g.status === 'paused') ?? [])
@@ -66,11 +88,60 @@ function refreshSoon() {
   refreshTimer = setTimeout(() => { refreshTimer = null; void load() }, 300)
 }
 
+// État du PC seul (léger) : relu à chaque annonce « state » ; serveur plus ancien : tout relire
+let stateTimer: ReturnType<typeof setTimeout> | null = null
+function refreshStateSoon() {
+  if (stateTimer) clearTimeout(stateTimer)
+  stateTimer = setTimeout(async () => {
+    stateTimer = null
+    const d = device.value
+    if (!d || !data.value) return refreshSoon()
+    try {
+      const r = await loadStateOnly<InstanceState>(d.token)
+      if (data.value) {
+        data.value.state = r.state
+        data.value.stateAt = r.stateAt
+      }
+    } catch {
+      refreshSoon()
+    }
+  }, 300)
+}
+
+// Achats demandés au PC : suivis jusqu'au résultat, annoncé par un message
+const phoneActions = ref<PhoneAction[]>([])
+const pendingActions = computed(() => phoneActions.value.filter(a => a.status === 'pending'))
+async function loadActions() {
+  const d = device.value
+  if (!d) return
+  try {
+    const list = await listActions<PhoneAction>(d.token)
+    for (const a of list) {
+      const before = phoneActions.value.find(x => x.id === a.id)
+      if (before?.status === 'pending' && a.status !== 'pending') {
+        toast.add(a.status === 'done'
+          ? { title: 'Achat fait par le PC', description: a.message ?? '', color: 'success', icon: 'i-lucide-check' }
+          : { title: 'Achat refusé', description: a.message ?? '', color: 'error' })
+      }
+    }
+    phoneActions.value = list
+  } catch { /* serveur plus ancien : pas d'achats */ }
+}
+function onRequested(a: PhoneAction) {
+  phoneActions.value = [a, ...phoneActions.value]
+}
+const toast = useToast()
+
 function connect(d: Device) {
   events?.close()
   events = openEvents(d.token, {
-    // À l'ouverture du flux (événement « seq » initial) puis à chaque nouvelle : relecture
-    onEvent: refreshSoon,
+    // À l'ouverture du flux (événement « seq » initial) puis à chaque nouvelle : relecture ;
+    // état du PC seul : relecture légère ; achat traité : résultat
+    onEvent: (type) => {
+      if (type === 'state') refreshStateSoon()
+      else if (type === 'action') void loadActions()
+      else refreshSoon()
+    },
     onStatus: (s) => { status.value = s },
     onUnauthorized: () => forget('Ce téléphone a été déconnecté depuis le PC. Demande un nouveau code pour le reconnecter.')
   })
@@ -81,6 +152,7 @@ watch(device, (d) => {
     void load()
     connect(d)
     void refreshPush(d.token)
+    void loadActions()
   }
 }, { immediate: true })
 
@@ -132,7 +204,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
           <img src="/icon.svg" alt="" width="28" height="28">
           <div class="min-w-0 flex-1">
             <div class="font-semibold truncate leading-tight">{{ instanceName }}</div>
-            <div class="text-xs text-muted leading-tight">Giveaways</div>
+            <div class="text-xs text-muted leading-tight">{{ TABS.find(t => t.key === tab)?.label }}</div>
           </div>
           <UBadge :label="connection.label" :color="connection.color" :icon="connection.icon" variant="subtle" size="sm" />
           <UDropdownMenu :items="menu" :content="{ align: 'end' }">
@@ -141,7 +213,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
         </div>
       </header>
 
-      <main class="flex-1 w-full max-w-2xl mx-auto px-4 py-4 flex flex-col gap-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+      <main class="flex-1 w-full max-w-2xl mx-auto px-4 py-4 flex flex-col gap-4 pb-[calc(5rem+env(safe-area-inset-bottom))]">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :description="error" />
         <UAlert
           v-if="showHint"
@@ -157,6 +229,12 @@ const menu = computed<DropdownMenuItem[][]>(() => [
         <div v-if="!data && loading" class="flex justify-center py-12">
           <UIcon name="i-lucide-loader" class="size-6 animate-spin text-muted" />
         </div>
+        <template v-else-if="data && tab === 'points'">
+          <PointsView v-model:account="pointsAccount" :state="data.state" />
+        </template>
+        <template v-else-if="data && tab === 'se'">
+          <SeView v-model:account="seAccount" :state="data.state" :token="device.token" :pending="pendingActions" @requested="onRequested" />
+        </template>
         <template v-else-if="data">
           <p v-if="!data.state" class="text-sm text-muted">L'application du PC n'a pas encore publié ses participations (mets-la à jour et active la synchronisation).</p>
           <div v-if="!data.giveaways.length" class="flex flex-col items-center gap-2 py-12 text-center">
@@ -166,16 +244,34 @@ const menu = computed<DropdownMenuItem[][]>(() => [
           </div>
           <section v-if="open.length" class="flex flex-col gap-3" aria-labelledby="open-title">
             <h1 id="open-title" class="text-sm font-medium text-muted uppercase">En cours · {{ open.length }}</h1>
-            <GiveawayCard v-for="g in open" :key="g.id" :giveaway="g" :state="data.state" />
+            <GiveawayCarousel :giveaways="open" :state="data.state" />
           </section>
           <section v-if="paused.length" class="flex flex-col gap-3" aria-labelledby="paused-title">
             <h1 id="paused-title" class="text-sm font-medium text-muted uppercase">En pause · {{ paused.length }}</h1>
             <p class="text-xs text-muted -mt-1">Live terminé, tirage pas encore fait.</p>
-            <GiveawayCard v-for="g in paused" :key="g.id" :giveaway="g" :state="data.state" />
+            <GiveawayCarousel :giveaways="paused" :state="data.state" />
           </section>
           <p v-if="data.stateAt" class="text-xs text-muted text-center">Participations publiées par le PC {{ timeAgo(data.stateAt) }}</p>
         </template>
       </main>
+
+      <!-- Onglets en bas de l'écran -->
+      <nav class="fixed bottom-0 inset-x-0 z-10 border-t border-default bg-default/95 backdrop-blur pb-[env(safe-area-inset-bottom)]" aria-label="Pages">
+        <div class="max-w-2xl mx-auto grid grid-cols-3">
+          <button
+            v-for="t in TABS"
+            :key="t.key"
+            type="button"
+            class="flex flex-col items-center gap-0.5 py-2 text-xs font-medium"
+            :class="tab === t.key ? 'text-primary' : 'text-muted'"
+            :aria-current="tab === t.key ? 'page' : undefined"
+            @click="tab = t.key"
+          >
+            <UIcon :name="t.icon" class="size-5" />
+            {{ t.label }}
+          </button>
+        </div>
+      </nav>
     </div>
 
     <NotificationsModal v-if="device" v-model:open="notificationsOpen" :token="device.token" />
