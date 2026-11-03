@@ -4,10 +4,11 @@ import type { Giveaway, InstanceState } from '../types'
 import GiveawayCard from './GiveawayCard.vue'
 
 // Giveaways en diapositives : un par écran, glisser à gauche ou à droite pour passer au
-// suivant ou au précédent (défilement aimanté), compteur et flèches
+// suivant ou au précédent (défilement aimanté), compteur et flèches. `index` : giveaway affiché
+// (compteur « 1 / 2 » du titre de la section)
 const props = defineProps<{ giveaways: Giveaway[], state: InstanceState | null }>()
 const track = ref<HTMLElement | null>(null)
-const index = ref(0)
+const index = defineModel<number>('index', { default: 0 })
 
 function onScroll() {
   const el = track.value

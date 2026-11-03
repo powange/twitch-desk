@@ -58,6 +58,9 @@ const TABS: { key: Tab, label: string, icon: string }[] = [
 
 const open = computed(() => data.value?.giveaways.filter(g => g.status === 'open') ?? [])
 const paused = computed(() => data.value?.giveaways.filter(g => g.status === 'paused') ?? [])
+// Giveaway affiché dans chaque carrousel
+const openIndex = ref(0)
+const pausedIndex = ref(0)
 const instanceName = computed(() => data.value?.instance.name || device.value?.instanceName || 'Twitch Desk')
 const connection = computed(() => {
   switch (status.value) {
@@ -269,13 +272,13 @@ const menu = computed<DropdownMenuItem[][]>(() => [
             <p class="text-sm text-muted">Ils apparaissent ici dès que l'application en détecte un.</p>
           </div>
           <section v-if="open.length" class="flex flex-col gap-3" aria-labelledby="open-title">
-            <h1 id="open-title" class="text-sm font-medium text-muted uppercase">En cours · {{ open.length }}</h1>
-            <GiveawayCarousel :giveaways="open" :state="data.state" />
+            <h1 id="open-title" class="text-sm font-medium text-muted uppercase tabular-nums">En cours · {{ Math.min(openIndex, open.length - 1) + 1 }} / {{ open.length }}</h1>
+            <GiveawayCarousel v-model:index="openIndex" :giveaways="open" :state="data.state" />
           </section>
           <section v-if="paused.length" class="flex flex-col gap-3" aria-labelledby="paused-title">
-            <h1 id="paused-title" class="text-sm font-medium text-muted uppercase">En pause · {{ paused.length }}</h1>
+            <h1 id="paused-title" class="text-sm font-medium text-muted uppercase tabular-nums">En pause · {{ Math.min(pausedIndex, paused.length - 1) + 1 }} / {{ paused.length }}</h1>
             <p class="text-xs text-muted -mt-1">Live terminé, tirage pas encore fait.</p>
-            <GiveawayCarousel :giveaways="paused" :state="data.state" />
+            <GiveawayCarousel v-model:index="pausedIndex" :giveaways="paused" :state="data.state" />
           </section>
           <p v-if="data.stateAt" class="text-xs text-muted text-center">Participations publiées par le PC {{ timeAgo(data.stateAt) }}</p>
         </template>
