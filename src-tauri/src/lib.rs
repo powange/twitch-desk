@@ -330,6 +330,7 @@ pub fn run() {
             commands::past_giveaways,
             commands::refresh_channels,
             commands::refresh_giveaways,
+            commands::create_past_giveaway,
             win_reply::cancel_win_reply,
             commands::game_box_arts,
             commands::save_streamer,

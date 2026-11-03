@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.40.6',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'new', text: 'Page Alertes : « Ajouter un ancien giveaway », sous les giveaways passés, pour enregistrer après coup un giveaway déjà terminé avec sa date, ses cadeaux et ses gagnants. Il ne déclenche ni alerte ni participation, ne change pas la fiche du streamer, et il est partagé avec tes amis.' }
+    ]
+  },
+  {
     version: '0.40.5',
     date: '2026-11-03',
     changes: [

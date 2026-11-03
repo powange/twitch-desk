@@ -90,6 +90,7 @@
     "allow-past-giveaways",
     "allow-refresh-channels",
     "allow-refresh-giveaways",
+    "allow-create-past-giveaway",
     "allow-game-box-arts",
     "allow-save-streamer",
     "allow-get-streamers",

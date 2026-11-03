@@ -263,7 +263,15 @@ const { openGift } = useGiftPreview()
 // Formulaire : null = nouveau giveaway
 const formOpen = ref(false)
 const editing = ref<GiveawayView | null>(null)
+// Ancien giveaway ajouté après coup (sous les giveaways passés)
+const formPast = ref(false)
+function openPastForm() {
+  editing.value = null
+  formPast.value = true
+  formOpen.value = true
+}
 function openForm(g: GiveawayView | null) {
+  formPast.value = false
   editing.value = g
   formOpen.value = true
 }
@@ -603,9 +611,13 @@ function share(g: GiveawayView) {
           </tbody>
         </table>
       </div>
+      <!-- Giveaways passés : en ajouter un ancien, déjà terminé, pour garder l'historique -->
+      <div v-if="group.key === 'past'">
+        <UButton label="Ajouter un ancien giveaway" icon="i-lucide-history" size="xs" color="neutral" variant="link" @click="openPastForm" />
+      </div>
     </section>
 
-    <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" />
+    <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" :past="formPast" />
     <ChatLogModal v-model:open="logOpen" :channel="logChannel" />
 
     <UModal v-model:open="pastFilterOpen" title="Filtrer les giveaways passés" description="Appliqués tout de suite, sur tous les giveaways terminés">

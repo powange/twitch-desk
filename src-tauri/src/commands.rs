@@ -496,10 +496,8 @@ pub struct WinnerInput {
     chance: Option<String>,
 }
 
-/// Gagnants d'un giveaway choisis à la main (formulaire) : remplacent la liste ; aucun : giveaway
-/// rouvert
-#[tauri::command]
-pub fn set_giveaway_winners(app: AppState, id: i64, winners: Vec<WinnerInput>) -> CmdResult<()> {
+/// Gagnants saisis : pseudos valides, chances lisibles, sans doublon, 100 au plus
+fn winner_list(winners: &[WinnerInput]) -> CmdResult<Vec<(String, Option<String>)>> {
     let mut list: Vec<(String, Option<String>)> = vec![];
     for w in winners.iter().filter(|w| !w.login.trim().is_empty()) {
         let login = normalize_login(&w.login).ok_or_else(|| format!("Pseudo du gagnant invalide : {}", w.login.trim()))?;
@@ -514,6 +512,14 @@ pub fn set_giveaway_winners(app: AppState, id: i64, winners: Vec<WinnerInput>) -
     if list.len() > 100 {
         return Err("100 gagnants au plus".into());
     }
+    Ok(list)
+}
+
+/// Gagnants d'un giveaway choisis à la main (formulaire) : remplacent la liste ; aucun : giveaway
+/// rouvert
+#[tauri::command]
+pub fn set_giveaway_winners(app: AppState, id: i64, winners: Vec<WinnerInput>) -> CmdResult<()> {
+    let list = winner_list(&winners)?;
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     if !app.db.set_giveaway_winners(id, &list, &at).map_err(db_err)? {
         return Err("Ce giveaway n'existe plus".into());
@@ -1080,6 +1086,32 @@ fn keep_known(wanted: &mut crate::db::GiveawayDetails, sheet: Option<&crate::db:
     wanted.require_discord = wanted.require_discord.or(s.require_discord);
     wanted.require_greeting = wanted.require_greeting.or(s.require_greeting);
     wanted.min_chat_minutes = wanted.min_chat_minutes.or(s.min_chat_minutes);
+}
+
+/// Ancien giveaway ajouté après coup (page Alertes, giveaways passés) : créé terminé à la date
+/// `at` (RFC 3339), avec ses gagnants ; ni alerte, ni participation, ni fiche du streamer ou
+/// liste de chaînes modifiée
+#[tauri::command]
+pub async fn create_past_giveaway(app: AppState<'_>, input: crate::db::GiveawayInput, at: String, winners: Vec<WinnerInput>) -> CmdResult<i64> {
+    let app: Arc<App> = app.inner().clone();
+    let mut input = crate::giveaways::validate_input(input)?;
+    input.gift_ids = known_gifts(&app, &input.gift_ids);
+    let at = chrono::DateTime::parse_from_rfc3339(at.trim()).map_err(|_| "Date du giveaway invalide".to_owned())?.with_timezone(&chrono::Utc);
+    if at > chrono::Utc::now() + chrono::Duration::minutes(5) {
+        return Err("La date d'un ancien giveaway doit être passée".into());
+    }
+    let at = at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let winners = winner_list(&winners)?;
+    let id = app.db.insert_manual_giveaway(&input, &at).map_err(db_err)?;
+    app.db.close_giveaway(id).map_err(db_err)?;
+    // Tiré au moment du tirage indiqué, sinon à la date du giveaway
+    let drawn = input.details.draw_at.clone().unwrap_or_else(|| at.clone());
+    if !winners.is_empty() {
+        app.db.set_giveaway_winners(id, &winners, &drawn).map_err(db_err)?;
+    }
+    app.giveaways.send(MonitorCmd::Reload);
+    app.sync.poke();
+    Ok(id)
 }
 
 #[tauri::command]

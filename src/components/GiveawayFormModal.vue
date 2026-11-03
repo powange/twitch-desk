@@ -14,7 +14,8 @@ import IgnoredCommandsEditor from './IgnoredCommandsEditor.vue'
 // Création (giveaway = null) ou modification d'une fiche de giveaway
 // channel : chaîne pré-remplie pour un nouveau giveaway
 // streamerOnly : fiche du streamer seulement (chaîne et conditions habituelles), sans giveaway
-const props = defineProps<{ giveaway: GiveawayView | null, channel?: string | null, streamerOnly?: boolean }>()
+// past : ancien giveaway ajouté après coup (déjà terminé, à une date passée)
+const props = defineProps<{ giveaway: GiveawayView | null, channel?: string | null, streamerOnly?: boolean, past?: boolean }>()
 const open = defineModel<boolean>('open', { required: true })
 
 const { snapshot } = useSnapshot()
@@ -109,6 +110,10 @@ const winnersKey = (list: { login: string, chance: string }[]) => list.map(w => 
 function chanceInput(chance: string | null | undefined) {
   return (chance ?? '').trim().replace(/\s*%$/, '').replace(',', '.')
 }
+
+// Ancien giveaway : sa date (heure locale du formulaire), obligatoire
+const pastAt = ref('')
+const pastMode = computed(() => !!props.past && !props.giveaway && !props.streamerOnly)
 
 // Giveaway terminé : rouvert à l'enregistrement (gagnant retiré)
 const reopen = ref(false)
@@ -257,6 +262,7 @@ watch(open, (isOpen) => {
     winners: (g?.winners ?? []).map((w, i) => ({ login: w, chance: chanceInput(g?.winnerChances[w.toLowerCase()] ?? (i === 0 ? g?.winnerChance : null)) }))
   }
   reopen.value = false
+  pastAt.value = ''
   winnerInput.value = ''
   giftSearch.value = ''
   // Chaîne connue (modification, fiche du streamer, chaîne pré-remplie) : fiche chargée tout de suite,
@@ -556,7 +562,12 @@ async function save() {
   const loaded = streamerLoaded.value
   const streamerChanged = !!suggestion.value && (streamerDiscord.value !== loaded.discord || streamerNotes.value !== loaded.notes || streamerIgnored.value.join() !== loaded.ignored
     || streamerWinReply.value.trim() !== loaded.winReply || streamerWinDelay.value !== loaded.winDelay)
-  const invalid = streamerChanged ? discordError() : null
+  if (pastMode.value && !pastAt.value) {
+    toast.add({ title: 'Date du giveaway manquante', description: 'Indique quand ce giveaway a eu lieu.', color: 'error' })
+    section.value = 'giveaway'
+    return
+  }
+  const invalid = streamerChanged && !pastMode.value ? discordError() : null
   if (invalid) {
     toast.add({ title: 'Lien Discord invalide', description: invalid, color: 'error' })
     section.value = 'channel'
@@ -579,6 +590,15 @@ async function save() {
         await invoke('set_giveaway_winners', { id, winners: f.winners.map(w => ({ login: w.login, chance: w.chance.trim() || null })) })
       }
     }
+    // Ancien giveaway : créé terminé à sa date, avec ses gagnants
+    else if (pastMode.value) {
+      addWinner()
+      createdId.value = await invoke<number>('create_past_giveaway', {
+        input,
+        at: new Date(pastAt.value).toISOString(),
+        winners: f.winners.map(w => ({ login: w.login, chance: w.chance.trim() || null }))
+      })
+    }
     // Créé une seule fois : un nouvel essai modifie ce giveaway
     else createdId.value = await invoke<number>('create_giveaway', { input })
   } catch (e) {
@@ -589,7 +609,8 @@ async function save() {
     return
   }
   try {
-    if (streamerChanged) {
+    // Ancien giveaway : la fiche du streamer n'est pas touchée
+    if (streamerChanged && !pastMode.value) {
       // Conditions habituelles de la fiche (relue) reprises telles quelles, sinon elles seraient effacées
       const existing = await currentStreamer(f.channel)
       await invoke('save_streamer', {
@@ -611,7 +632,7 @@ async function save() {
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="streamerOnly ? `Fiche de ${channel}` : giveaway ? `Giveaway de ${giveaway.channel}` : 'Nouveau giveaway'" :ui="{ content: 'max-w-4xl' }">
+  <UModal v-model:open="open" :title="streamerOnly ? `Fiche de ${channel}` : giveaway ? `Giveaway de ${giveaway.channel}` : pastMode ? 'Ancien giveaway' : 'Nouveau giveaway'" :ui="{ content: 'max-w-4xl' }">
     <template #body>
       <form id="giveaway-form" class="grid grid-cols-[200px_1fr] gap-6 min-h-[440px]" @submit.prevent="save">
         <!-- Menu des sections -->
@@ -698,6 +719,9 @@ async function save() {
 
           <!-- Giveaway : type, puis les champs de ce type -->
           <div v-show="section === 'giveaway'" class="flex flex-col gap-4">
+            <UFormField v-if="pastMode" label="Date du giveaway" help="Quand il a eu lieu ; il est enregistré déjà terminé">
+              <UInput id="gw-past-at" v-model="pastAt" type="datetime-local" :max="toLocalInput(new Date().toISOString())" class="w-full max-w-xs" />
+            </UFormField>
             <UFormField label="Type de giveaway">
               <div class="grid grid-cols-4 gap-2">
                 <button
@@ -754,7 +778,7 @@ async function save() {
                 <UFormField label="Tickets maximum par personne">
                   <UInputNumber id="gw-se-max" v-model="form.ticketMax" :min="1" :max="100000" placeholder="Inconnu" class="w-full" />
                 </UFormField>
-              <UFormField label="Tirage" help="Un rappel est envoyé 5 min avant si la présence est requise">
+              <UFormField label="Tirage" :help="pastMode ? 'Facultatif : heure du tirage, sinon la date du giveaway' : 'Un rappel est envoyé 5 min avant si la présence est requise'">
                 <UInput id="gw-draw" v-model="form.drawAt" type="datetime-local" class="w-full" />
               </UFormField>
               </div>
@@ -816,7 +840,7 @@ async function save() {
             </div>
 
               <div class="max-w-xs">
-              <UFormField label="Tirage" help="Un rappel est envoyé 5 min avant si la présence est requise">
+              <UFormField label="Tirage" :help="pastMode ? 'Facultatif : heure du tirage, sinon la date du giveaway' : 'Un rappel est envoyé 5 min avant si la présence est requise'">
                 <UInput id="gw-draw" v-model="form.drawAt" type="datetime-local" class="w-full" />
               </UFormField>
               </div>
@@ -838,7 +862,7 @@ async function save() {
 
             <!-- Communs à tous les types de giveaway -->
             <USeparator label="Pour tous les types de giveaway" :ui="{ label: 'text-xs text-muted' }" />
-              <UFormField v-if="giveaway" label="Gagnants" help="Autant que nécessaire, avec leur chance de gagner si elle est connue. Tous retirés : le giveaway est rouvert" class="max-w-sm">
+              <UFormField v-if="giveaway || pastMode" label="Gagnants" help="Autant que nécessaire, avec leur chance de gagner si elle est connue. Tous retirés : le giveaway est rouvert" class="max-w-sm">
                 <div class="flex flex-col gap-2">
                   <!-- Un gagnant par ligne : pseudo, chance de gagner, retrait -->
                   <div v-for="w in form.winners" :key="w.login" class="flex items-center gap-2">

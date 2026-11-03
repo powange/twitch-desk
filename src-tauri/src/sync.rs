@@ -410,7 +410,7 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                             require_follow, require_presence, require_discord, notes,
                             require_greeting, min_chat_minutes, follow_min_days, winners, winner_chances
                      FROM giveaways WHERE sync_id IS NOT NULL
-                         AND (?2 IS NULL OR sync_id = ?2) AND (?3 = 0 OR status IN ('open', 'paused') OR detected_at >= ?1)",
+                         AND (?2 IS NULL OR sync_id = ?2) AND (?3 = 0 OR status IN ('open', 'paused') OR detected_at >= ?1 OR manual = 1)",
                 )?
                 .query_map(params![since, only, windowed], |r| {
                     Ok((
@@ -583,7 +583,7 @@ fn count(conn: &Connection, collection: &str) -> rusqlite::Result<i64> {
         "gifts" => "SELECT COUNT(*) FROM gifts WHERE sync_id IS NOT NULL",
         "giveaways" => {
             return conn.query_row(
-                "SELECT COUNT(*) FROM giveaways WHERE sync_id IS NOT NULL AND (status IN ('open', 'paused') OR detected_at >= ?1)",
+                "SELECT COUNT(*) FROM giveaways WHERE sync_id IS NOT NULL AND (status IN ('open', 'paused') OR detected_at >= ?1 OR manual = 1)",
                 [giveaway_since()],
                 |r| r.get(0),
             )
