@@ -14,6 +14,16 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.40.4',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'new', text: 'Page Alertes : bouton « Filtres » à droite des giveaways passés, pour les filtrer par période, streamer, type, gagnant et cadeaux.' },
+      { kind: 'new', text: 'Journal du chat : recherche par mots dans les messages, mots trouvés surlignés.' },
+      { kind: 'new', text: 'Colonne Présence au tirage : une icône à côté signale qu\'une réponse automatique partira si tu gagnes ; au survol, le message et son délai.' },
+      { kind: 'fixed', text: 'Drops : un jeu dont la campagne n\'est pas confirmée par Twitch (déjà terminée, ou détail illisible) n\'est plus regardé.' }
+    ]
+  },
+  {
     version: '0.40.3',
     date: '2026-11-03',
     changes: [

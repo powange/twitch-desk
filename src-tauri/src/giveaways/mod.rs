@@ -82,6 +82,10 @@ pub struct GiveawayView {
     pub entries_view: Vec<GiveawayEntryView>,
     /// Un de nos comptes a gagné : son pseudo
     pub winner_ours: Option<String>,
+    /// Réponse écrite automatiquement si un de nos comptes gagne (présence requise), et son
+    /// délai en secondes (fiche du streamer)
+    pub win_reply: Option<String>,
+    pub win_reply_delay: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1254,6 +1258,17 @@ fn build_views(app: &App, accounts: &[(i64, String)]) -> Vec<GiveawayView> {
 }
 
 fn rows_to_views(app: &App, rows: Vec<GiveawayRow>, accounts: &[(i64, String)]) -> Vec<GiveawayView> {
+    // Réponses au gain des fiches de streamers : une lecture pour tous les giveaways
+    let replies: HashMap<String, (String, i64)> = app
+        .db
+        .streamers()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|s| {
+            let text = s.win_reply.filter(|t| !t.trim().is_empty())?;
+            Some((s.login, (text, s.win_reply_delay.unwrap_or(crate::db::WIN_REPLY_DELAY))))
+        })
+        .collect();
     rows.into_iter()
         .map(|row| {
             let login_of = |id: i64| accounts.iter().find(|(a, _)| *a == id).map(|(_, l)| l.clone()).unwrap_or_default();
@@ -1284,7 +1299,10 @@ fn rows_to_views(app: &App, rows: Vec<GiveawayRow>, accounts: &[(i64, String)]) 
                     }
                 }
             }
+            let reply = replies.get(&row.channel).filter(|_| row.details.require_presence == Some(true));
             GiveawayView {
+                win_reply: reply.map(|(t, _)| t.clone()),
+                win_reply_delay: reply.map(|(_, d)| *d),
                 evidence: row.evidence.as_deref().and_then(|e| serde_json::from_str(e).ok()),
                 entries_view,
                 winner_ours: row
@@ -1307,11 +1325,14 @@ pub struct PastPage {
     pub per_page: usize,
 }
 
-pub fn past_views(app: &App, page: usize, per_page: usize) -> PastPage {
+pub fn past_views(app: &App, filter: &crate::db::PastFilter, page: usize, per_page: usize) -> PastPage {
     let per_page = per_page.clamp(5, 100);
     let accounts: Vec<(i64, String)> =
         app.db.accounts().unwrap_or_default().into_iter().map(|a| (a.id, a.login.to_lowercase())).collect();
-    let (rows, total) = app.db.closed_giveaways(per_page, page.saturating_sub(1) * per_page).unwrap_or_default();
+    let (rows, total) = app.db.closed_giveaways(filter, per_page, page.saturating_sub(1) * per_page).unwrap_or_else(|e| {
+        tracing::warn!("giveaways passés : {e}");
+        (vec![], 0)
+    });
     PastPage { giveaways: rows_to_views(app, rows, &accounts), total, page: page.max(1), per_page }
 }
 

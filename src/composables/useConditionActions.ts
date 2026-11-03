@@ -11,6 +11,9 @@ export interface ConditionTarget {
   followMinDays: number | null
   requireGreeting: boolean | null
   minChatMinutes: number | null
+  // Réponse automatique au gain (giveaways avec présence requise), et son délai en secondes
+  winReply?: string | null
+  winReplyDelay?: number | null
 }
 
 interface FollowState { accountId: number, login: string, follows: boolean | null, followedAt: string | null }

@@ -43,6 +43,8 @@ const kinds = usePersisted('chatLog.kinds', [] as Kind[], {
 })
 const selectedCommands = ref<string[]>([])
 const author = ref('')
+// Mots-clés cherchés dans les messages (tous présents)
+const text = ref('')
 const loading = ref(false)
 const more = ref(false)
 const PAGE = 200
@@ -54,7 +56,7 @@ const commandItems = computed(() => commands.value.map(([c, n]) => ({ label: `${
 let loadSeq = 0
 // Filtres de la dernière lecture demandée
 let requestedKey = ''
-const filterKey = () => JSON.stringify([props.channel, kinds.value, selectedCommands.value, author.value.trim()])
+const filterKey = () => JSON.stringify([props.channel, kinds.value, selectedCommands.value, author.value.trim(), text.value.trim()])
 
 async function load(append = false) {
   if (!props.channel) return
@@ -71,6 +73,7 @@ async function load(append = false) {
       kinds: kinds.value,
       commands: selectedCommands.value,
       author: author.value.trim() || null,
+      text: text.value.trim() || null,
       beforeId: before
     })
     if (seq !== loadSeq) return
@@ -106,6 +109,7 @@ watch(open, (isOpen) => {
   loadSeq++
   selectedCommands.value = []
   author.value = ''
+  text.value = ''
   entries.value = []
   more.value = false
   // Filtres remis à zéro (types de message retenus gardés) : leurs observateurs ne relancent
@@ -120,10 +124,18 @@ function toggleCommand(c: string) {
 }
 // Recherche par auteur : relue une fois la frappe terminée
 let authorTimer: ReturnType<typeof setTimeout> | null = null
-watch(author, () => {
+watch([author, text], () => {
   if (authorTimer) clearTimeout(authorTimer)
   authorTimer = setTimeout(reloadIfChanged, 300)
 })
+// Message découpé pour surligner les mots-clés cherchés
+function messageParts(message: string): { text: string, hit: boolean }[] {
+  const words = text.value.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (!words.length) return [{ text: message, hit: false }]
+  const escaped = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  return message.split(new RegExp(`(${escaped.join('|')})`, 'gi')).filter(Boolean)
+    .map(part => ({ text: part, hit: words.includes(part.toLowerCase()) }))
+}
 
 // Gagnant non détecté : désigné à la main, sur le giveaway de la commande du message (sinon
 // le giveaway ouvert de la chaîne, sinon en pause, sinon le plus récent), modifiable avant de valider
@@ -199,7 +211,8 @@ function time(iso: string) {
             aria-label="Commandes"
           />
           <UButton v-if="selectedCommands.length" label="Toutes les commandes" size="xs" color="neutral" variant="ghost" icon="i-lucide-x" @click="selectedCommands = []" />
-          <UInput id="chat-log-author" v-model="author" icon="i-lucide-search" placeholder="Rechercher un auteur" class="w-48" />
+          <UInput id="chat-log-author" v-model="author" icon="i-lucide-user-search" placeholder="Rechercher un auteur" class="w-48" />
+          <UInput id="chat-log-text" v-model="text" icon="i-lucide-search" placeholder="Mots dans les messages" class="w-56" />
           <span class="flex-1" />
           <UButton icon="i-lucide-refresh-cw" color="neutral" variant="soft" :loading="loading" aria-label="Actualiser" title="Actualiser" @click="refresh" />
         </div>
@@ -232,7 +245,9 @@ function time(iso: string) {
                   >{{ e.command }}</button>
                   <span v-else class="text-muted">—</span>
                 </td>
-                <td class="px-3 py-1.5 break-words min-w-64">{{ e.message }}</td>
+                <td class="px-3 py-1.5 break-words min-w-64">
+                  <template v-for="(p, i) in messageParts(e.message)" :key="i"><mark v-if="p.hit" class="bg-primary/20 text-primary rounded px-0.5">{{ p.text }}</mark><template v-else>{{ p.text }}</template></template>
+                </td>
                 <td class="px-3 py-1.5">
                   <div class="flex justify-center">
                     <UButton

@@ -439,6 +439,18 @@ pub struct Account {
     pub drops_enabled: bool,
 }
 
+/// Filtres des giveaways passés (page Alertes) ; dates RFC 3339, bornes comprises
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PastFilter {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub channel: Option<String>,
+    pub kinds: Vec<String>,
+    pub winner: Option<String>,
+    pub gift_ids: Vec<i64>,
+}
+
 /// Informations propres à un streamer
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -1617,12 +1629,34 @@ impl Db {
         Ok(())
     }
 
-    /// Giveaways terminés, les plus récents d'abord, par page (`offset`, `limit`) ; et leur nombre
-    pub fn closed_giveaways(&self, limit: usize, offset: usize) -> DbResult<(Vec<GiveawayRow>, usize)> {
-        let total: i64 = self.conn().query_row("SELECT COUNT(*) FROM giveaways WHERE status = 'closed'", [], |r| r.get(0))?;
+    /// Giveaways terminés qui passent `filter`, les plus récents d'abord, par page (`offset`,
+    /// `limit`) ; et leur nombre
+    pub fn closed_giveaways(&self, filter: &PastFilter, limit: usize, offset: usize) -> DbResult<(Vec<GiveawayRow>, usize)> {
+        // Date d'un giveaway : celle du tirage, sinon de la détection
+        let condition = "status = 'closed'
+            AND (:from IS NULL OR julianday(COALESCE(drawn_at, detected_at)) >= julianday(:from))
+            AND (:to IS NULL OR julianday(COALESCE(drawn_at, detected_at)) <= julianday(:to))
+            AND (:channel IS NULL OR instr(channel, :channel) > 0)
+            AND (:kinds = '[]' OR kind IN (SELECT value FROM json_each(:kinds)))
+            AND (:winner IS NULL OR EXISTS (SELECT 1 FROM json_each(giveaways.winners) w WHERE instr(lower(w.value), :winner) > 0))
+            AND (:gifts = '[]' OR EXISTS (SELECT 1 FROM giveaway_gifts gg WHERE gg.giveaway_id = giveaways.id
+                                          AND gg.gift_id IN (SELECT value FROM json_each(:gifts))))";
+        let text = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_lowercase);
+        let (from, to, channel, winner) = (text(&filter.from), text(&filter.to), text(&filter.channel), text(&filter.winner));
+        let kinds = serde_json::to_string(&filter.kinds).expect("liste");
+        let gifts = serde_json::to_string(&filter.gift_ids).expect("liste");
+        let base = rusqlite::named_params! {
+            ":from": from.as_deref().map(str::to_uppercase), ":to": to.as_deref().map(str::to_uppercase), ":channel": channel,
+            ":kinds": kinds, ":winner": winner, ":gifts": gifts,
+        };
+        let total: i64 = self.conn().query_row(&format!("SELECT COUNT(*) FROM giveaways WHERE {condition}"), base, |r| r.get(0))?;
+        let mut paged: Vec<(&str, &dyn rusqlite::ToSql)> = base.to_vec();
+        let (limit, offset) = (limit as i64, offset as i64);
+        paged.push((":limit", &limit));
+        paged.push((":offset", &offset));
         let rows = self.select_giveaways(
-            "WHERE status = 'closed' ORDER BY COALESCE(drawn_at, detected_at) DESC, id DESC LIMIT ?1 OFFSET ?2",
-            [limit as i64, offset as i64],
+            &format!("WHERE {condition} ORDER BY COALESCE(drawn_at, detected_at) DESC, id DESC LIMIT :limit OFFSET :offset"),
+            paged.as_slice(),
         )?;
         Ok((rows, total as usize))
     }
@@ -2067,12 +2101,14 @@ impl Db {
 
     /// Messages d'une chaîne, les plus récents d'abord ; filtres facultatifs : types, commande,
     /// messages plus anciens que `before_id` (page suivante)
+    #[allow(clippy::too_many_arguments)] // un paramètre par filtre du journal
     pub fn chat_log(
         &self,
         channel: &str,
         kinds: &[String],
         commands: &[String],
         author: Option<&str>,
+        text: Option<&str>,
         before_id: Option<i64>,
         limit: usize,
     ) -> DbResult<Vec<ChatLogEntry>> {
@@ -2085,11 +2121,15 @@ impl Db {
                AND (?3 = '[]' OR command IN (SELECT value FROM json_each(?3)))
                AND (?4 IS NULL OR id < ?4)
                AND (?6 IS NULL OR instr(author, ?6) > 0)
+               AND NOT EXISTS (SELECT 1 FROM json_each(?7) w WHERE instr(lower(message), w.value) = 0)
              ORDER BY id DESC LIMIT ?5",
         )?;
         let author = author.map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty());
         let commands_json = serde_json::to_string(commands).expect("liste sérialisable");
-        let rows = stmt.query_map(params![channel, kinds_json, commands_json, before_id, limit as i64, author], |r| {
+        // Mots-clés : tous présents dans le message, sans tenir compte des majuscules
+        let words: Vec<String> = text.map(|t| t.to_lowercase().split_whitespace().map(str::to_owned).collect()).unwrap_or_default();
+        let words_json = serde_json::to_string(&words).expect("liste sérialisable");
+        let rows = stmt.query_map(params![channel, kinds_json, commands_json, before_id, limit as i64, author, words_json], |r| {
             Ok(ChatLogEntry {
                 id: r.get(0)?,
                 channel: r.get(1)?,
@@ -2647,12 +2687,16 @@ mod tests {
             e("winner", "streamelements", None, "Le gagnant est bob", "2026-11-01T10:00:03Z"),
         ])
         .unwrap();
-        assert_eq!(db.chat_log("lunarsea", &[], &[], None, None, 10).unwrap().len(), 4);
-        assert_eq!(db.chat_log("lunarsea", &["own".into(), "winner".into()], &[], None, None, 10).unwrap().len(), 2);
-        let joins = db.chat_log("lunarsea", &[], &["!join".into()], None, None, 10).unwrap();
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, None, None, 10).unwrap().len(), 4);
+        assert_eq!(db.chat_log("lunarsea", &["own".into(), "winner".into()], &[], None, None, None, 10).unwrap().len(), 2);
+        let joins = db.chat_log("lunarsea", &[], &["!join".into()], None, None, None, 10).unwrap();
         assert_eq!(joins.iter().map(|x| x.author.as_str()).collect::<Vec<_>>(), vec!["eve", "bob"]);
-        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some(joins[0].id), 10).unwrap().len(), 1);
-        assert_eq!(db.chat_log("lunarsea", &[], &[], Some(" EV "), None, 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, None, Some(joins[0].id), 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], Some(" EV "), None, None, 10).unwrap().len(), 1);
+        // Mots-clés : tous dans le message, sans tenir compte des majuscules
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some("GAGNANT bob"), None, 10).unwrap().len(), 1);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some("gagnant eve"), None, 10).unwrap().len(), 0);
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some("  "), None, 10).unwrap().len(), 4);
         assert_eq!(db.chat_log_commands("lunarsea").unwrap(), vec![("!join".to_owned(), 2)]);
         assert_eq!(db.prune_chat_log("2026-11-01T10:00:02Z").unwrap(), 2);
 
@@ -2763,6 +2807,17 @@ mod tests {
         let later = db.insert_giveaway(&new("2026-11-03T10:40:00Z")).unwrap();
         assert!(db.recent_drawn_giveaway("lunarsea", "2026-11-03T10:20:00Z").unwrap().is_none());
         db.delete_giveaway(later).unwrap();
+        // Giveaways passés filtrés : date (tirage, sinon détection), chaîne, type, gagnant, cadeau
+        let all = PastFilter::default();
+        assert_eq!(db.closed_giveaways(&all, 10, 0).unwrap().1, 1);
+        let by = |f: PastFilter| db.closed_giveaways(&f, 10, 0).unwrap().1;
+        assert_eq!(by(PastFilter { winner: Some("BO".into()), ..all.clone() }), 1);
+        assert_eq!(by(PastFilter { winner: Some("zed".into()), ..all.clone() }), 0);
+        assert_eq!(by(PastFilter { channel: Some("lunar".into()), kinds: vec!["command".into()], ..all.clone() }), 1);
+        assert_eq!(by(PastFilter { kinds: vec!["streamelements".into()], ..all.clone() }), 0);
+        assert_eq!(by(PastFilter { from: Some("2026-11-03T10:00:00.000Z".into()), to: Some("2026-11-03T11:00:00Z".into()), ..all.clone() }), 1);
+        assert_eq!(by(PastFilter { from: Some("2026-11-04T00:00:00Z".into()), ..all.clone() }), 0);
+        assert_eq!(by(PastFilter { gift_ids: vec![999], ..all.clone() }), 0);
         // Formulaire : liste remplacée (premier gagnant changé : sa chance oubliée), vide : rouvert
         assert_eq!(db.giveaway(g).unwrap().unwrap().winner_chances.get("alice").map(String::as_str), Some("2 %"));
         assert!(db.set_giveaway_winners(g, &[("bob".into(), None), ("carol".into(), Some("12%".into()))], "2026-11-03T11:00:00Z").unwrap());

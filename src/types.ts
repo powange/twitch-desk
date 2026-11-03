@@ -350,6 +350,9 @@ export interface GiveawayView extends GiveawayDetails {
   // Comptes inscrits ; tickets : giveaway StreamElements (relevés sur StreamElements)
   entriesView: { accountId: number, login: string, at: string, auto: boolean, tickets: number | null }[]
   winnerOurs: string | null
+  // Réponse écrite automatiquement si un de nos comptes gagne (présence requise), délai en s
+  winReply: string | null
+  winReplyDelay: number | null
 }
 
 export interface MentionView {

@@ -450,10 +450,12 @@ pub async fn get_chat_log(
     kinds: Vec<String>,
     commands: Vec<String>,
     author: Option<String>,
+    text: Option<String>,
     before_id: Option<i64>,
 ) -> CmdResult<Vec<crate::db::ChatLogEntry>> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
-    blocking(&app, move |app| app.db.chat_log(&channel, &kinds, &commands, author.as_deref(), before_id, 200).map_err(db_err)).await?
+    blocking(&app, move |app| app.db.chat_log(&channel, &kinds, &commands, author.as_deref(), text.as_deref(), before_id, 200).map_err(db_err))
+        .await?
 }
 
 /// Gagnant désigné à la main (tirage non détecté) : giveaway choisi (`giveaway_id`, facultatif),
@@ -1220,8 +1222,14 @@ pub fn delete_gift_group(app: AppState, id: i64) -> CmdResult<()> {
 
 /// Giveaways passés (terminés), page par page (première page : 1)
 #[tauri::command]
-pub async fn past_giveaways(app: AppState<'_>, page: usize, per_page: usize) -> CmdResult<crate::giveaways::PastPage> {
-    blocking(&app, move |app| crate::giveaways::past_views(app, page, per_page)).await
+pub async fn past_giveaways(
+    app: AppState<'_>,
+    page: usize,
+    per_page: usize,
+    filter: Option<crate::db::PastFilter>,
+) -> CmdResult<crate::giveaways::PastPage> {
+    let filter = filter.unwrap_or_default();
+    blocking(&app, move |app| crate::giveaways::past_views(app, &filter, page, per_page)).await
 }
 
 #[tauri::command]

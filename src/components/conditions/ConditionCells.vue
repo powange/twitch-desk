@@ -13,11 +13,23 @@ defineProps<{ target: ConditionTarget, actions: ConditionActions }>()
       <UTooltip v-if="target.requirePresence === null" text="Présence au tirage : on ne sait pas">
         <span class="text-muted rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Présence au tirage : on ne sait pas">?</span>
       </UTooltip>
-      <UTooltip v-else-if="target.requirePresence" text="Présence requise au moment du tirage">
-        <span class="inline-flex rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Présence requise au moment du tirage">
-          <UIcon name="i-lucide-user-check" class="size-4 text-emerald-600 dark:text-emerald-400 block" />
-        </span>
-      </UTooltip>
+      <template v-else-if="target.requirePresence">
+        <UTooltip text="Présence requise au moment du tirage">
+          <span class="inline-flex rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Présence requise au moment du tirage">
+            <UIcon name="i-lucide-user-check" class="size-4 text-emerald-600 dark:text-emerald-400 block" />
+          </span>
+        </UTooltip>
+        <!-- Réponse écrite automatiquement si un de tes comptes est désigné gagnant -->
+        <UTooltip
+          v-if="target.winReply"
+          :text="`Si tu gagnes, réponse dans le chat après ${target.winReplyDelay ?? 10} s : « ${target.winReply} »`"
+          :ui="{ content: 'max-w-sm h-auto' }"
+        >
+          <span class="inline-flex ml-1 rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" :aria-label="`Réponse automatique si tu gagnes : ${target.winReply}`">
+            <UIcon name="i-lucide-message-circle-reply" class="size-4 text-primary block" />
+          </span>
+        </UTooltip>
+      </template>
     </div>
   </td>
   <td class="px-2 py-2">

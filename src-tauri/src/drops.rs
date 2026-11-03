@@ -33,9 +33,6 @@ const NO_PROGRESS_PAUSE: Duration = Duration::from_secs(60 * 60);
 // streamer peut le garder après la fin d'une campagne) : Twitch doit confirmer une
 // campagne ouverte sur la chaîne (AvailableDrops). Vérification gardée 10 min.
 const VERIFY_EVERY: Duration = Duration::from_secs(10 * 60);
-// Secours si Twitch refuse cette vérification : plusieurs streams avec le tag
-// (même règle que le site Giveaway Twitch)
-const MIN_STREAMS_WITHOUT_CAMPAIGN: usize = 3;
 /// Campagne vue sur une chaîne mais absente de l'inventaire (terminée, ou pas commencée) : gardée
 /// ce temps, puis relue
 const CHANNEL_CAMPAIGN_KEEP: Duration = Duration::from_secs(6 * 3600);
@@ -856,13 +853,13 @@ impl DropsEngine {
             // Pas de campagne connue : Twitch confirme-t-il une campagne sur la chaîne candidate ?
             if !known_campaign {
                 let candidate = usable[0].clone();
-                let total = r.streams.len();
                 let stale = r.verified.is_none_or(|(_, at)| now.duration_since(at) >= VERIFY_EVERY);
                 if stale && !verified_once {
                     verified_once = true;
+                    // Regardée seulement si Twitch confirme une campagne active de ce jeu sur la chaîne,
+                    // avec des drops encore à obtenir : sans cette preuve (détail illisible, information
+                    // refusée, erreur), rien n'est regardé ; nouvel essai VERIFY_EVERY plus tard
                     let confirmed = match gql.available_drops(&candidate.channel_id).await {
-                        // Campagne proposée par la chaîne mais absente de nos campagnes (une campagne
-                        // terminée disparaît de la liste de Twitch) : ses drops sont-ils déjà obtenus ?
                         Ok(Some(list)) => {
                             let ids: Vec<String> = list.iter().filter(|(_, game)| *game == g.game_id).map(|(id, _)| id.clone()).collect();
                             if ids.is_empty() {
@@ -870,19 +867,19 @@ impl DropsEngine {
                             } else {
                                 let found = self.campaigns_on_channel(gql, &account.user_id, &ids).await;
                                 if found.is_empty() {
-                                    // Détail illisible : secours sur le nombre de streams avec le tag
-                                    total >= MIN_STREAMS_WITHOUT_CAMPAIGN
-                                } else {
-                                    found.iter().any(|c| c.active() && c.unfinished())
+                                    tracing::info!("drops : {} sur {} : détail de la campagne illisible, pas de visionnage", g.name, candidate.login);
                                 }
+                                found.iter().any(|c| c.active() && c.unfinished())
                             }
                         }
-                        // Information refusée : secours sur le nombre de streams avec le tag
-                        Ok(None) => total >= MIN_STREAMS_WITHOUT_CAMPAIGN,
+                        Ok(None) => {
+                            tracing::info!("drops : {} sur {} : campagnes de la chaîne refusées par Twitch, pas de visionnage", g.name, candidate.login);
+                            false
+                        }
                         Err(TwitchError::Unauthorized) => return Err(TwitchError::Unauthorized),
                         Err(e) => {
                             tracing::warn!("drops : vérification de {} impossible ({e})", candidate.login);
-                            total >= MIN_STREAMS_WITHOUT_CAMPAIGN
+                            false
                         }
                     };
                     tracing::info!("drops : {} sur {} : campagne {}", g.name, candidate.login, if confirmed { "confirmée" } else { "absente" });

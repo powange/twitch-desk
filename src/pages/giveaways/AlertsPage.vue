@@ -7,13 +7,13 @@ import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
 import { useWatchStream } from '../../utils/viewer'
 import { channelUrl, formatNumber, timeAgo } from '../../utils/format'
-import type { GiveawayView, ParticipationResult } from '../../types'
+import type { GiveawayKind, GiveawayView, ParticipationResult } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayConditions from '../../components/GiveawayConditions.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
-import { GIVEAWAY_KIND, formatDrawAt } from '../../utils/giveaways'
+import { GIVEAWAY_KIND, GIVEAWAY_KIND_ITEMS, formatDrawAt } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
 import { useGiftPreview } from '../../composables/useGiftPreview'
 import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
@@ -41,7 +41,7 @@ const tables = computed(() => [
     key: 'past',
     title: 'Giveaways passés',
     list: past.value?.giveaways ?? [],
-    empty: 'Aucun giveaway terminé pour l\'instant.'
+    empty: pastFilterCount.value ? 'Aucun giveaway passé ne correspond aux filtres.' : 'Aucun giveaway terminé pour l\'instant.'
   }
 ])
 
@@ -51,10 +51,41 @@ const pastPage = ref(1)
 const past = ref<{ giveaways: GiveawayView[], total: number } | null>(null)
 let pastTimer: ReturnType<typeof setTimeout> | null = null
 let pastSeq = 0
+// Filtres des giveaways passés (fenêtre « Filtres ») : période (date du tirage, sinon de la
+// détection), chaîne, types, gagnant, cadeaux ; appliqués par la base, sur tous les terminés
+const pastFilterOpen = ref(false)
+const emptyPastFilter = () => ({ from: '', to: '', channel: '', kinds: [] as GiveawayKind[], winner: '', giftIds: [] as number[] })
+const pastFilter = ref(emptyPastFilter())
+const pastFilterCount = computed(() => {
+  const f = pastFilter.value
+  return [f.from || f.to, f.channel.trim(), f.kinds.length, f.winner.trim(), f.giftIds.length].filter(Boolean).length
+})
+const giftFilterItems = computed(() => catalogGifts.value.map(g => ({ label: g.title, value: g.id })))
+// Dates du formulaire (jour local) → bornes RFC 3339, journées entières comprises
+function pastFilterArgs() {
+  const f = pastFilter.value
+  return {
+    from: f.from ? new Date(`${f.from}T00:00:00`).toISOString() : null,
+    to: f.to ? new Date(`${f.to}T23:59:59.999`).toISOString() : null,
+    channel: f.channel.trim() || null,
+    kinds: f.kinds,
+    winner: f.winner.trim().replace(/^@/, '') || null,
+    giftIds: f.giftIds
+  }
+}
+let pastFilterTimer: ReturnType<typeof setTimeout> | null = null
+watch(pastFilter, () => {
+  if (pastFilterTimer) clearTimeout(pastFilterTimer)
+  pastFilterTimer = setTimeout(() => {
+    if (pastPage.value !== 1) pastPage.value = 1
+    else void loadPast()
+  }, 300)
+}, { deep: true })
+
 async function loadPast() {
   const seq = ++pastSeq
   try {
-    const result = await invoke<{ giveaways: GiveawayView[], total: number }>('past_giveaways', { page: pastPage.value, perPage: PAST_PER_PAGE })
+    const result = await invoke<{ giveaways: GiveawayView[], total: number }>('past_giveaways', { page: pastPage.value, perPage: PAST_PER_PAGE, filter: pastFilterArgs() })
     if (seq !== pastSeq) return
     past.value = result
     // Page devenue vide (giveaways supprimés ou rouverts) : dernière page existante
@@ -69,7 +100,10 @@ watch(giveaways, () => {
   if (pastTimer) clearTimeout(pastTimer)
   pastTimer = setTimeout(() => { void loadPast() }, 300)
 }, { immediate: true })
-onBeforeUnmount(() => { if (pastTimer) clearTimeout(pastTimer) })
+onBeforeUnmount(() => {
+  if (pastTimer) clearTimeout(pastTimer)
+  if (pastFilterTimer) clearTimeout(pastFilterTimer)
+})
 // Live en cours d'une chaîne surveillée (catégorie, spectateurs), indexé une fois par mise à jour
 const liveByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, c.live])))
 const liveOf = (channel: string) => liveByLogin.value.get(channel) ?? null
@@ -222,7 +256,7 @@ function evidenceText(g: GiveawayView) {
   return `${e.count} messages sur les ${e.window} derniers, par ${e.users.length} pseudos différents : ${e.users.slice(0, 8).join(', ')}${e.users.length > 8 ? '…' : ''}`
 }
 
-const { byId: giftById } = useGiftCatalog()
+const { byId: giftById, gifts: catalogGifts } = useGiftCatalog()
 const { openGift } = useGiftPreview()
 
 // Formulaire : null = nouveau giveaway
@@ -397,6 +431,18 @@ function share(g: GiveawayView) {
           :sibling-count="1"
           show-edges
         />
+        <template v-if="group.key === 'past'">
+          <span class="flex-1" />
+          <UButton v-if="pastFilterCount" label="Effacer les filtres" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" @click="pastFilter = emptyPastFilter()" />
+          <UButton
+            :label="pastFilterCount ? `Filtres (${pastFilterCount})` : 'Filtres'"
+            icon="i-lucide-list-filter"
+            size="xs"
+            :color="pastFilterCount ? 'primary' : 'neutral'"
+            variant="soft"
+            @click="pastFilterOpen = true"
+          />
+        </template>
       </div>
       <div class="border border-default rounded-lg overflow-x-auto">
         <table class="w-full text-sm">
@@ -555,6 +601,47 @@ function share(g: GiveawayView) {
 
     <GiveawayFormModal v-model:open="formOpen" :giveaway="editing" />
     <ChatLogModal v-model:open="logOpen" :channel="logChannel" />
+
+    <UModal v-model:open="pastFilterOpen" title="Filtrer les giveaways passés" description="Appliqués tout de suite, sur tous les giveaways terminés">
+      <template #body>
+        <div class="flex flex-col gap-4">
+          <div class="grid grid-cols-2 gap-4">
+            <UFormField label="Du" help="Date du tirage, sinon de la détection">
+              <UInput id="past-from" v-model="pastFilter.from" type="date" class="w-full" />
+            </UFormField>
+            <UFormField label="Au">
+              <UInput id="past-to" v-model="pastFilter.to" type="date" class="w-full" />
+            </UFormField>
+          </div>
+          <UFormField label="Streamer">
+            <UInput id="past-channel" v-model="pastFilter.channel" icon="i-lucide-tv" placeholder="Nom de la chaîne (ou une partie)" class="w-full" />
+          </UFormField>
+          <UFormField label="Type de giveaway">
+            <USelect v-model="pastFilter.kinds" :items="GIVEAWAY_KIND_ITEMS" multiple placeholder="Tous les types" class="w-full" />
+          </UFormField>
+          <UFormField label="Gagnant">
+            <UInput id="past-winner" v-model="pastFilter.winner" icon="i-lucide-trophy" placeholder="Pseudo du gagnant (ou une partie)" class="w-full" />
+          </UFormField>
+          <UFormField label="Cadeaux" help="Giveaways avec au moins un de ces cadeaux">
+            <USelectMenu
+              v-model="pastFilter.giftIds"
+              :items="giftFilterItems"
+              value-key="value"
+              multiple
+              :search-input="{ placeholder: 'Rechercher un cadeau' }"
+              placeholder="Tous les cadeaux"
+              class="w-full"
+            />
+          </UFormField>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-between gap-2 w-full">
+          <UButton label="Effacer les filtres" color="neutral" variant="ghost" :disabled="!pastFilterCount" @click="pastFilter = emptyPastFilter()" />
+          <UButton :label="`Voir ${past?.total ?? 0} giveaway(s)`" @click="pastFilterOpen = false" />
+        </div>
+      </template>
+    </UModal>
 
     <UModal :open="toBuy !== null" title="Acheter la récompense ?" @update:open="v => { if (!v) toBuy = null }">
       <template #body>

@@ -2413,7 +2413,7 @@ mod tests {
         let row = db.giveaways(10).unwrap().into_iter().find(|g| g.id == giveaway).unwrap();
         let entry = |login: &str| GiveawayEntryView { account_id: 1, login: login.into(), at: String::new(), auto: false, tickets: None };
         let view = GiveawaysView {
-            giveaways: vec![GiveawayView { row, evidence: None, entries_view: vec![entry("bob"), entry("alice"), entry("bob")], winner_ours: None }],
+            giveaways: vec![GiveawayView { row, evidence: None, entries_view: vec![entry("bob"), entry("alice"), entry("bob")], winner_ours: None, win_reply: None, win_reply_delay: None }],
             channels: vec![GiveawayChannelView {
                 id: 1,
                 login: "lunarsea".into(),
