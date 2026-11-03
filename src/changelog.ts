@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.43.0',
+    date: '2026-11-03',
+    title: 'Mise à jour du PC depuis le téléphone',
+    changes: [
+      { kind: 'new', text: 'Web app du téléphone : « Mise à jour du PC » dans le menu ⋮ en haut à droite. Elle affiche la version installée sur le PC, vérifie s\'il y en a une nouvelle et peut l\'installer : l\'application du PC se met à jour puis redémarre seule. Le PC doit être allumé avec l\'application ouverte.' }
+    ]
+  },
+  {
     version: '0.42.0',
     date: '2026-11-03',
     title: 'Drops sur le téléphone',

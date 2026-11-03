@@ -113,6 +113,8 @@ pub struct SyncHandle {
     phone_alert: tokio::sync::Notify,
     /// Demande d'un téléphone annoncée par le serveur : à lire tout de suite
     phone_action: tokio::sync::Notify,
+    /// Dernière vérification des mises à jour demandée par un téléphone (`{available, checkedAt}`)
+    pc_update: Mutex<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1785,6 +1787,10 @@ fn spawn_state(app: Arc<App>) {
             state["streamelements"] = se;
             state["drops"] = phone_drops(&views);
             state["actionsAllowed"] = json!(phone_actions_allowed(&app));
+            state["pc"] = json!({
+                "version": app.handle().package_info().version.to_string(),
+                "update": app.sync.pc_update.lock().unwrap().clone(),
+            });
             let digest = hash(&state);
             if last.as_ref().is_some_and(|(url, h, at)| *url == cfg.url && *h == digest && at.elapsed() < STATE_REFRESH) {
                 continue;
@@ -1823,13 +1829,54 @@ struct PhoneAction {
     payload: Value,
 }
 
-/// Exécute une demande d'un téléphone ; renvoie le message du résultat
-async fn run_phone_action(app: &Arc<App>, action: &PhoneAction) -> Result<String, String> {
+/// Mise à jour vérifiée pour un téléphone : résultat gardé pour l'état publié
+async fn check_update(app: &Arc<App>) -> Result<Option<tauri_plugin_updater::Update>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let found = match app.handle().updater() {
+        Ok(updater) => updater.check().await.map_err(|e| format!("Vérification impossible : {e}")),
+        Err(e) => Err(format!("Vérification impossible : {e}")),
+    };
+    let available = found.as_ref().ok().and_then(|u| u.as_ref().map(|u| u.version.clone()));
+    *app.sync.pc_update.lock().unwrap() =
+        json!({ "available": available, "checkedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true) });
+    app.sync.state_changed();
+    found
+}
+
+/// Installe la mise à jour puis redémarre l'application (l'installateur Windows la ferme lui-même)
+async fn install_update(app: &Arc<App>, update: tauri_plugin_updater::Update) {
+    crate::window_state_for_update(app.handle().clone(), Some(true));
+    match update.download_and_install(|_, _| {}, || {}).await {
+        Ok(()) => app.handle().restart(),
+        Err(e) => {
+            crate::window_state_for_update(app.handle().clone(), Some(false));
+            app.log("téléphone", crate::app::EventKind::Error, format!("Mise à jour demandée par le téléphone : {e}"));
+        }
+    }
+}
+
+/// Exécute une demande d'un téléphone ; renvoie le message du résultat, et la mise à jour à
+/// installer une fois le résultat rendu (l'application redémarre ensuite)
+async fn run_phone_action(app: &Arc<App>, action: &PhoneAction) -> Result<(String, Option<tauri_plugin_updater::Update>), String> {
+    let current = app.handle().package_info().version.to_string();
+    match action.kind.as_str() {
+        "update_check" => {
+            return Ok(match check_update(app).await? {
+                Some(u) => (format!("Version {} disponible (installée : {current})", u.version), None),
+                None => (format!("L'application du PC est à jour (version {current})"), None),
+            });
+        }
+        "update_install" => {
+            return match check_update(app).await? {
+                Some(u) => Ok((format!("Installation de la version {} : l'application du PC va redémarrer", u.version), Some(u))),
+                None => Err(format!("Aucune mise à jour à installer : l'application du PC est à jour (version {current})")),
+            };
+        }
+        "se_buy" => {}
+        _ => return Err("Action inconnue de cette version de l'application".into()),
+    }
     if !phone_actions_allowed(app) {
         return Err("Achats depuis le téléphone désactivés sur le PC (Paramètres → Synchronisation)".into());
-    }
-    if action.kind != "se_buy" {
-        return Err("Action inconnue de cette version de l'application".into());
     }
     let p = &action.payload;
     let (Some(login), Some(channel), Some(giveaway), Some(tickets)) =
@@ -1852,7 +1899,7 @@ async fn run_phone_action(app: &Arc<App>, action: &PhoneAction) -> Result<String
         .find(|c| c.in_se && c.login.eq_ignore_ascii_case(&channel))
         .ok_or_else(|| format!("{channel} n'est pas dans la page StreamElements de {login}"))?;
     let total = crate::commands::buy_tickets(app, account.id, ch.id, &giveaway, tickets).await?;
-    Ok(format!("{tickets} ticket(s) acheté(s) sur {channel} pour {login} ({total} au total)"))
+    Ok((format!("{tickets} ticket(s) acheté(s) sur {channel} pour {login} ({total} au total)"), None))
 }
 
 /// Demandes des téléphones (serveur 0.8 et plus) : lues à chaque annonce du serveur et toutes les
@@ -1882,16 +1929,19 @@ fn spawn_phone_actions(app: Arc<App>) {
                 }
             };
             for action in list {
-                let outcome = run_phone_action(&app, &action).await;
-                let (ok, message) = match &outcome {
-                    Ok(m) => (true, m.clone()),
-                    Err(e) => (false, e.clone()),
+                let (ok, message, update) = match run_phone_action(&app, &action).await {
+                    Ok((m, update)) => (true, m, update),
+                    Err(e) => (false, e, None),
                 };
                 let kind = if ok { crate::app::EventKind::Info } else { crate::app::EventKind::Error };
                 app.log("téléphone", kind, format!("Demande du téléphone : {message}"));
                 let req = app.http.put(format!("{}/api/v1/instances/{id}/actions/{}", cfg.url, action.id)).json(&json!({ "ok": ok, "message": message }));
                 if let Err(e) = send(req, &cfg.code).await {
                     tracing::debug!("résultat d'une demande du téléphone : {e}");
+                }
+                // Résultat rendu : installation, puis redémarrage
+                if let Some(update) = update {
+                    install_update(&app, update).await;
                 }
             }
         }

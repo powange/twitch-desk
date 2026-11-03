@@ -54,6 +54,11 @@ const SHOW_AFTER_UPDATE: &str = "show_after_update";
 /// elle revient affichée, même avec « Démarrer réduit »
 #[tauri::command]
 fn save_window_state(app: tauri::AppHandle, updating: Option<bool>) {
+    window_state_for_update(app, updating);
+}
+
+/// Comme `save_window_state`, pour une mise à jour lancée côté Rust (demandée par un téléphone)
+pub(crate) fn window_state_for_update(app: tauri::AppHandle, updating: Option<bool>) {
     if updating == Some(false) {
         // Mise à jour échouée : démarrage habituel
         if let Some(state) = app.try_state::<Arc<app::App>>() {
