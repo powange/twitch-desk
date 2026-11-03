@@ -50,6 +50,9 @@ function toLocalInput(iso: string | null): string {
 // Identifiant StreamElements lu dans le lien (…/giveaway/<id>) : giveaway suivi par l'application
 const seGiveawayId = computed(() => /\/giveaway\/([0-9a-f]+)\/?$/i.exec(form.value.url.trim())?.[1] ?? null)
 
+// Page StreamElements publique du streamer (ses giveaways, sa boutique)
+const seStreamerUrl = computed(() => `https://streamelements.com/${encodeURIComponent(form.value.channel.trim().replace(/^@/, '').toLowerCase())}`)
+
 // Giveaway terminé : rouvert à l'enregistrement (gagnant retiré)
 const reopen = ref(false)
 const closed = computed(() => props.giveaway?.status === 'closed')
@@ -673,6 +676,14 @@ async function save() {
               </UFormField>
             </div>
 
+            <!-- Page StreamElements du streamer : ses giveaways, pour retrouver le lien du giveaway -->
+            <div v-if="form.kind === 'streamelements' && form.channel.trim()" class="flex items-center gap-2 text-sm">
+              <UIcon name="i-lucide-globe" class="size-4 text-muted shrink-0" />
+              <span class="text-muted">Page StreamElements de {{ form.channel.trim() }} :</span>
+              <button type="button" class="text-primary font-medium hover:underline inline-flex items-center gap-1 truncate" @click="openExternal(seStreamerUrl)">
+                {{ seStreamerUrl.replace('https://', '') }}<UIcon name="i-lucide-external-link" class="size-3.5 shrink-0" />
+              </button>
+            </div>
             <div v-if="form.kind === 'streamelements'" class="grid grid-cols-2 gap-4">
               <UFormField
                 label="Lien du giveaway StreamElements"

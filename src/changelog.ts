@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.39.3',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'improved', text: 'Fiche d\'un giveaway StreamElements : lien vers la page StreamElements du streamer, pour retrouver facilement le lien de son giveaway.' }
+    ]
+  },
+  {
     version: '0.39.2',
     date: '2026-11-03',
     changes: [
