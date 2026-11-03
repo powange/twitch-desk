@@ -36,6 +36,9 @@ const VERIFY_EVERY: Duration = Duration::from_secs(10 * 60);
 // Secours si Twitch refuse cette vérification : plusieurs streams avec le tag
 // (même règle que le site Giveaway Twitch)
 const MIN_STREAMS_WITHOUT_CAMPAIGN: usize = 3;
+/// Campagne vue sur une chaîne mais absente de l'inventaire (terminée, ou pas commencée) : gardée
+/// ce temps, puis relue
+const CHANNEL_CAMPAIGN_KEEP: Duration = Duration::from_secs(6 * 3600);
 // Détail d'une campagne (drops, chaînes imposées) : il change peu, gardé 1 h
 const DETAILS_TTL: Duration = Duration::from_secs(3600);
 // Progression d'un drop inconnu : relecture forcée de l'inventaire au plus toutes les 10 min
@@ -626,6 +629,10 @@ pub struct DropsEngine {
     failed: HashMap<String, Instant>,
     claim_attempts: HashMap<String, Instant>,
     error: Option<String>,
+    /// Campagnes vues sur une chaîne et absentes de l'inventaire (une campagne terminée en
+    /// disparaît) : détail brut et date de lecture, gardés d'une relecture de l'inventaire à
+    /// l'autre (sinon une campagne déjà obtenue serait de nouveau inconnue, donc regardée)
+    channel_campaigns: HashMap<String, (Value, Instant)>,
 }
 
 impl DropsEngine {
@@ -718,14 +725,16 @@ impl DropsEngine {
     async fn campaigns_on_channel(&mut self, gql: &Gql, user_id: &str, ids: &[String]) -> Vec<Campaign> {
         let mut found = vec![];
         for (id, res) in ids.iter().zip(gql.drop_campaign_details(user_id, ids).await) {
-            let parsed = match res {
-                Ok(d) => d.pointer("/user/dropCampaign").filter(|c| !c.is_null()).and_then(|c| parse_campaign(c, &self.claimed)),
+            let raw = match res {
+                Ok(d) => d.pointer("/user/dropCampaign").filter(|c| !c.is_null()).cloned(),
                 Err(e) => {
                     tracing::warn!("drops : détail de la campagne {id} indisponible ({e})");
                     None
                 }
             };
-            if let Some(c) = parsed {
+            let Some(raw) = raw else { continue };
+            if let Some(c) = parse_campaign(&raw, &self.claimed) {
+                self.channel_campaigns.insert(c.id.clone(), (raw, Instant::now()));
                 if !self.campaigns.iter().any(|x| x.id == c.id) {
                     self.campaigns.push(c.clone());
                 }
@@ -733,6 +742,21 @@ impl DropsEngine {
             }
         }
         found
+    }
+
+    /// Campagnes vues sur les chaînes et absentes de l'inventaire relu : ajoutées de nouveau (avec
+    /// les récompenses déjà obtenues à jour) tant qu'elles sont récentes
+    fn keep_channel_campaigns(&mut self) {
+        self.channel_campaigns.retain(|_, (_, at)| at.elapsed() < CHANNEL_CAMPAIGN_KEEP);
+        for (id, (raw, _)) in &self.channel_campaigns {
+            if self.campaigns.iter().any(|c| c.id == *id) {
+                continue;
+            }
+            if let Some(c) = parse_campaign(raw, &self.claimed) {
+                self.campaigns.push(c);
+            }
+        }
+        self.campaigns.sort_by(|a, b| a.ends_at.cmp(&b.ends_at));
     }
 
     fn campaign_for(&self, game_id: &str) -> Option<&Campaign> {
@@ -760,6 +784,7 @@ impl DropsEngine {
                     self.campaigns = snapshot.campaigns;
                     self.raw = snapshot.raw;
                     self.claimed = snapshot.claimed;
+                    self.keep_channel_campaigns();
                     // Une seule lecture de fond à la fois ; les campagnes restantes attendent la
                     // relecture suivante de l'inventaire
                     if self.details_task.is_none() && !snapshot.background.is_empty() {
@@ -844,7 +869,12 @@ impl DropsEngine {
                                 false
                             } else {
                                 let found = self.campaigns_on_channel(gql, &account.user_id, &ids).await;
-                                found.is_empty() || found.iter().any(|c| c.active() && c.unfinished())
+                                if found.is_empty() {
+                                    // Détail illisible : secours sur le nombre de streams avec le tag
+                                    total >= MIN_STREAMS_WITHOUT_CAMPAIGN
+                                } else {
+                                    found.iter().any(|c| c.active() && c.unfinished())
+                                }
                             }
                         }
                         // Information refusée : secours sur le nombre de streams avec le tag
@@ -1095,6 +1125,29 @@ mod tests {
                   "preconditionDrops": [{ "id": "d1" }] }
             ]
         })
+    }
+
+    #[test]
+    fn channel_campaigns_survive_inventory_reads() {
+        // Campagne finie : absente de l'inventaire, vue sur la chaîne (récompenses obtenues)
+        let mut done = sample();
+        done["timeBasedDrops"][0]["self"] = Value::Null;
+        let mut engine = DropsEngine::default();
+        engine.channel_campaigns.insert("c1".into(), (done, Instant::now()));
+        engine.claimed = ["b1".to_owned(), "b2".to_owned()].into();
+        // Relecture de l'inventaire : la campagne revient, terminée, donc plus regardée
+        engine.campaigns = vec![];
+        engine.keep_channel_campaigns();
+        let c = engine.campaign_for("263490").unwrap();
+        assert!(c.active() && !c.unfinished());
+        // Déjà dans l'inventaire : pas de doublon
+        engine.keep_channel_campaigns();
+        assert_eq!(engine.campaigns.len(), 1);
+        // Trop ancienne : oubliée, relue sur la chaîne au besoin
+        engine.channel_campaigns.get_mut("c1").unwrap().1 = Instant::now() - CHANNEL_CAMPAIGN_KEEP;
+        engine.campaigns = vec![];
+        engine.keep_channel_campaigns();
+        assert!(engine.campaign_for("263490").is_none());
     }
 
     #[test]
