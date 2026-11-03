@@ -237,6 +237,17 @@ pub fn parse_bot_message(user: &str, message: &str, privileged: bool) -> Vec<Bot
     events
 }
 
+/// Événements d'un message de bot : son format, puis, s'il a le badge modérateur (ou est le
+/// streamer), les formulations générales quand son format n'annonce pas de gagnant
+/// (« 🎁 Le gagnant du tirage est nervi253. » écrit par WizeBot)
+pub fn bot_events(user: &str, message: &str, privileged: bool) -> Vec<BotEvent> {
+    let mut events = parse_bot_message(user, message, privileged);
+    if privileged && !events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) {
+        events.extend(moderator_winner(&user.to_lowercase(), message));
+    }
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +379,18 @@ mod tests {
             vec![win("nightbot", "nickname1334", None)]
         );
         assert_eq!(parse_bot_message("nightbot", "Congratulations @Foo, you won the giveaway", false), vec![win("nightbot", "Foo", None)]);
+    }
+
+    #[test]
+    fn moderator_bot_with_general_phrasing() {
+        // WizeBot modérateur : son format, ou les formulations générales
+        assert_eq!(bot_events("WizeBot", "🎁 Le gagnant du tirage est nervi253.", true), vec![win("wizebot", "nervi253", None)]);
+        assert_eq!(
+            bot_events("wizebot", "Le tirage au sort tombe sur le viewer @pseudo !", true),
+            vec![win("wizebot", "pseudo", None)]
+        );
+        // Sans badge : son format seulement
+        assert!(bot_events("wizebot", "🎁 Le gagnant du tirage est nervi253.", false).is_empty());
     }
 
     #[test]

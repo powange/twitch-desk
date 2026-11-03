@@ -796,7 +796,7 @@ impl Monitor {
             self.own_participation(channel, account, text);
             "own"
         } else if (bots::is_bot_like(&author)
-            && bots::parse_bot_message(&author, text, moderator || author == channel).iter().any(|e| matches!(e, BotEvent::Winner { .. })))
+            && bots::bot_events(&author, text, moderator || author == channel).iter().any(|e| matches!(e, BotEvent::Winner { .. })))
             || ((moderator || author == channel) && bots::moderator_winner(&author, text).is_some())
         {
             "winner"
@@ -955,7 +955,7 @@ impl Monitor {
         if !bots::is_bot_like(user_l) {
             return false;
         }
-        for event in bots::parse_bot_message(user_l, text, privileged) {
+        for event in bots::bot_events(user_l, text, privileged) {
             match event {
                 BotEvent::Winner { bot, winner, chance } => self.on_winner(channel, &bot, &winner, chance.as_deref()),
                 BotEvent::StreamElementsUrl(url) if monitored => self.on_streamelements_url(channel, &url),

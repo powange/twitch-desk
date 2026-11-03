@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.44.1',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'fixed', text: 'Gagnant annoncé par un bot modérateur avec une phrase courante (« 🎁 Le gagnant du tirage est … » écrit par WizeBot) : il est maintenant enregistré sur le giveaway, et plus seulement marqué « Gagnant » dans le journal du chat.' }
+    ]
+  },
+  {
     version: '0.44.0',
     date: '2026-11-03',
     title: 'Scanner sur le téléphone',
