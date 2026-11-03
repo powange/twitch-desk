@@ -82,6 +82,8 @@ pub struct ChannelView {
     pub profile_image: Option<String>,
     /// Pseudo de sa page StreamElements (son pseudo Twitch, sauf fiche du streamer)
     pub se_page: String,
+    /// Achat automatique d'un ticket du giveaway StreamElements dès que le solde le permet
+    pub se_auto_buy: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

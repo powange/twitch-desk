@@ -416,6 +416,9 @@ const MIGRATIONS: &[&str] = &[r#"
 "#, r#"
     -- Pseudo StreamElements du streamer quand il diffère de son pseudo Twitch
     ALTER TABLE streamers ADD COLUMN se_name TEXT;
+"#, r#"
+    -- Achat automatique d'un ticket StreamElements dès que le solde le permet
+    ALTER TABLE channels ADD COLUMN se_auto_buy INTEGER NOT NULL DEFAULT 0;
 "#];
 
 /// Types de giveaway
@@ -811,6 +814,9 @@ pub struct Channel {
     pub se_refresh: Option<i64>,
     /// Solde de points de chaîne à atteindre : au-delà, la chaîne n'est plus regardée
     pub max_balance: Option<i64>,
+    /// Giveaway StreamElements en cours : un ticket acheté dès que le solde le permet, jusqu'au
+    /// maximum par personne
+    pub se_auto_buy: bool,
 }
 
 impl Channel {
@@ -1144,7 +1150,7 @@ impl Db {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, account_id, login, channel_id, position, enabled, auto_claim, balance,
-                    chat_presence, se_channel_id, se_points, in_points, in_se, se_refresh, max_balance
+                    chat_presence, se_channel_id, se_points, in_points, in_se, se_refresh, max_balance, se_auto_buy
              FROM channels WHERE account_id = ?1 ORDER BY position, id",
         )?;
         let rows = stmt.query_map([account_id], |r| {
@@ -1164,6 +1170,7 @@ impl Db {
                 in_se: r.get(12)?,
                 se_refresh: r.get(13)?,
                 max_balance: r.get(14)?,
+                se_auto_buy: r.get(15)?,
             })
         })?;
         rows.collect()
@@ -1237,6 +1244,11 @@ impl Db {
 
     pub fn set_se_channel(&self, id: i64, se_channel_id: &str) -> DbResult<()> {
         self.conn().execute("UPDATE channels SET se_channel_id = ?2 WHERE id = ?1", params![id, se_channel_id])?;
+        Ok(())
+    }
+
+    pub fn set_se_auto_buy(&self, id: i64, enabled: bool) -> DbResult<()> {
+        self.conn().execute("UPDATE channels SET se_auto_buy = ?2 WHERE id = ?1", params![id, enabled])?;
         Ok(())
     }
 

@@ -48,6 +48,8 @@ export interface ChannelView {
   profileImage: string | null
   // Pseudo de sa page StreamElements (son pseudo Twitch, sauf fiche du streamer)
   sePage: string
+  // Achat automatique d'un ticket du giveaway StreamElements dès que le solde le permet
+  seAutoBuy: boolean
 }
 
 export interface AccountView {

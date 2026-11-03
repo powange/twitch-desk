@@ -190,6 +190,16 @@ pub fn remove_channel(app: AppState, id: i64, list: ChannelList) -> CmdResult<()
     Ok(())
 }
 
+/// Achat automatique des tickets StreamElements d'une chaîne (un ticket dès que le solde le permet)
+#[tauri::command]
+pub fn set_se_auto_buy(app: AppState, id: i64, enabled: bool) -> CmdResult<()> {
+    app.db.set_se_auto_buy(id, enabled).map_err(db_err)?;
+    if let Some(account) = app.db.channel_account(id).map_err(db_err)? {
+        app.send(account, MinerCommand::Reload);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn reorder_channels(app: AppState, account_id: i64, ids: Vec<i64>) -> CmdResult<()> {
     app.db.reorder_channels(account_id, &ids).map_err(db_err)?;

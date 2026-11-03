@@ -57,6 +57,10 @@ const SE_RETRY_AFTER: Duration = Duration::from_secs(15 * 60);
 const SE_GIVEAWAY_LIVE_EVERY: Duration = Duration::from_secs(2 * 60);
 const SE_GIVEAWAY_OFFLINE_EVERY: Duration = Duration::from_secs(15 * 60);
 const SE_LOYALTY_EVERY: Duration = Duration::from_secs(6 * 3600);
+// Achat automatique : un ticket au plus toutes les 20 s par chaîne ; achat refusé (solde pas encore
+// à jour, giveaway réservé aux abonnés…) : nouvel essai 5 min plus tard
+const SE_AUTO_BUY_GAP: Duration = Duration::from_secs(20);
+const SE_AUTO_BUY_RETRY: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone)]
 pub enum MinerCommand {
@@ -94,6 +98,8 @@ struct ChannelRt {
     se_loyalty_at: Option<Instant>,
     se_giveaway: Option<Giveaway>,
     se_giveaway_at: Option<Instant>,
+    /// Prochain achat automatique de ticket permis
+    se_auto_buy_at: Option<Instant>,
     se_my_tickets: Option<i64>,
 }
 
@@ -120,6 +126,7 @@ impl ChannelRt {
             se_loyalty_at: None,
             se_giveaway: None,
             se_giveaway_at: None,
+            se_auto_buy_at: None,
             se_my_tickets: None,
         }
     }
@@ -776,6 +783,56 @@ impl Miner {
         true
     }
 
+    /// Achat automatique (option de la chaîne) : un ticket du giveaway StreamElements en cours dès
+    /// que le solde le permet, jusqu'au maximum par personne
+    async fn auto_buy_se(&mut self, now: Instant) {
+        let Some(token) = self.se_token.clone().filter(|_| !self.se_token_refused) else { return };
+        let Some(i) = self.channels.iter().position(|c| {
+            c.ch.se_auto_buy
+                && Self::se_ready(c).is_some()
+                && c.se_auto_buy_at.is_none_or(|t| now >= t)
+                && c.se_giveaway.as_ref().is_some_and(|g| {
+                    g.cost > 0
+                        && c.ch.se_points.is_some_and(|p| p >= g.cost)
+                        && g.max_tickets.is_none_or(|max| c.se_my_tickets.unwrap_or(0) < max)
+                })
+        }) else {
+            return;
+        };
+        let se_id = Self::se_ready(&self.channels[i]).unwrap_or_default();
+        let Some(g) = self.channels[i].se_giveaway.clone() else { return };
+        let login = self.channels[i].ch.login.clone();
+        self.channels[i].se_auto_buy_at = Some(now + SE_AUTO_BUY_GAP);
+        let bought = match streamelements::enter(&self.app.http, &token, &se_id, &g.id, 1).await {
+            Ok(()) => streamelements::my_entry(&self.app.http, &token, &se_id, &g.id).await,
+            Err(e) => Err(e),
+        };
+        match bought {
+            Ok(total) => {
+                let ch = &mut self.channels[i];
+                ch.se_my_tickets = Some(total);
+                // Solde baissé d'un ticket en attendant sa relecture (pas compté comme un gain)
+                if let Some(p) = ch.ch.se_points {
+                    ch.ch.se_points = Some((p - g.cost).max(0));
+                    let _ = self.app.db.set_se_points(ch.ch.id, (p - g.cost).max(0));
+                }
+                let _ = self.app.db.set_se_tickets(self.account.id, &g.id, total);
+                crate::giveaways::refresh_view(&self.app);
+                let max = g.max_tickets.map(|m| format!("/{m}")).unwrap_or_default();
+                self.app.log(&self.account.login, EventKind::Info, format!("Achat automatique : 1 ticket sur {login} ({total}{max})"));
+                self.publish();
+            }
+            Err(SeError::Unauthorized) => {
+                self.se_token_refused = true;
+                self.app.log(&self.account.login, EventKind::Error, "Jeton StreamElements expiré : reconnecte StreamElements dans Comptes");
+            }
+            Err(e) => {
+                self.channels[i].se_auto_buy_at = Some(now + SE_AUTO_BUY_RETRY);
+                self.app.log(&self.account.login, EventKind::Error, format!("Achat automatique sur {login} refusé : {e}. Nouvel essai dans 5 min"));
+            }
+        }
+    }
+
     /// Solde StreamElements
     async fn poll_se_points(&mut self, now: Instant) -> bool {
         let username = self.account.login.clone();
@@ -915,6 +972,7 @@ impl Miner {
         self.refresh_contexts(&gql, now).await?;
         self.update_chat_targets();
         self.poll_streamelements(now).await;
+        self.auto_buy_se(now).await;
         Ok(())
     }
 
@@ -1216,6 +1274,7 @@ impl Miner {
                 se_earned_today: c.se_earned_today,
                 profile_image: self.app.lives.avatar(&c.ch.login),
                 se_page: crate::streamelements::page_name(&c.ch.login),
+                se_auto_buy: c.ch.se_auto_buy,
             })
             .collect();
         self.app.set_view(AccountView {

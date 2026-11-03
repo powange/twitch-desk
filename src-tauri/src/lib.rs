@@ -271,6 +271,7 @@ pub fn run() {
             commands::add_channel,
             commands::remove_channel,
             commands::reorder_channels,
+            commands::set_se_auto_buy,
             commands::set_channel_options,
             commands::set_paused,
             commands::get_settings,

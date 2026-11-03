@@ -88,6 +88,15 @@ function status(channel: ChannelView): { label: string, color: 'success' | 'warn
   return { label: 'En live', color: 'success' }
 }
 
+async function setAutoBuy(channel: ChannelView, enabled: boolean) {
+  try {
+    await invoke('set_se_auto_buy', { id: channel.id, enabled })
+    if (enabled) toast.add({ title: `Achat automatique activé sur ${channel.login}`, description: 'Un ticket dès que le solde le permet, jusqu\'au maximum par personne.', color: 'success', icon: 'i-lucide-ticket' })
+  } catch (e) {
+    toast.add({ title: 'Réglage non enregistré', description: String(e), color: 'error' })
+  }
+}
+
 function leaderboardUrl(login: string) {
   return `https://streamelements.com/${login}/leaderboard`
 }
@@ -263,6 +272,11 @@ function affordable(channel: ChannelView): number | null {
               <th class="text-left px-1.5 py-2 whitespace-nowrap">Titre + description</th>
               <th class="text-left px-1.5 py-2">Gagnant</th>
               <th class="text-left px-1.5 py-2">Acheter</th>
+              <th class="text-center px-1.5 py-2 whitespace-nowrap">
+                <UTooltip text="Un ticket acheté dès que le solde le permet, jusqu'au maximum par personne du giveaway">
+                  <span>Achat auto</span>
+                </UTooltip>
+              </th>
               <th class="text-center px-1.5 py-2">Chat</th>
               <th class="px-1.5 py-2" />
             </tr>
@@ -393,6 +407,18 @@ function affordable(channel: ChannelView): number | null {
                 </template>
                 <span v-else class="text-muted">—</span>
               </td>
+              <!-- Achat automatique : réglage de la chaîne, gardé d'un giveaway à l'autre -->
+              <td class="px-1.5 py-2">
+                <div class="flex justify-center">
+                  <USwitch
+                    v-if="account.seAccount === 'connected'"
+                    :model-value="channel.seAutoBuy"
+                    :aria-label="`Achat automatique des tickets sur ${channel.login}`"
+                    @update:model-value="v => setAutoBuy(channel, v)"
+                  />
+                  <span v-else class="text-muted">—</span>
+                </div>
+              </td>
               <td class="px-1.5 py-2">
                 <div class="flex justify-center">
                   <USwitch :model-value="optionsOf(channel).chatPresence" :aria-label="`Présence dans le chat de ${channel.login}`" @update:model-value="v => setOptions(channel, { chatPresence: v })" />
@@ -403,10 +429,10 @@ function affordable(channel: ChannelView): number | null {
               </td>
             </tr>
             <tr v-if="shown.length === 0 && channels.length">
-              <td colspan="17" class="px-3 py-8 text-center text-muted">Aucune chaîne ne correspond au filtre.</td>
+              <td colspan="18" class="px-3 py-8 text-center text-muted">Aucune chaîne ne correspond au filtre.</td>
             </tr>
             <tr v-if="channels.length === 0">
-              <td colspan="17" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
+              <td colspan="18" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
             </tr>
           </tbody>
         </table>

@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.0',
+    date: '2026-11-03',
+    title: 'Achat automatique des tickets StreamElements',
+    changes: [
+      { kind: 'new', text: 'Page StreamElements : colonne « Achat auto » pour chaque streamer. Pendant un giveaway StreamElements, un ticket est acheté dès que ton solde le permet, puis un autre à chaque fois que tu as assez de points, jusqu\'au maximum de tickets par personne. Le réglage reste d\'un giveaway à l\'autre ; il faut le compte StreamElements connecté (page Comptes).' }
+    ]
+  },
+  {
     version: '0.47.0',
     date: '2026-11-03',
     title: 'Pseudo StreamElements et mises à jour automatiques',
