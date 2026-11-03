@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.44.0',
+    date: '2026-11-03',
+    title: 'Scanner sur le téléphone',
+    changes: [
+      { kind: 'new', text: 'Web app du téléphone : nouvel onglet Scanner avec les streams repérés par le scan automatique (catégorie, spectateurs, titre, mots-clés trouvés, type de giveaway) et un bouton pour ouvrir le stream sur Twitch. Un appui sur une notification « Stream repéré » ouvre cet onglet.' },
+      { kind: 'improved', text: 'Web app : l\'accueil indique quel giveaway est affiché, par exemple « En cours · 1 / 2 ». L\'onglet StreamElements s\'appelle « SE » dans la barre du bas pour que les 5 onglets tiennent.' }
+    ]
+  },
+  {
     version: '0.43.0',
     date: '2026-11-03',
     title: 'Mise à jour du PC depuis le téléphone',

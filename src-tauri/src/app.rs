@@ -644,8 +644,8 @@ impl App {
 
     /// Une partie de l'état a changé : elle seule est reconstruite au prochain envoi
     pub fn touch_domain(&self, domain: Domain) {
-        // Giveaways (participations, statut live) ou comptes : état de la web app à republier
-        if matches!(domain, Domain::Giveaways | Domain::Accounts) {
+        // Giveaways (participations, statut live), comptes ou scanner : état de la web app à republier
+        if matches!(domain, Domain::Giveaways | Domain::Accounts | Domain::Scanner) {
             self.sync.state_changed();
         }
         self.dirty_domains.fetch_or(domain.bit(), Ordering::AcqRel);

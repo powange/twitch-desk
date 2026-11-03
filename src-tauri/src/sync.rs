@@ -1687,6 +1687,35 @@ fn phone_channels(views: &[crate::app::AccountView]) -> (Value, Value) {
     (Value::Array(points), Value::Array(se))
 }
 
+/// Streams repérés publiés, au plus
+const PHONE_SCANS: usize = 50;
+
+/// Page Scanner de la web app (lecture seule) : streams repérés, hors streams ignorés
+fn phone_scanner(view: &crate::scanner::ScannerView) -> Value {
+    let matches: Vec<Value> = view
+        .matches
+        .iter()
+        .filter(|m| !m.ignored)
+        .take(PHONE_SCANS)
+        .map(|m| {
+            json!({
+                "login": m.stream.login,
+                "displayName": m.stream.display_name,
+                "avatar": m.stream.profile_image,
+                "title": m.stream.title,
+                "game": m.stream.game_name,
+                "viewers": round_viewers(m.stream.viewers.max(0) as u64),
+                "startedAt": m.stream.started_at,
+                "keywords": m.keywords,
+                "monitored": m.monitored,
+                "giveawayKind": m.giveaway_kind,
+                "giveawayCommand": m.giveaway_command,
+            })
+        })
+        .collect();
+    json!({ "scannedAt": view.scanned_at, "matches": matches })
+}
+
 /// Campagnes publiées par compte, au plus (la regardée et les inachevées d'abord)
 const PHONE_CAMPAIGNS: usize = 20;
 
@@ -1786,6 +1815,7 @@ fn spawn_state(app: Arc<App>) {
             state["points"] = points;
             state["streamelements"] = se;
             state["drops"] = phone_drops(&views);
+            state["scanner"] = phone_scanner(&app.scanner.lock().unwrap().view());
             state["actionsAllowed"] = json!(phone_actions_allowed(&app));
             state["pc"] = json!({
                 "version": app.handle().package_info().version.to_string(),
