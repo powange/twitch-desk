@@ -1,13 +1,14 @@
 <script setup lang="ts">
+import ChannelCell from '../../components/ChannelCell.vue'
 import { useGiftPreview } from '../../composables/useGiftPreview'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
-import { boxArt, channelUrl, formatNumber, timeAgo } from '../../utils/format'
+import { useWatchStream } from '../../utils/viewer'
+import { boxArt, formatNumber, timeAgo } from '../../utils/format'
 import { LANGUAGES } from '../../utils/languages'
-import ChannelFlag from '../../components/ChannelFlag.vue'
 import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import type { Gift, ScanMatch } from '../../types'
@@ -18,6 +19,7 @@ import { isBoolean, oneOf, usePersisted } from '../../composables/usePersisted'
 const { snapshot } = useSnapshot()
 const toast = useToast()
 const openExternal = useOpenExternal()
+const watchStream = useWatchStream()
 
 const scanner = computed(() => snapshot.value?.scanner)
 const { gifts } = useGiftCatalog()
@@ -326,6 +328,7 @@ const { openGift } = useGiftPreview()
         <table class="w-full text-sm">
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
             <tr>
+              <th class="px-2 py-2"><span class="sr-only">Regarder</span></th>
               <th v-for="c in ([['channel', 'Chaîne'], ['game', 'Catégorie']] as const)" :key="c[0]" class="text-left px-3 py-2">
                 <button class="inline-flex items-center gap-1 uppercase hover:text-default" :class="sortKey === c[0] ? 'text-default' : ''" @click="sortBy(c[0])">
                   {{ c[1] }}<UIcon :name="sortIcon(c[0])" class="size-3.5" />
@@ -348,12 +351,11 @@ const { openGift } = useGiftPreview()
               class="border-t border-default transition-colors duration-700"
               :class="[m.ignored ? 'opacity-50' : '', highlighted === m.login ? 'bg-primary/15 outline-2 outline-primary -outline-offset-2' : '']"
             >
+              <td class="px-2 py-2">
+                <UButton icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${m.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(m.login)" />
+              </td>
               <td class="px-3 py-2">
-                <div class="flex items-center gap-2">
-                  <img v-if="m.profileImage" :src="m.profileImage" alt="" class="size-7 rounded-full">
-                  <ChannelFlag :login="m.login" :lang="m.language" />
-                  <button class="font-medium hover:underline whitespace-nowrap" @click="openExternal(channelUrl(m.login))">{{ m.displayName || m.login }}</button>
-                </div>
+                <ChannelCell :login="m.login" :name="m.displayName" :avatar="m.profileImage" :lang="m.language" :show-live="false" />
               </td>
               <td class="px-3 py-2 whitespace-nowrap">
                 <span class="inline-flex items-center gap-1.5"><img :src="boxArt(null, m.gameId)" alt="" class="w-4 h-5 rounded-sm object-cover">{{ m.gameName }}</span>
@@ -400,7 +402,7 @@ const { openGift } = useGiftPreview()
               </td>
             </tr>
             <tr v-if="matches.length === 0">
-              <td colspan="9" class="px-3 py-8 text-center text-muted">
+              <td colspan="10" class="px-3 py-8 text-center text-muted">
                 {{ scanner?.scanning ? 'Scan en cours…' : scanner?.scannedAt ? 'Aucun stream ne correspond pour l\'instant.' : 'Lance un scan avec « Scanner maintenant ».' }}
               </td>
             </tr>

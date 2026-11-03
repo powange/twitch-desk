@@ -44,6 +44,8 @@ export interface ChannelView {
   seEnabled: boolean | null
   sePoints: number | null
   seEarnedToday: number
+  // Photo de profil (connue après la première relecture du statut live)
+  profileImage: string | null
 }
 
 export interface AccountView {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ChannelCell from '../../components/ChannelCell.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { RouterLink } from 'vue-router'
@@ -122,6 +123,12 @@ const participating = ref<number | null>(null)
 // Gagnant qui est un de nos comptes
 const ourLogins = computed(() => new Set(accounts.value.map(a => a.login.toLowerCase())))
 const isOurs = (login: string) => ourLogins.value.has(login.toLowerCase())
+// Participations ; StreamElements : chacun de nos comptes, à 0 ticket s'il n'en a pas
+function participationsOf(g: GiveawayView) {
+  if (g.kind !== 'streamelements') return g.entriesView
+  return accounts.value.map(a => g.entriesView.find(e => e.accountId === a.id)
+    ?? { accountId: a.id, login: a.login, at: '', auto: false, tickets: 0 })
+}
 // Giveaway StreamElements terminé : adresse de sa page sur StreamElements
 const seClosedUrl = (g: GiveawayView) => g.kind === 'streamelements' && g.status === 'closed' && g.url?.startsWith('https://streamelements.com/') ? g.url : null
 
@@ -355,21 +362,7 @@ function share(g: GiveawayView) {
                 <UButton v-if="liveOf(g.channel)" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${g.channel}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(g.channel)" />
               </td>
               <td class="px-3 py-2">
-                <div class="flex items-center gap-2">
-                  <img v-if="avatarOf(g.channel)" :src="avatarOf(g.channel)!" alt="" class="size-7 rounded-full shrink-0">
-                  <div class="min-w-0">
-                    <div class="flex items-center gap-1.5">
-                      <ChannelFlag :login="g.channel" />
-                      <button class="font-medium hover:underline" @click="openExternal(channelUrl(g.channel))">{{ g.channel }}</button>
-                    </div>
-                    <div v-if="liveOf(g.channel)" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
-                      <span class="truncate max-w-[220px]" :title="liveOf(g.channel)?.gameName ?? 'Sans catégorie'">{{ liveOf(g.channel)?.gameName ?? 'Sans catégorie' }}</span>
-                      <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(liveOf(g.channel)?.viewers ?? 0)} spectateurs`">
-                        <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(liveOf(g.channel)?.viewers ?? 0) }}
-                      </span>
-                    </div>
-                  </div>
-                </div>
+                <ChannelCell :login="g.channel" :avatar="avatarOf(g.channel)" :live="liveOf(g.channel)" />
               </td>
               <td class="px-3 py-2">
                 <div class="flex items-center gap-1.5">
@@ -426,7 +419,7 @@ function share(g: GiveawayView) {
                        ou en pause → page StreamElements de l'application, filtrée sur la chaîne -->
                   <component
                     :is="seClosedUrl(g) ? 'button' : g.kind === 'streamelements' ? RouterLink : 'span'"
-                    v-for="e in g.entriesView"
+                    v-for="e in participationsOf(g)"
                     :key="e.accountId"
                     v-bind="seClosedUrl(g) ? { type: 'button' } : g.kind === 'streamelements' ? { to: { path: '/streamelements', query: { channels: g.channel } } } : {}"
                     :title="seClosedUrl(g) ? 'Voir ce giveaway sur StreamElements (navigateur)' : g.kind === 'streamelements' ? 'Voir sur la page StreamElements' : undefined"
@@ -435,16 +428,16 @@ function share(g: GiveawayView) {
                     <UBadge
                       :label="e.tickets !== null ? `${e.login} · ${e.tickets} ticket${e.tickets > 1 ? 's' : ''}` : e.login"
                       :icon="e.tickets !== null ? 'i-lucide-ticket' : e.auto ? 'i-lucide-bot' : 'i-lucide-check'"
-                      color="success"
+                      :color="e.tickets === 0 ? 'neutral' : 'success'"
                       variant="subtle"
                       size="sm"
                       class="whitespace-nowrap"
                       :trailing-icon="seClosedUrl(g) ? 'i-lucide-external-link' : undefined"
-                      :class="g.kind === 'streamelements' ? 'hover:bg-success/20 cursor-pointer' : ''"
-                      :title="e.tickets !== null ? 'Tickets StreamElements relevés sur StreamElements' : e.auto ? 'Participation automatique' : 'Participation envoyée par l\'application'"
+                      :class="g.kind === 'streamelements' ? (e.tickets === 0 ? 'hover:bg-elevated cursor-pointer' : 'hover:bg-success/20 cursor-pointer') : ''"
+                      :title="e.tickets === 0 ? 'Aucun ticket pour ce compte' : e.tickets !== null ? 'Tickets StreamElements relevés sur StreamElements' : e.auto ? 'Participation automatique' : 'Participation envoyée par l\'application'"
                     />
                   </component>
-                  <span v-if="g.entriesView.length === 0" class="text-muted">—</span>
+                  <span v-if="participationsOf(g).length === 0" class="text-muted">—</span>
                 </div>
               </td>
               <td class="px-3 py-2">

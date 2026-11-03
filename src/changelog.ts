@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.40.1',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'new', text: 'Pages Points de chaîne, StreamElements et Scanner : bouton « Regarder » juste avant la chaîne, pour ouvrir le stream en live dans la fenêtre des streams.' },
+      { kind: 'improved', text: 'Photo de profil des chaînes aussi sur les pages Points de chaîne et StreamElements ; la cellule « Chaîne » est la même sur toutes les pages.' },
+      { kind: 'improved', text: 'Page Alertes, giveaway StreamElements : chacun de tes comptes apparaît dans la colonne Participations, avec 0 ticket s\'il n\'en a pas.' }
+    ]
+  },
+  {
     version: '0.40.0',
     date: '2026-11-03',
     title: 'Plusieurs gagnants par giveaway',

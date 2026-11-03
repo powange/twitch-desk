@@ -1,16 +1,18 @@
 <script setup lang="ts">
+import ChannelCell from '../components/ChannelCell.vue'
 import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useChannelList } from '../composables/useChannelList'
 import { useDragReorder } from '../composables/useDragReorder'
 import { useOpenExternal } from '../utils/external'
+import { useWatchStream } from '../utils/viewer'
 import { CHANNEL_STATE, formatNumber } from '../utils/format'
 import type { ChannelState, ChannelView } from '../types'
-import ChannelFlag from '../components/ChannelFlag.vue'
 import AccountPicker from '../components/AccountPicker.vue'
 import PointsChannelSettings from '../components/PointsChannelSettings.vue'
 
 const openExternal = useOpenExternal()
+const watchStream = useWatchStream()
 const { accounts, account, channels, newLogin, adding, addChannel, setOptions, optionsOf, toRemove, removing, confirmRemove } = useChannelList('points')
 
 // Réglages d'une chaîne (solde maximum…) : la vue à jour est relue par son identifiant
@@ -84,6 +86,7 @@ const STATE_LEGEND: { state: ChannelState, text: string }[] = [
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
             <tr>
               <th class="text-left px-3 py-2 w-16">Ordre</th>
+              <th class="px-2 py-2"><span class="sr-only">Regarder</span></th>
               <th class="text-left px-3 py-2">Chaîne</th>
               <th class="text-left px-3 py-2">État</th>
               <th class="text-right px-3 py-2">Solde</th>
@@ -120,21 +123,18 @@ const STATE_LEGEND: { state: ChannelState, text: string }[] = [
                   <span class="w-5 text-muted text-left">{{ i + 1 }}</span>
                 </button>
               </td>
+              <td class="px-2 py-2">
+                <UButton v-if="channel.live" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${channel.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(channel.login)" />
+              </td>
               <td class="px-3 py-2 min-w-0">
-                <div class="flex items-center gap-1.5">
-                  <ChannelFlag :login="channel.login" />
-                  <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
-                  <UTooltip v-if="channel.priority" text="Giveaway par points de chaîne en cours : regardée en priorité">
-                    <UBadge label="Prioritaire" icon="i-lucide-gift" color="primary" variant="subtle" size="sm" />
-                  </UTooltip>
-                </div>
-                <div v-if="channel.live" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
-                  <span class="truncate max-w-[320px]" :title="channel.live.gameName ?? 'Sans catégorie'">{{ channel.live.gameName ?? 'Sans catégorie' }}</span>
-                  <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(channel.live.viewers)} spectateurs`">
-                    <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(channel.live.viewers) }}
-                  </span>
-                </div>
-                <div v-if="channel.error" class="text-xs text-error truncate max-w-[320px]" :title="channel.error">{{ channel.error }}</div>
+                <ChannelCell :login="channel.login" :avatar="channel.profileImage" :live="channel.live">
+                  <template #badges>
+                    <UTooltip v-if="channel.priority" text="Giveaway par points de chaîne en cours : regardée en priorité">
+                      <UBadge label="Prioritaire" icon="i-lucide-gift" color="primary" variant="subtle" size="sm" />
+                    </UTooltip>
+                  </template>
+                  <div v-if="channel.error" class="text-xs text-error truncate max-w-[320px]" :title="channel.error">{{ channel.error }}</div>
+                </ChannelCell>
               </td>
               <td class="px-3 py-2">
                 <UTooltip :text="CHANNEL_STATE[channel.state].hint" :disabled="!CHANNEL_STATE[channel.state].hint">
@@ -167,7 +167,7 @@ const STATE_LEGEND: { state: ChannelState, text: string }[] = [
               </td>
             </tr>
             <tr v-if="channels.length === 0">
-              <td colspan="9" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
+              <td colspan="10" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
             </tr>
           </tbody>
         </table>

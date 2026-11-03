@@ -1,12 +1,12 @@
 <script setup lang="ts">
+import ChannelCell from '../../components/ChannelCell.vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
 import { useWatchStream } from '../../utils/viewer'
-import { boxArt, channelUrl, formatNumber } from '../../utils/format'
+import { boxArt, formatNumber } from '../../utils/format'
 import type { Gift, GiveawayChannelView, GiveawayView } from '../../types'
-import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
 import { suggestGifts, useGiftCatalog, useKnownCategories } from '../../composables/useGiftCatalog'
@@ -334,21 +334,7 @@ async function confirmRemove() {
               <UButton v-if="c.live" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${c.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(c.login)" />
             </td>
             <td class="px-3 py-2">
-              <div class="flex items-center gap-2">
-                <img v-if="c.profileImage" :src="c.profileImage" alt="" class="size-7 rounded-full shrink-0">
-                <div class="min-w-0">
-                  <div class="flex items-center gap-1.5 whitespace-nowrap">
-                    <ChannelFlag :login="c.login" />
-                    <button class="font-medium hover:underline" @click="openExternal(channelUrl(c.login))">{{ c.login }}</button>
-                  </div>
-                  <div v-if="c.live" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
-                    <span class="truncate max-w-[220px]" :title="c.live.gameName ?? 'Sans catégorie'">{{ c.live.gameName ?? 'Sans catégorie' }}</span>
-                    <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(c.live.viewers)} spectateurs`">
-                      <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(c.live.viewers) }}
-                    </span>
-                  </div>
-                </div>
-              </div>
+              <ChannelCell :login="c.login" :avatar="c.profileImage" :live="c.live" />
             </td>
             <td class="px-3 py-2">
               <UTooltip :text="status(c).hint" :disabled="!status(c).hint">

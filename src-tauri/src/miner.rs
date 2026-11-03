@@ -1182,6 +1182,7 @@ impl Miner {
                 se_enabled: c.ch.se_channel_id.as_deref().map(|id| !id.is_empty()),
                 se_points: c.ch.se_points,
                 se_earned_today: c.se_earned_today,
+                profile_image: self.app.lives.avatar(&c.ch.login),
             })
             .collect();
         self.app.set_view(AccountView {

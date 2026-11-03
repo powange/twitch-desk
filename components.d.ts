@@ -15,6 +15,7 @@ declare module 'vue' {
     AppUsage: typeof import('./src/components/AppUsage.vue')['default']
     CategorySearchInput: typeof import('./src/components/CategorySearchInput.vue')['default']
     ChangelogView: typeof import('./src/components/ChangelogView.vue')['default']
+    ChannelCell: typeof import('./src/components/ChannelCell.vue')['default']
     ChannelFlag: typeof import('./src/components/ChannelFlag.vue')['default']
     ChannelProfileCard: typeof import('./src/components/ChannelProfileCard.vue')['default']
     ChatLogModal: typeof import('./src/components/ChatLogModal.vue')['default']

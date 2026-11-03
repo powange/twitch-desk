@@ -1,17 +1,19 @@
 <script setup lang="ts">
+import ChannelCell from '../components/ChannelCell.vue'
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { useChannelList } from '../composables/useChannelList'
 import { useSnapshot } from '../composables/useSnapshot'
 import { useOpenExternal } from '../utils/external'
+import { useWatchStream } from '../utils/viewer'
 import { formatNumber } from '../utils/format'
 import type { ChannelView, GiveawayView } from '../types'
-import ChannelFlag from '../components/ChannelFlag.vue'
 import AccountPicker from '../components/AccountPicker.vue'
 import { stringList, usePersisted } from '../composables/usePersisted'
 
 const openExternal = useOpenExternal()
+const watchStream = useWatchStream()
 const { accounts, account, channels, newLogin, adding, addChannel, setOptions, optionsOf, toRemove, removing, confirmRemove } = useChannelList('se')
 
 // Filtre par streamer (choix multiple), retenu sur ce poste ; « ?channels=a,b » le préremplit
@@ -244,6 +246,7 @@ function affordable(channel: ChannelView): number | null {
         <table class="w-full text-sm">
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
             <tr>
+              <th class="px-1.5 py-2"><span class="sr-only">Regarder</span></th>
               <th class="text-left px-1.5 py-2">Chaîne</th>
               <th class="text-left px-1.5 py-2">État</th>
               <th class="text-right px-1.5 py-2 whitespace-nowrap">Solde</th>
@@ -263,17 +266,11 @@ function affordable(channel: ChannelView): number | null {
           </thead>
           <tbody>
             <tr v-for="channel in shown" :key="channel.id" class="border-t border-default" :class="channel.seGiveaway ? 'bg-primary/5' : ''">
+              <td class="px-1.5 py-2">
+                <UButton v-if="channel.live" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${channel.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(channel.login)" />
+              </td>
               <td class="px-1.5 py-2 min-w-0">
-                <div class="flex items-center gap-1.5">
-                  <ChannelFlag :login="channel.login" />
-                  <button class="font-medium hover:underline" @click="openExternal(`https://www.twitch.tv/${channel.login}`)">{{ channel.login }}</button>
-                </div>
-                <div v-if="channel.live" class="flex items-center gap-1.5 text-xs text-muted min-w-0">
-                  <span class="truncate max-w-[165px]" :title="channel.live.gameName ?? 'Sans catégorie'">{{ channel.live.gameName ?? 'Sans catégorie' }}</span>
-                  <span class="inline-flex items-center gap-0.5 whitespace-nowrap text-error" :title="`${formatNumber(channel.live.viewers)} spectateurs`">
-                    <UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(channel.live.viewers) }}
-                  </span>
-                </div>
+                <ChannelCell :login="channel.login" :avatar="channel.profileImage" :live="channel.live" />
               </td>
               <td class="px-1.5 py-2">
                 <div class="flex flex-col items-start gap-1">
@@ -402,10 +399,10 @@ function affordable(channel: ChannelView): number | null {
               </td>
             </tr>
             <tr v-if="shown.length === 0 && channels.length">
-              <td colspan="16" class="px-3 py-8 text-center text-muted">Aucune chaîne ne correspond au filtre.</td>
+              <td colspan="17" class="px-3 py-8 text-center text-muted">Aucune chaîne ne correspond au filtre.</td>
             </tr>
             <tr v-if="channels.length === 0">
-              <td colspan="16" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
+              <td colspan="17" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
             </tr>
           </tbody>
         </table>

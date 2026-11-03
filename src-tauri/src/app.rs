@@ -78,6 +78,8 @@ pub struct ChannelView {
     pub se_enabled: Option<bool>,
     pub se_points: Option<i64>,
     pub se_earned_today: i64,
+    /// Photo de profil (connue après la première relecture du statut live)
+    pub profile_image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
