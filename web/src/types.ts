@@ -99,8 +99,26 @@ export interface InstanceState {
   actionsAllowed?: boolean
   // Page Drops (application 0.42 et plus)
   drops?: DropsAccount[]
+  // Page Scanner (application 0.44 et plus)
+  scanner?: { scannedAt: string | null, matches: ScanMatch[] }
   // Version de l'application du PC et dernière vérification des mises à jour (0.43 et plus)
   pc?: { version: string, update: { available: string | null, checkedAt: string } | null }
+}
+
+// Stream repéré par le scanner du PC
+export interface ScanMatch {
+  login: string
+  displayName: string
+  avatar: string | null
+  title: string
+  game: string
+  viewers: number
+  startedAt: string | null
+  keywords: string[]
+  // Déjà dans les chaînes surveillées
+  monitored: boolean
+  giveawayKind: GiveawayKind | null
+  giveawayCommand: string | null
 }
 
 export interface DropProgress {

@@ -62,7 +62,7 @@ self.addEventListener('push', (event) => {
   }
   const title = data.title || 'Twitch Desk'
   // Onglet ouvert par un appui sur la notification
-  const tab = data.alert === 'drop' ? 'drops' : 'giveaways'
+  const tab = data.alert === 'drop' ? 'drops' : data.alert === 'scanner' ? 'scanner' : 'giveaways'
   event.waitUntil(self.registration.showNotification(title, {
     body: data.body || '',
     icon: '/app/icon-192.png',

@@ -9,6 +9,7 @@ import GiveawayCarousel from './components/GiveawayCarousel.vue'
 import PointsView from './components/PointsView.vue'
 import SeView from './components/SeView.vue'
 import DropsView from './components/DropsView.vue'
+import ScannerView from './components/ScannerView.vue'
 import NotificationsModal from './components/NotificationsModal.vue'
 import UpdateModal from './components/UpdateModal.vue'
 import { active as pushActive, disable as disablePush, refresh as refreshPush, serverTooOld, support as pushSupport } from './push'
@@ -24,14 +25,14 @@ let events: ReturnType<typeof openEvents> | null = null
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 // Onglet et comptes affichés, retenus sur ce téléphone
-type Tab = 'giveaways' | 'points' | 'se' | 'drops'
+type Tab = 'giveaways' | 'scanner' | 'points' | 'se' | 'drops'
 function remembered(key: string, fallback: string) {
   try { return localStorage.getItem(`twitch-desk:${key}`) ?? fallback } catch { return fallback }
 }
 function remember(key: string, value: string) {
   try { localStorage.setItem(`twitch-desk:${key}`, value) } catch { /* stockage indisponible */ }
 }
-const TAB_KEYS = ['giveaways', 'points', 'se', 'drops'] as const
+const TAB_KEYS = ['giveaways', 'scanner', 'points', 'se', 'drops'] as const
 const asTab = (t: unknown) => TAB_KEYS.find(k => k === t)
 // Ouverte depuis une notification (« ?tab=drops ») : sur l'onglet de l'alerte
 const asked = asTab(new URLSearchParams(location.search).get('tab'))
@@ -49,10 +50,12 @@ navigator.serviceWorker?.addEventListener('message', (e: MessageEvent) => {
   const t = asTab((e.data as { tab?: unknown } | null)?.tab)
   if (t) tab.value = t
 })
-const TABS: { key: Tab, label: string, icon: string }[] = [
+// `title` : nom complet dans l'en-tête quand le libellé de l'onglet est abrégé
+const TABS: { key: Tab, label: string, icon: string, title?: string }[] = [
   { key: 'giveaways', label: 'Giveaways', icon: 'i-lucide-gift' },
+  { key: 'scanner', label: 'Scanner', icon: 'i-lucide-radar' },
   { key: 'points', label: 'Points', icon: 'i-lucide-coins' },
-  { key: 'se', label: 'StreamElements', icon: 'i-lucide-ticket' },
+  { key: 'se', label: 'SE', icon: 'i-lucide-ticket', title: 'StreamElements' },
   { key: 'drops', label: 'Drops', icon: 'i-lucide-package-open' }
 ]
 
@@ -230,7 +233,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
           <img src="/icon.svg" alt="" width="28" height="28">
           <div class="min-w-0 flex-1">
             <div class="font-semibold truncate leading-tight">{{ instanceName }}</div>
-            <div class="text-xs text-muted leading-tight">{{ TABS.find(t => t.key === tab)?.label }}</div>
+            <div class="text-xs text-muted leading-tight">{{ TABS.find(t => t.key === tab)?.title ?? TABS.find(t => t.key === tab)?.label }}</div>
           </div>
           <UBadge :label="connection.label" :color="connection.color" :icon="connection.icon" variant="subtle" size="sm" />
           <UDropdownMenu :items="menu" :content="{ align: 'end' }">
@@ -257,6 +260,9 @@ const menu = computed<DropdownMenuItem[][]>(() => [
         </div>
         <template v-else-if="data && tab === 'points'">
           <PointsView v-model:account="pointsAccount" :state="data.state" />
+        </template>
+        <template v-else-if="data && tab === 'scanner'">
+          <ScannerView :state="data.state" />
         </template>
         <template v-else-if="data && tab === 'drops'">
           <DropsView v-model:account="dropsAccount" :state="data.state" />
@@ -286,7 +292,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
 
       <!-- Onglets en bas de l'écran -->
       <nav class="fixed bottom-0 inset-x-0 z-10 border-t border-default bg-default/95 backdrop-blur pb-[env(safe-area-inset-bottom)]" aria-label="Pages">
-        <div class="max-w-2xl mx-auto grid grid-cols-4">
+        <div class="max-w-2xl mx-auto grid grid-cols-5">
           <button
             v-for="t in TABS"
             :key="t.key"
@@ -294,6 +300,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
             class="flex flex-col items-center gap-0.5 py-2 text-xs font-medium"
             :class="tab === t.key ? 'text-primary' : 'text-muted'"
             :aria-current="tab === t.key ? 'page' : undefined"
+            :aria-label="t.title"
             @click="tab = t.key"
           >
             <UIcon :name="t.icon" class="size-5" />

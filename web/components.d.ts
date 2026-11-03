@@ -20,6 +20,7 @@ declare module 'vue' {
     PointsView: typeof import('./src/components/PointsView.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    ScannerView: typeof import('./src/components/ScannerView.vue')['default']
     SeView: typeof import('./src/components/SeView.vue')['default']
     UAlert: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Alert.vue')['default']
     UApp: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/App.vue')['default']
