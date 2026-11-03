@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.39.5',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'improved', text: 'Page StreamElements : la colonne « Titre + description » affiche le titre du giveaway en gras, puis sa description.' },
+      { kind: 'improved', text: 'Page Alertes : les cadeaux sont aussi repérés dans le titre et la description du giveaway StreamElements, et ajoutés au giveaway.' }
+    ]
+  },
+  {
     version: '0.39.4',
     date: '2026-11-03',
     changes: [

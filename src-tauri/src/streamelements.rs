@@ -212,12 +212,19 @@ pub async fn enter(
 pub struct GiveawayOutcome {
     pub running: bool,
     pub winners: Vec<String>,
+    /// Titre et description (ils annoncent souvent les lots)
+    pub title: String,
+    pub description: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct OutcomeRaw {
     #[serde(default)]
     state: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    description: String,
     #[serde(default)]
     winners: Vec<WinnerRaw>,
 }
@@ -232,6 +239,8 @@ fn to_outcome(raw: OutcomeRaw) -> GiveawayOutcome {
     GiveawayOutcome {
         running: raw.state == "running",
         winners: raw.winners.into_iter().map(|w| w.username.trim().to_lowercase()).filter(|w| !w.is_empty()).collect(),
+        title: raw.title.trim().to_owned(),
+        description: raw.description.trim().to_owned(),
     }
 }
 
@@ -380,10 +389,13 @@ mod tests {
         assert_eq!(g.command.as_deref(), Some("!ticket"));
         assert_eq!((g.cost, g.max_tickets, g.total_tickets, g.total_users), (1000, Some(210), 227, 6));
         assert!(g.free_ticket);
-        let drawn: OutcomeRaw = serde_json::from_str(r#"{"_id":"1","state":"running","winners":[{"username":"DreKing_","tickets":189}]}"#).unwrap();
-        assert_eq!(to_outcome(drawn), GiveawayOutcome { running: true, winners: vec!["dreking_".into()] });
+        let drawn: OutcomeRaw =
+            serde_json::from_str(r#"{"_id":"1","state":"running","title":"Gilded Phoenix Ship Crest ","winners":[{"username":"DreKing_","tickets":189}]}"#).unwrap();
+        let drawn = to_outcome(drawn);
+        assert!(drawn.running && drawn.winners == ["dreking_"] && drawn.title == "Gilded Phoenix Ship Crest" && drawn.description.is_empty());
         let done: OutcomeRaw = serde_json::from_str(r#"{"_id":"1","state":"completed"}"#).unwrap();
-        assert_eq!(to_outcome(done), GiveawayOutcome { running: false, winners: vec![] });
+        let done = to_outcome(done);
+        assert!(!done.running && done.winners.is_empty());
         let ended = r#"{"_id":"1","state":"ended","maxTickets":0}"#;
         assert_eq!(to_giveaway(serde_json::from_str(ended).unwrap()), None);
     }

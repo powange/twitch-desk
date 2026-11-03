@@ -254,7 +254,7 @@ function affordable(channel: ChannelView): number | null {
               <th class="text-right px-1.5 py-2">Tickets</th>
               <th class="text-right px-1.5 py-2">Participants</th>
               <th class="text-left px-1.5 py-2">Giveaway</th>
-              <th class="text-left px-1.5 py-2">Description</th>
+              <th class="text-left px-1.5 py-2 whitespace-nowrap">Titre + description</th>
               <th class="text-left px-1.5 py-2">Gagnant</th>
               <th class="text-left px-1.5 py-2">Acheter</th>
               <th class="text-center px-1.5 py-2">Chat</th>
@@ -350,11 +350,15 @@ function affordable(channel: ChannelView): number | null {
                 <UBadge v-if="giveawayState(channel)" :label="giveawayState(channel)!.label" :color="giveawayState(channel)!.color" variant="subtle" size="sm" class="whitespace-nowrap" />
                 <span v-else class="text-muted">—</span>
               </td>
-              <!-- Description du giveaway StreamElements en cours : trois lignes, le reste au survol -->
+              <!-- Giveaway StreamElements en cours : titre en gras, puis la description sur trois
+                   lignes (le reste au survol) -->
               <td class="px-1.5 py-2 min-w-[220px] max-w-[360px]">
-                <UTooltip v-if="channel.seGiveaway?.description?.trim()" :text="channel.seGiveaway.description.trim()" :content="{ side: 'top' }" :ui="{ content: 'max-w-md h-auto whitespace-pre-line' }">
-                  <p class="text-xs line-clamp-3 whitespace-pre-line" tabindex="0">{{ channel.seGiveaway.description.trim() }}</p>
-                </UTooltip>
+                <template v-if="channel.seGiveaway?.title?.trim() || channel.seGiveaway?.description?.trim()">
+                  <p v-if="channel.seGiveaway.title?.trim()" class="text-xs font-semibold line-clamp-2">{{ channel.seGiveaway.title.trim() }}</p>
+                  <UTooltip v-if="channel.seGiveaway.description?.trim()" :text="channel.seGiveaway.description.trim()" :content="{ side: 'top' }" :ui="{ content: 'max-w-md h-auto whitespace-pre-line' }">
+                    <p class="text-xs line-clamp-3 whitespace-pre-line text-muted" tabindex="0">{{ channel.seGiveaway.description.trim() }}</p>
+                  </UTooltip>
+                </template>
                 <span v-else class="text-muted">—</span>
               </td>
               <td class="px-1.5 py-2 whitespace-nowrap">

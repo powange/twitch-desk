@@ -573,6 +573,8 @@ impl Monitor {
             if g.status == "closed" {
                 continue;
             }
+            // Titre et description du giveaway StreamElements : cadeaux du catalogue repérés dedans
+            self.gifts_from_se_giveaway(&g, &format!("{}\n{}", outcome.title, outcome.description));
             // Le dernier tiré (nouveau tirage si le premier gagnant ne répond pas), sauf un des nôtres
             let ours = outcome.winners.iter().find(|w| self.accounts.iter().any(|(_, l)| l == *w));
             if let Some(winner) = ours.or(outcome.winners.last()).cloned() {
@@ -818,6 +820,19 @@ impl Monitor {
             self.app.log("giveaways", EventKind::Giveaway, format!("Cadeaux repérés dans la réponse du bot sur {channel} : {}", names.join(", ")));
             self.app.sync.poke();
         }
+    }
+
+    /// Cadeaux repérés dans le titre et la description d'un giveaway StreamElements, ajoutés à
+    /// ce giveaway (ceux déjà rattachés restent)
+    fn gifts_from_se_giveaway(&mut self, g: &GiveawayRow, text: &str) {
+        let gifts = self.app.db.gifts().unwrap_or_default();
+        let found = crate::db::gifts_in_text(&gifts, text);
+        if found.is_empty() || self.app.db.attach_gifts(g.id, &found).unwrap_or(0) == 0 {
+            return;
+        }
+        let names: Vec<&str> = gifts.iter().filter(|x| found.contains(&x.id)).map(|x| x.title.as_str()).collect();
+        self.app.log("giveaways", EventKind::Giveaway, format!("Cadeaux repérés dans le giveaway StreamElements de {} : {}", g.channel, names.join(", ")));
+        self.publish();
     }
 
     /// Nouveau giveaway sur une chaîne : cadeaux des réponses de bot déjà connues
