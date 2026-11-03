@@ -100,6 +100,15 @@ async function confirmRemove() {
       </div>
     </div>
 
+    <UAlert icon="i-lucide-info" color="info" variant="subtle" title="Connexion StreamElements : compte StreamElements nécessaire">
+      <template #description>
+        La connexion StreamElements se fait avec ton compte Twitch, mais elle échoue si ce compte Twitch n'a jamais été utilisé sur StreamElements.
+        Crée d'abord ton compte en te connectant une fois sur
+        <button class="font-medium underline hover:no-underline" @click="openExternal('https://streamelements.com/')">streamelements.com</button>
+        (« Login » puis « Twitch »), puis reviens ici.
+      </template>
+    </UAlert>
+
     <div class="border border-default rounded-lg overflow-hidden">
       <table class="w-full text-sm">
         <thead class="bg-elevated/60 text-xs uppercase text-muted">
