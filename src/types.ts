@@ -343,8 +343,9 @@ export interface GiveawayView extends GiveawayDetails {
   winner: string | null
   winnerChance: string | null
   drawnAt: string | null
-  // Tous les gagnants, dans l'ordre du tirage
+  // Tous les gagnants, dans l'ordre du tirage, et leur chance (pseudo en minuscules → « 20.92% »)
   winners: string[]
+  winnerChances: Record<string, string>
   evidence: GiveawayEvidence | null
   // Comptes inscrits ; tickets : giveaway StreamElements (relevés sur StreamElements)
   entriesView: { accountId: number, login: string, at: string, auto: boolean, tickets: number | null }[]

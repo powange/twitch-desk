@@ -87,6 +87,7 @@
     "allow-cancel-win-reply",
     "allow-set-giveaway-winners",
     "allow-se-giveaway-info",
+    "allow-past-giveaways",
     "allow-game-box-arts",
     "allow-save-streamer",
     "allow-get-streamers",

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 
 use crate::app::{App, EventKind};
@@ -486,15 +486,27 @@ pub async fn se_giveaway_info(app: AppState<'_>, url: String) -> CmdResult<Optio
     crate::streamelements::giveaway_outcome(&app.http, &se_channel, &id).await.map_err(|e| format!("StreamElements injoignable : {e}"))
 }
 
+/// Gagnant saisi dans le formulaire, avec sa chance de gagner (facultative)
+#[derive(Debug, Deserialize)]
+pub struct WinnerInput {
+    login: String,
+    #[serde(default)]
+    chance: Option<String>,
+}
+
 /// Gagnants d'un giveaway choisis à la main (formulaire) : remplacent la liste ; aucun : giveaway
 /// rouvert
 #[tauri::command]
-pub fn set_giveaway_winners(app: AppState, id: i64, winners: Vec<String>) -> CmdResult<()> {
-    let mut list: Vec<String> = vec![];
-    for w in winners.iter().filter(|w| !w.trim().is_empty()) {
-        let login = normalize_login(w).ok_or_else(|| format!("Pseudo du gagnant invalide : {}", w.trim()))?;
-        if !list.contains(&login) {
-            list.push(login);
+pub fn set_giveaway_winners(app: AppState, id: i64, winners: Vec<WinnerInput>) -> CmdResult<()> {
+    let mut list: Vec<(String, Option<String>)> = vec![];
+    for w in winners.iter().filter(|w| !w.login.trim().is_empty()) {
+        let login = normalize_login(&w.login).ok_or_else(|| format!("Pseudo du gagnant invalide : {}", w.login.trim()))?;
+        let chance = match w.chance.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            None => None,
+            Some(c) => Some(crate::giveaways::bots::normalize_chance(c).ok_or_else(|| format!("Chance de {login} invalide : {c} (entre 0 et 100 %)"))?),
+        };
+        if !list.iter().any(|(l, _)| *l == login) {
+            list.push((login, chance));
         }
     }
     if list.len() > 100 {
@@ -1204,6 +1216,12 @@ pub fn delete_gift_group(app: AppState, id: i64) -> CmdResult<()> {
     app.db.delete_gift_group(id).map_err(db_err)?;
     app.sync.poke();
     Ok(())
+}
+
+/// Giveaways passés (terminés), page par page (première page : 1)
+#[tauri::command]
+pub async fn past_giveaways(app: AppState<'_>, page: usize, per_page: usize) -> CmdResult<crate::giveaways::PastPage> {
+    blocking(&app, move |app| crate::giveaways::past_views(app, page, per_page)).await
 }
 
 #[tauri::command]

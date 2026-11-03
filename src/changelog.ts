@@ -14,6 +14,17 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.40.2',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'new', text: 'Page Alertes : les giveaways passés se parcourent page par page (boutons à côté du titre), tous les giveaways terminés et plus seulement les plus récents.' },
+      { kind: 'new', text: 'Fiche d\'un giveaway : la chance de gagner de chaque gagnant se saisit et se modifie à côté de son pseudo.' },
+      { kind: 'improved', text: 'Page Alertes, giveaway StreamElements en cours : un clic sur ton pseudo ajoute d\'abord la chaîne à la page StreamElements de ce compte si elle n\'y est pas, puis l\'ouvre.' },
+      { kind: 'fixed', text: 'La chance de gagner est enregistrée aussi quand le bot écrit « won the giveaway with a 20.92% chance », et pour chaque gagnant.' },
+      { kind: 'fixed', text: 'Un giveaway StreamElements dont le lien est écrit avec des majuscules (« StreamElements.com ») s\'enregistre et se lit normalement.' }
+    ]
+  },
+  {
     version: '0.40.1',
     date: '2026-11-03',
     changes: [

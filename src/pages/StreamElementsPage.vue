@@ -364,6 +364,7 @@ function affordable(channel: ChannelView): number | null {
                     :class="account && w.toLowerCase() === account.login.toLowerCase() ? 'text-success font-medium' : ''"
                   >
                     <UIcon name="i-lucide-trophy" class="size-3.5" />{{ w }}
+                    <span v-if="knownGiveaway(channel)!.winnerChances[w.toLowerCase()]" class="text-xs text-muted">({{ knownGiveaway(channel)!.winnerChances[w.toLowerCase()] }})</span>
                   </span>
                 </div>
                 <span v-else class="text-muted">—</span>

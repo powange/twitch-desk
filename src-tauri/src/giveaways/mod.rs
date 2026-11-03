@@ -1297,6 +1297,24 @@ fn rows_to_views(app: &App, rows: Vec<GiveawayRow>, accounts: &[(i64, String)]) 
         .collect()
 }
 
+/// Page des giveaways passés (terminés), les plus récents d'abord
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PastPage {
+    pub giveaways: Vec<GiveawayView>,
+    pub total: usize,
+    pub page: usize,
+    pub per_page: usize,
+}
+
+pub fn past_views(app: &App, page: usize, per_page: usize) -> PastPage {
+    let per_page = per_page.clamp(5, 100);
+    let accounts: Vec<(i64, String)> =
+        app.db.accounts().unwrap_or_default().into_iter().map(|a| (a.id, a.login.to_lowercase())).collect();
+    let (rows, total) = app.db.closed_giveaways(per_page, page.saturating_sub(1) * per_page).unwrap_or_default();
+    PastPage { giveaways: rows_to_views(app, rows, &accounts), total, page: page.max(1), per_page }
+}
+
 /// Giveaways gagnés par nos comptes (page « Mes gains »)
 pub fn won_views(app: &App) -> Vec<GiveawayView> {
     let accounts: Vec<(i64, String)> =
@@ -1649,10 +1667,13 @@ pub fn validate_input(mut g: GiveawayInput) -> Result<GiveawayInput, String> {
     if g.command.as_ref().is_some_and(|c| c.chars().count() > 50) {
         return Err("Commande trop longue (50 caractères au plus)".into());
     }
+    // Domaine sans tenir compte des majuscules (« https://StreamElements.com/… »), écrit en minuscules
+    const SE_PREFIX: &str = "https://streamelements.com/";
     g.url = g.url.map(|u| u.trim().to_owned()).filter(|u| !u.is_empty());
-    if let Some(url) = &g.url {
-        if !url.starts_with("https://streamelements.com/") {
-            return Err("Le lien StreamElements doit commencer par https://streamelements.com/".into());
+    if let Some(url) = &mut g.url {
+        match url.get(..SE_PREFIX.len()) {
+            Some(head) if head.eq_ignore_ascii_case(SE_PREFIX) => *url = format!("{SE_PREFIX}{}", &url[SE_PREFIX.len()..]),
+            _ => return Err("Le lien StreamElements doit commencer par https://streamelements.com/".into()),
         }
     }
     let d = &mut g.details;

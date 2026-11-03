@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import ChannelCell from '../../components/ChannelCell.vue'
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { RouterLink } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
 import { useWatchStream } from '../../utils/viewer'
@@ -23,6 +23,7 @@ import { useAction } from '../../composables/useAction'
 
 const { snapshot, accounts } = useSnapshot()
 const toast = useToast()
+const router = useRouter()
 const openExternal = useOpenExternal()
 const watchStream = useWatchStream()
 
@@ -39,10 +40,36 @@ const tables = computed(() => [
   {
     key: 'past',
     title: 'Giveaways passés',
-    list: giveaways.value.filter(g => g.status === 'closed'),
+    list: past.value?.giveaways ?? [],
     empty: 'Aucun giveaway terminé pour l\'instant.'
   }
 ])
+
+// Giveaways passés : lus page par page (PAST_PER_PAGE), relus quand un giveaway change
+const PAST_PER_PAGE = 25
+const pastPage = ref(1)
+const past = ref<{ giveaways: GiveawayView[], total: number } | null>(null)
+let pastTimer: ReturnType<typeof setTimeout> | null = null
+let pastSeq = 0
+async function loadPast() {
+  const seq = ++pastSeq
+  try {
+    const result = await invoke<{ giveaways: GiveawayView[], total: number }>('past_giveaways', { page: pastPage.value, perPage: PAST_PER_PAGE })
+    if (seq !== pastSeq) return
+    past.value = result
+    // Page devenue vide (giveaways supprimés ou rouverts) : dernière page existante
+    const last = Math.max(1, Math.ceil(result.total / PAST_PER_PAGE))
+    if (pastPage.value > last) pastPage.value = last
+  } catch (e) {
+    if (seq === pastSeq) toast.add({ title: 'Giveaways passés non lus', description: String(e), color: 'error' })
+  }
+}
+watch(pastPage, () => { void loadPast() })
+watch(giveaways, () => {
+  if (pastTimer) clearTimeout(pastTimer)
+  pastTimer = setTimeout(() => { void loadPast() }, 300)
+}, { immediate: true })
+onBeforeUnmount(() => { if (pastTimer) clearTimeout(pastTimer) })
 // Live en cours d'une chaîne surveillée (catégorie, spectateurs), indexé une fois par mise à jour
 const liveByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, c.live])))
 const liveOf = (channel: string) => liveByLogin.value.get(channel) ?? null
@@ -123,14 +150,36 @@ const participating = ref<number | null>(null)
 // Gagnant qui est un de nos comptes
 const ourLogins = computed(() => new Set(accounts.value.map(a => a.login.toLowerCase())))
 const isOurs = (login: string) => ourLogins.value.has(login.toLowerCase())
+// Chance de gagner d'un gagnant (celle du premier aussi gardée à part)
+const chanceOf = (g: GiveawayView, login: string, i: number) => g.winnerChances[login.toLowerCase()] ?? (i === 0 ? g.winnerChance : null)
 // Participations ; StreamElements : chacun de nos comptes, à 0 ticket s'il n'en a pas
 function participationsOf(g: GiveawayView) {
   if (g.kind !== 'streamelements') return g.entriesView
   return accounts.value.map(a => g.entriesView.find(e => e.accountId === a.id)
     ?? { accountId: a.id, login: a.login, at: '', auto: false, tickets: 0 })
 }
+// Chaîne dans la liste StreamElements d'un compte
+const inSeList = (accountId: number, channel: string) =>
+  !!accounts.value.find(a => a.id === accountId)?.channels.some(c => c.inSe && c.login.toLowerCase() === channel.toLowerCase())
+// Participation à un giveaway StreamElements : clos → sa page sur StreamElements ; en cours → page
+// StreamElements de l'application, la chaîne ajoutée d'abord à la liste du compte au besoin
+async function openSeParticipation(g: GiveawayView, accountId: number) {
+  const closedUrl = seClosedUrl(g)
+  if (closedUrl) return openExternal(closedUrl)
+  if (!inSeList(accountId, g.channel)) {
+    try {
+      await invoke('add_channel', { accountId, login: g.channel, list: 'se' })
+      const login = accounts.value.find(a => a.id === accountId)?.login ?? ''
+      toast.add({ title: `${g.channel} ajoutée à la page StreamElements`, description: login, color: 'success', icon: 'i-lucide-check' })
+    } catch (e) {
+      toast.add({ title: 'Chaîne non ajoutée', description: String(e), color: 'error' })
+      return
+    }
+  }
+  void router.push({ path: '/streamelements', query: { channels: g.channel } })
+}
 // Giveaway StreamElements terminé : adresse de sa page sur StreamElements
-const seClosedUrl = (g: GiveawayView) => g.kind === 'streamelements' && g.status === 'closed' && g.url?.startsWith('https://streamelements.com/') ? g.url : null
+const seClosedUrl = (g: GiveawayView) => g.kind === 'streamelements' && g.status === 'closed' && g.url?.toLowerCase().startsWith('https://streamelements.com/') ? g.url : null
 
 async function participate(g: GiveawayView, ids = chosenFor(g)) {
   const todo = ids.filter(id => !entered(g, id))
@@ -334,9 +383,21 @@ function share(g: GiveawayView) {
 
     <!-- Giveaways en cours (ouverts et en pause), puis passés : mêmes colonnes -->
     <section v-for="group in tables" :key="group.key" class="flex flex-col gap-2">
-      <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">
-        {{ group.title }} <span v-if="group.list.length" class="text-primary">({{ group.list.length }})</span>
-      </h2>
+      <div class="flex items-center gap-3 flex-wrap">
+        <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">
+          {{ group.title }}
+          <span v-if="group.key === 'past' ? past?.total : group.list.length" class="text-primary">({{ group.key === 'past' ? past?.total : group.list.length }})</span>
+        </h2>
+        <UPagination
+          v-if="group.key === 'past' && (past?.total ?? 0) > PAST_PER_PAGE"
+          v-model:page="pastPage"
+          :total="past?.total ?? 0"
+          :items-per-page="PAST_PER_PAGE"
+          size="xs"
+          :sibling-count="1"
+          show-edges
+        />
+      </div>
       <div class="border border-default rounded-lg overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="bg-elevated/60 text-xs uppercase text-muted">
@@ -416,14 +477,15 @@ function share(g: GiveawayView) {
               <td class="px-3 py-2">
                 <div class="flex flex-wrap gap-1">
                   <!-- StreamElements : giveaway clos → sa page sur StreamElements (navigateur) ; en cours
-                       ou en pause → page StreamElements de l'application, filtrée sur la chaîne -->
+                       ou en pause → page StreamElements de l'application, filtrée sur la chaîne (la
+                       chaîne y est d'abord ajoutée pour ce compte si elle n'y est pas) -->
                   <component
-                    :is="seClosedUrl(g) ? 'button' : g.kind === 'streamelements' ? RouterLink : 'span'"
+                    :is="g.kind === 'streamelements' ? 'button' : 'span'"
                     v-for="e in participationsOf(g)"
                     :key="e.accountId"
-                    v-bind="seClosedUrl(g) ? { type: 'button' } : g.kind === 'streamelements' ? { to: { path: '/streamelements', query: { channels: g.channel } } } : {}"
-                    :title="seClosedUrl(g) ? 'Voir ce giveaway sur StreamElements (navigateur)' : g.kind === 'streamelements' ? 'Voir sur la page StreamElements' : undefined"
-                    @click="seClosedUrl(g) && openExternal(seClosedUrl(g)!)"
+                    v-bind="g.kind === 'streamelements' ? { type: 'button' } : {}"
+                    :title="seClosedUrl(g) ? 'Voir ce giveaway sur StreamElements (navigateur)' : g.kind === 'streamelements' ? (inSeList(e.accountId, g.channel) ? 'Voir sur la page StreamElements' : 'Ajouter la chaîne à la page StreamElements de ce compte') : undefined"
+                    @click="g.kind === 'streamelements' && openSeParticipation(g, e.accountId)"
                   >
                     <UBadge
                       :label="e.tickets !== null ? `${e.login} · ${e.tickets} ticket${e.tickets > 1 ? 's' : ''}` : e.login"
@@ -445,7 +507,7 @@ function share(g: GiveawayView) {
                 <div v-if="g.winners.length" class="flex flex-col gap-0.5">
                   <span v-for="(w, i) in g.winners" :key="w" class="whitespace-nowrap">
                     <span :class="isOurs(w) ? 'text-success font-semibold' : ''">{{ w }}</span>
-                    <span v-if="i === 0 && g.winnerChance" class="text-xs text-muted"> ({{ g.winnerChance }})</span>
+                    <span v-if="chanceOf(g, w, i)" class="text-xs text-muted"> ({{ chanceOf(g, w, i) }})</span>
                     <UBadge v-if="isOurs(w)" label="Gagné !" color="success" size="sm" class="ml-1" />
                   </span>
                 </div>

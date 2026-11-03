@@ -278,7 +278,9 @@ pub async fn giveaway_outcome(http: &reqwest::Client, se_channel: &str, id: &str
 
 /// Chaîne et identifiant d'un lien de giveaway (https://streamelements.com/<chaîne>/giveaway/<id>)
 pub fn parse_giveaway_url(url: &str) -> Option<(String, String)> {
-    let rest = url.trim().trim_end_matches('/').strip_prefix("https://streamelements.com/")?;
+    const PREFIX: &str = "https://streamelements.com/";
+    let url = url.trim().trim_end_matches('/');
+    let rest = url.get(..PREFIX.len()).filter(|head| head.eq_ignore_ascii_case(PREFIX)).map(|_| &url[PREFIX.len()..])?;
     let mut parts = rest.split('/');
     let (channel, kind, id) = (parts.next()?, parts.next()?, parts.next()?);
     let ok = parts.next().is_none()
@@ -429,6 +431,10 @@ mod tests {
         assert_eq!(
             parse_giveaway_url("https://streamelements.com/Saenz203/giveaway/6ae91894a0a183147ae56a71/"),
             Some(("saenz203".into(), "6ae91894a0a183147ae56a71".into()))
+        );
+        assert_eq!(
+            parse_giveaway_url("https://StreamElements.com/saenz203/giveaway/6ae91894a0a183147ae56a71").map(|(c, _)| c).as_deref(),
+            Some("saenz203")
         );
         assert_eq!(parse_giveaway_url("https://streamelements.com/saenz203/store"), None);
         assert_eq!(parse_giveaway_url("https://evil.com/saenz203/giveaway/6ae9"), None);

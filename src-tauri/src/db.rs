@@ -398,6 +398,10 @@ const MIGRATIONS: &[&str] = &[r#"
     -- Plusieurs gagnants par giveaway (liste JSON, dans l'ordre du tirage) ; winner garde le premier
     ALTER TABLE giveaways ADD COLUMN winners TEXT NOT NULL DEFAULT '[]';
     UPDATE giveaways SET winners = json_array(winner) WHERE winner IS NOT NULL;
+"#, r#"
+    -- Chance de chaque gagnant (objet JSON pseudo → « 20.92% ») ; winner_chance garde celle du premier
+    ALTER TABLE giveaways ADD COLUMN winner_chances TEXT NOT NULL DEFAULT '{}';
+    UPDATE giveaways SET winner_chances = json_object(winner, winner_chance) WHERE winner IS NOT NULL AND winner_chance IS NOT NULL;
 "#];
 
 /// Types de giveaway
@@ -674,6 +678,8 @@ pub struct GiveawayRow {
     pub drawn_at: Option<String>,
     /// Tous les gagnants, dans l'ordre du tirage
     pub winners: Vec<String>,
+    /// Chance de gagner de chaque gagnant qui l'a annoncée (pseudo → « 20.92% »)
+    pub winner_chances: std::collections::BTreeMap<String, String>,
     pub entries: Vec<GiveawayEntry>,
     /// Cadeaux du catalogue rattachés au giveaway
     pub gift_ids: Vec<i64>,
@@ -1477,7 +1483,8 @@ impl Db {
             "SELECT id, channel, kind, command, url, evidence, detected_at, status, handled, winner, winner_chance, drawn_at,
                     ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                     require_follow, require_presence, require_discord, notes, manual, reminded,
-                    prize_received, prize_note, require_greeting, min_chat_minutes, follow_min_days, winners
+                    prize_received, prize_note, require_greeting, min_chat_minutes, follow_min_days, winners,
+                    winner_chances
              FROM giveaways {filter}"
         ))?;
         let mut rows: Vec<GiveawayRow> = stmt
@@ -1498,6 +1505,7 @@ impl Db {
                     winner_chance: r.get(10)?,
                     drawn_at: r.get(11)?,
                     winners: serde_json::from_str(&r.get::<_, String>(28)?).unwrap_or_default(),
+                    winner_chances: serde_json::from_str(&r.get::<_, String>(29)?).unwrap_or_default(),
                     entries: vec![],
                     details: GiveawayDetails {
                         ticket_unique: r.get(12)?,
@@ -1607,6 +1615,16 @@ impl Db {
             params![id, received, note],
         )?;
         Ok(())
+    }
+
+    /// Giveaways terminés, les plus récents d'abord, par page (`offset`, `limit`) ; et leur nombre
+    pub fn closed_giveaways(&self, limit: usize, offset: usize) -> DbResult<(Vec<GiveawayRow>, usize)> {
+        let total: i64 = self.conn().query_row("SELECT COUNT(*) FROM giveaways WHERE status = 'closed'", [], |r| r.get(0))?;
+        let rows = self.select_giveaways(
+            "WHERE status = 'closed' ORDER BY COALESCE(drawn_at, detected_at) DESC, id DESC LIMIT ?1 OFFSET ?2",
+            [limit as i64, offset as i64],
+        )?;
+        Ok((rows, total as usize))
     }
 
     /// Giveaways gagnés par un de nos comptes (pseudos en minuscules), les plus récents d'abord
@@ -1852,29 +1870,37 @@ impl Db {
     /// inconnu). Le premier gagnant reste dans `winner`, avec sa chance et l'heure du tirage
     pub fn set_giveaway_winner(&self, id: i64, winner: &str, chance: Option<&str>, at: &str) -> DbResult<bool> {
         let conn = self.conn();
-        let Some(text) = conn.query_row("SELECT winners FROM giveaways WHERE id = ?1", [id], |r| r.get::<_, String>(0)).optional()? else {
-            return Ok(false);
-        };
+        let found: Option<(String, String)> =
+            conn.query_row("SELECT winners, winner_chances FROM giveaways WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        let Some((text, chances_text)) = found else { return Ok(false) };
         let mut winners: Vec<String> = serde_json::from_str(&text).unwrap_or_default();
         if winners.iter().any(|w| w.eq_ignore_ascii_case(winner)) {
             return Ok(false);
         }
         winners.push(winner.to_owned());
+        let mut chances: std::collections::BTreeMap<String, String> = serde_json::from_str(&chances_text).unwrap_or_default();
+        if let Some(c) = chance {
+            chances.insert(winner.to_lowercase(), c.to_owned());
+        }
         conn.execute(
             "UPDATE giveaways SET winners = ?2, winner = COALESCE(winner, ?3), winner_chance = CASE WHEN winner IS NULL THEN ?4 ELSE winner_chance END,
-                 drawn_at = COALESCE(drawn_at, ?5), status = 'closed' WHERE id = ?1",
-            params![id, serde_json::to_string(&winners).expect("liste"), winner, chance, at],
+                 drawn_at = COALESCE(drawn_at, ?5), status = 'closed', winner_chances = ?6 WHERE id = ?1",
+            params![id, serde_json::to_string(&winners).expect("liste"), winner, chance, at, serde_json::to_string(&chances).expect("objet")],
         )?;
         Ok(true)
     }
 
-    /// Gagnants choisis à la main (formulaire) : remplacent la liste ; aucun : giveaway rouvert
-    pub fn set_giveaway_winners(&self, id: i64, winners: &[String], at: &str) -> DbResult<bool> {
-        let Some(first) = winners.first() else { return self.clear_giveaway_winner(id) };
+    /// Gagnants choisis à la main (formulaire), avec leur chance : remplacent la liste ; aucun :
+    /// giveaway rouvert
+    pub fn set_giveaway_winners(&self, id: i64, winners: &[(String, Option<String>)], at: &str) -> DbResult<bool> {
+        let Some((first, first_chance)) = winners.first() else { return self.clear_giveaway_winner(id) };
+        let logins: Vec<&str> = winners.iter().map(|(w, _)| w.as_str()).collect();
+        let chances: std::collections::BTreeMap<String, String> =
+            winners.iter().filter_map(|(w, c)| Some((w.to_lowercase(), c.clone()?))).collect();
         let n = self.conn().execute(
-            "UPDATE giveaways SET winners = ?2, winner_chance = CASE WHEN winner IS ?3 THEN winner_chance ELSE NULL END, winner = ?3,
+            "UPDATE giveaways SET winners = ?2, winner_chance = ?5, winner = ?3, winner_chances = ?6,
                  drawn_at = COALESCE(drawn_at, ?4), status = 'closed' WHERE id = ?1",
-            params![id, serde_json::to_string(winners).expect("liste"), first, at],
+            params![id, serde_json::to_string(&logins).expect("liste"), first, at, first_chance, serde_json::to_string(&chances).expect("objet")],
         )?;
         Ok(n > 0)
     }
@@ -1883,7 +1909,7 @@ impl Db {
     /// clôture habituelles s'appliquent ensuite
     pub fn clear_giveaway_winner(&self, id: i64) -> DbResult<bool> {
         let n = self.conn().execute(
-            "UPDATE giveaways SET winner = NULL, winners = '[]', winner_chance = NULL, drawn_at = NULL, status = 'open' WHERE id = ?1",
+            "UPDATE giveaways SET winner = NULL, winners = '[]', winner_chances = '{}', winner_chance = NULL, drawn_at = NULL, status = 'open' WHERE id = ?1",
             [id],
         )?;
         Ok(n > 0)
@@ -1915,7 +1941,7 @@ impl Db {
     /// prochain live, ancienneté repartie de `at`
     pub fn reopen_closed_giveaway(&self, id: i64, live: bool, at: &str) -> DbResult<bool> {
         let n = self.conn().execute(
-            "UPDATE giveaways SET status = ?2, winner = NULL, winners = '[]', winner_chance = NULL, drawn_at = NULL, detected_at = ?3
+            "UPDATE giveaways SET status = ?2, winner = NULL, winners = '[]', winner_chances = '{}', winner_chance = NULL, drawn_at = NULL, detected_at = ?3
              WHERE id = ?1 AND status = 'closed'",
             params![id, if live { "open" } else { "paused" }, at],
         )?;
@@ -2738,9 +2764,11 @@ mod tests {
         assert!(db.recent_drawn_giveaway("lunarsea", "2026-11-03T10:20:00Z").unwrap().is_none());
         db.delete_giveaway(later).unwrap();
         // Formulaire : liste remplacée (premier gagnant changé : sa chance oubliée), vide : rouvert
-        assert!(db.set_giveaway_winners(g, &["bob".into(), "carol".into()], "2026-11-03T11:00:00Z").unwrap());
+        assert_eq!(db.giveaway(g).unwrap().unwrap().winner_chances.get("alice").map(String::as_str), Some("2 %"));
+        assert!(db.set_giveaway_winners(g, &[("bob".into(), None), ("carol".into(), Some("12%".into()))], "2026-11-03T11:00:00Z").unwrap());
         let row = db.giveaway(g).unwrap().unwrap();
         assert_eq!((row.winner.as_deref(), row.winner_chance, row.winners.len()), (Some("bob"), None, 2));
+        assert_eq!(row.winner_chances.get("carol").map(String::as_str), Some("12%"));
         assert!(db.set_giveaway_winners(g, &[], "2026-11-03T11:00:00Z").unwrap());
         let row = db.giveaway(g).unwrap().unwrap();
         assert!(row.winners.is_empty() && row.winner.is_none() && row.status == "open");

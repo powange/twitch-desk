@@ -98,10 +98,16 @@ const winnerInput = ref('')
 function addWinner() {
   const login = winnerInput.value.trim().replace(/^@/, '').toLowerCase()
   winnerInput.value = ''
-  if (login && !form.value.winners.some(w => w.toLowerCase() === login)) form.value.winners.push(login)
+  if (login && !form.value.winners.some(w => w.login.toLowerCase() === login)) form.value.winners.push({ login, chance: '' })
 }
 function removeWinner(login: string) {
-  form.value.winners = form.value.winners.filter(w => w !== login)
+  form.value.winners = form.value.winners.filter(w => w.login !== login)
+}
+// Liste comparable (pseudo et chance) : n'enregistrer que si elle a changé
+const winnersKey = (list: { login: string, chance: string }[]) => list.map(w => `${w.login.toLowerCase()}=${chanceInput(w.chance)}`).join()
+// Chance affichée dans le champ (le « % » est à côté) : « 20.92% » → « 20.92 »
+function chanceInput(chance: string | null | undefined) {
+  return (chance ?? '').trim().replace(/\s*%$/, '').replace(',', '.')
 }
 
 // Giveaway terminé : rouvert à l'enregistrement (gagnant retiré)
@@ -127,7 +133,8 @@ const form = ref({
   followDays: null as number | null,
   notes: '',
   giftIds: [] as number[],
-  winners: [] as string[]
+  // Gagnants et leur chance de gagner (« 20.92% », vide : inconnue)
+  winners: [] as { login: string, chance: string }[]
 })
 
 // Ce que le cœur sait de la chaîne saisie (fiche Twitch, StreamElements, streamer)
@@ -247,7 +254,7 @@ watch(open, (isOpen) => {
     followDays: g?.followMinDays ?? null,
     notes: g?.notes ?? '',
     giftIds: [...(g?.giftIds ?? [])],
-    winners: [...(g?.winners ?? [])]
+    winners: (g?.winners ?? []).map((w, i) => ({ login: w, chance: chanceInput(g?.winnerChances[w.toLowerCase()] ?? (i === 0 ? g?.winnerChance : null)) }))
   }
   reopen.value = false
   winnerInput.value = ''
@@ -566,9 +573,10 @@ async function save() {
       // Gagnant changé à la main : désigné (le giveaway est clos), ou retiré (il est rouvert)
       // Pseudo tapé sans cliquer sur « Ajouter » : ajouté aussi
       addWinner()
-      const before = (props.giveaway?.winners ?? []).map(w => w.toLowerCase()).join()
-      if (!reopen.value && props.giveaway && props.giveaway.id === id && f.winners.map(w => w.toLowerCase()).join() !== before) {
-        await invoke('set_giveaway_winners', { id, winners: f.winners })
+      const g = props.giveaway
+      const before = winnersKey((g?.winners ?? []).map((w, i) => ({ login: w, chance: g?.winnerChances[w.toLowerCase()] ?? (i === 0 ? g?.winnerChance ?? '' : '') })))
+      if (!reopen.value && g && g.id === id && winnersKey(f.winners) !== before) {
+        await invoke('set_giveaway_winners', { id, winners: f.winners.map(w => ({ login: w.login, chance: w.chance.trim() || null })) })
       }
     }
     // Créé une seule fois : un nouvel essai modifie ce giveaway
@@ -830,13 +838,16 @@ async function save() {
 
             <!-- Communs à tous les types de giveaway -->
             <USeparator label="Pour tous les types de giveaway" :ui="{ label: 'text-xs text-muted' }" />
-              <UFormField v-if="giveaway" label="Gagnants" help="Autant que nécessaire. Tous retirés : le giveaway est rouvert" class="max-w-sm">
+              <UFormField v-if="giveaway" label="Gagnants" help="Autant que nécessaire, avec leur chance de gagner si elle est connue. Tous retirés : le giveaway est rouvert" class="max-w-sm">
                 <div class="flex flex-col gap-2">
-                  <div v-if="form.winners.length" class="flex flex-wrap gap-1.5">
-                    <UBadge v-for="w in form.winners" :key="w" color="success" variant="subtle" icon="i-lucide-trophy" class="pr-0.5">
-                      {{ w }}
-                      <UButton icon="i-lucide-x" size="xs" color="neutral" variant="link" :aria-label="`Retirer ${w} des gagnants`" @click="removeWinner(w)" />
-                    </UBadge>
+                  <!-- Un gagnant par ligne : pseudo, chance de gagner, retrait -->
+                  <div v-for="w in form.winners" :key="w.login" class="flex items-center gap-2">
+                    <UIcon name="i-lucide-trophy" class="size-4 text-success shrink-0" />
+                    <span class="font-medium flex-1 truncate">{{ w.login }}</span>
+                    <UInput v-model="w.chance" size="sm" placeholder="Chance %" class="w-28" :aria-label="`Chance de gagner de ${w.login}`">
+                      <template #trailing><span class="text-xs text-muted">%</span></template>
+                    </UInput>
+                    <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :aria-label="`Retirer ${w.login} des gagnants`" @click="removeWinner(w.login)" />
                   </div>
                   <div class="flex gap-2">
                     <UInput id="gw-winner" v-model="winnerInput" icon="i-lucide-trophy" :placeholder="form.winners.length ? 'Autre gagnant' : 'Pas encore tiré'" class="flex-1" @keydown.enter.prevent="addWinner" />

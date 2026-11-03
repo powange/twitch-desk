@@ -32,9 +32,9 @@ fn re(pattern: &str) -> Regex {
 
 static SE_URL: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)https://streamelements\.com/[^/\s]+/giveaway/[a-f0-9]+"));
 static SE_WIN_EN: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+)\s+(?:has\s+)?won the giveaway(?:\s+with\s+([\d.]+%)\s+chance to win)?"));
+    LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+)\s+(?:has\s+)?won the giveaway(?:\s+with\s+(?:an?\s+)?([\d.,]+\s?%)\s+chance(?:\s+to\s+win)?)?"));
 static SE_WIN_FR: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+)\s+a gagné le concours(?:\s+avec une chance de\s+([\d.]+%))?"));
+    LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+)\s+a gagné le concours(?:\s+avec une chance de\s+([\d.,]+\s?%))?"));
 static NO_ONE: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)\bno\s+one\s+(?:has\s+)?won\b"));
 static SE_TICKETS: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+)\s+got\s+\d+\s+ticket\(?s?\)?.*?\((\d+)/(\d+)\)"));
@@ -170,7 +170,14 @@ fn winner(bot: &str, name: Option<&str>, chance: Option<&str>) -> Option<BotEven
     if name.len() > MAX_NAME_LENGTH || is_non_winner_name(name) {
         return None;
     }
-    Some(BotEvent::Winner { bot: bot.to_owned(), winner: name.to_owned(), chance: chance.map(str::to_owned) })
+    Some(BotEvent::Winner { bot: bot.to_owned(), winner: name.to_owned(), chance: chance.and_then(normalize_chance) })
+}
+
+/// Chance de gagner écrite « 20,92 % », « 20.92% » ou « 20.92 » : « 20.92% » (None : illisible)
+pub fn normalize_chance(text: &str) -> Option<String> {
+    let number = text.trim().trim_end_matches('%').trim().replace(',', ".");
+    let value: f64 = number.parse().ok()?;
+    ((0.0..=100.0).contains(&value) && !number.is_empty()).then(|| format!("{number}%"))
 }
 
 fn streamelements_winner(message: &str) -> Option<BotEvent> {
@@ -201,7 +208,11 @@ pub fn parse_bot_message(user: &str, message: &str, privileged: bool) -> Vec<Bot
     let bot = user.to_lowercase();
     let events = match bot.as_str() {
         "streamelements" => vec![
-            SE_URL.find(message).map(|m| BotEvent::StreamElementsUrl(m.as_str().to_owned())),
+            // Domaine écrit en minuscules (« https://StreamElements.com/… » vu dans les chats)
+            SE_URL.find(message).map(|m| {
+                let url = m.as_str();
+                BotEvent::StreamElementsUrl(format!("https://streamelements.com/{}", &url["https://streamelements.com/".len()..]))
+            }),
             streamelements_winner(message),
             ticket_info(message),
             ticket_purchase(message),
@@ -294,6 +305,15 @@ mod tests {
             vec![win("streamelements", "Pseudo_42", Some("3.94%"))]
         );
         assert_eq!(parse_bot_message("streamelements", "pseudo won the giveaway!", false), vec![win("streamelements", "pseudo", None)]);
+        // « with a 20.92% chance », message /me (ACTION)
+        assert_eq!(
+            parse_bot_message("StreamElements", "ACTION @bilge_rat_bust3r267 won the giveaway with a 20.92% chance to win PogChamp", false),
+            vec![win("streamelements", "bilge_rat_bust3r267", Some("20.92%"))]
+        );
+        assert_eq!(normalize_chance("20,5 %").as_deref(), Some("20.5%"));
+        assert_eq!(normalize_chance("12"), Some("12%".into()));
+        assert_eq!(normalize_chance("abc"), None);
+        assert_eq!(normalize_chance("150%"), None);
         assert_eq!(
             parse_bot_message("streamelements", "@foo has won the giveaway with 100% chance to win PogChamp", false),
             vec![win("streamelements", "foo", Some("100%"))]
