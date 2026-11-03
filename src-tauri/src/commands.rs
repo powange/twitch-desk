@@ -1147,6 +1147,13 @@ pub fn set_prize(app: AppState, id: i64, received: bool, note: Option<String>) -
 }
 
 /// Catégorie Twitch (jeu) d'après son nom exact ou l'adresse de sa catégorie
+/// Récompenses de points de chaîne d'une chaîne (formulaire de giveaway)
+#[tauri::command]
+pub async fn channel_rewards(app: AppState<'_>, channel: String) -> CmdResult<Vec<crate::twitch::gql::ChannelReward>> {
+    let login = channel.trim().trim_start_matches('@').to_lowercase();
+    crate::twitch::gql::channel_rewards(&app.http, &login).await.map_err(|e| format!("récompenses de la chaîne : {e}"))
+}
+
 /// Autocomplétion des catégories Twitch
 #[tauri::command]
 pub async fn search_categories(app: AppState<'_>, query: String) -> CmdResult<Vec<crate::twitch::gql::CategoryHit>> {

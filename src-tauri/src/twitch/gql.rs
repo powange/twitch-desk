@@ -585,6 +585,60 @@ fn parse_category_streams(value: &Value) -> Vec<CategoryStream> {
         .unwrap_or_default()
 }
 
+/// Récompense de points de chaîne proposée par une chaîne
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelReward {
+    pub id: String,
+    pub title: String,
+    pub cost: u64,
+    pub prompt: Option<String>,
+    pub image: Option<String>,
+    pub background: Option<String>,
+    /// En pause par la chaîne (pas achetable pour l'instant)
+    pub paused: bool,
+    /// Plus en stock (limite atteinte)
+    pub in_stock: bool,
+}
+
+/// Récompenses de points de chaîne d'une chaîne (actives seulement), sans compte
+pub async fn channel_rewards(http: &reqwest::Client, login: &str) -> Result<Vec<ChannelReward>> {
+    if !is_login(login) {
+        return Ok(vec![]);
+    }
+    let query = format!(
+        "query {{ user(login: \"{login}\") {{ channel {{ communityPointsSettings {{ customRewards {{ \
+         id title cost prompt backgroundColor isEnabled isPaused isInStock image {{ url }} defaultImage {{ url }} }} }} }} }} }}"
+    );
+    let value = raw_query(http, &query).await?;
+    Ok(parse_rewards(&value))
+}
+
+fn parse_rewards(value: &Value) -> Vec<ChannelReward> {
+    let Some(list) = value.pointer("/data/user/channel/communityPointsSettings/customRewards").and_then(Value::as_array) else {
+        return vec![];
+    };
+    let s = |v: &Value, p: &str| v.pointer(p).and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_owned);
+    let mut rewards: Vec<ChannelReward> = list
+        .iter()
+        .filter(|r| r.get("isEnabled").and_then(Value::as_bool).unwrap_or(true))
+        .filter_map(|r| {
+            Some(ChannelReward {
+                id: s(r, "/id")?,
+                title: s(r, "/title")?,
+                cost: r.get("cost")?.as_u64()?,
+                prompt: s(r, "/prompt"),
+                image: s(r, "/image/url").or_else(|| s(r, "/defaultImage/url")).filter(|u| u.starts_with("https://")),
+                background: s(r, "/backgroundColor"),
+                paused: r.get("isPaused").and_then(Value::as_bool).unwrap_or(false),
+                in_stock: r.get("isInStock").and_then(Value::as_bool).unwrap_or(true),
+            })
+        })
+        .collect();
+    rewards.sort_by(|a, b| a.cost.cmp(&b.cost).then_with(|| a.title.cmp(&b.title)));
+    rewards
+}
+
 /// Catégorie trouvée par la recherche
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -1107,6 +1161,20 @@ mod tests {
         let offline = json!({"user":{"id":"1","stream":null,"broadcastSettings":{"title":"x","game":null}}});
         assert_eq!(parse_stream_info(&offline), None);
         assert_eq!(parse_stream_info(&json!({"user":null})), None);
+    }
+
+    #[test]
+    fn rewards() {
+        let value = json!({"data":{"user":{"channel":{"communityPointsSettings":{"customRewards":[
+            {"id":"b","title":"Ticket giveaway","cost":5000,"isEnabled":true,"isPaused":true,"isInStock":true,"image":null,"defaultImage":{"url":"https://static-cdn.jtvnw.net/default-1.png"}},
+            {"id":"a","title":"Hydrate-toi","cost":100,"isEnabled":true,"isPaused":false,"isInStock":false,"prompt":"Bois","image":{"url":"https://x/a.png"}},
+            {"id":"c","title":"Désactivée","cost":1,"isEnabled":false}
+        ]}}}}});
+        let list = parse_rewards(&value);
+        assert_eq!(list.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert!(!list[0].in_stock && list[1].paused);
+        assert_eq!(list[1].image.as_deref(), Some("https://static-cdn.jtvnw.net/default-1.png"));
+        assert!(parse_rewards(&json!({"data":{"user":null}})).is_empty());
     }
 
     #[test]

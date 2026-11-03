@@ -313,6 +313,7 @@ pub fn run() {
             commands::set_prize,
             commands::resolve_category,
             commands::search_categories,
+            commands::channel_rewards,
             commands::game_box_arts,
             commands::save_streamer,
             commands::get_streamers,

@@ -72,6 +72,7 @@ const COMMANDS: &[&str] = &[
     "set_prize",
     "resolve_category",
     "search_categories",
+    "channel_rewards",
     "game_box_arts",
     "save_streamer",
     "get_streamers",

@@ -237,6 +237,60 @@ watch(() => form.value.channel, (login) => {
   inspectTimer = setTimeout(() => void inspect(login), 400)
 })
 
+// Récompenses de points de chaîne de la chaîne : choisir celle du giveaway remplit son nom et
+// son coût
+interface ChannelReward { id: string, title: string, cost: number, prompt: string | null, image: string | null, background: string | null, paused: boolean, inStock: boolean }
+const rewards = ref<ChannelReward[]>([])
+const rewardsLoading = ref(false)
+const rewardsError = ref<string | null>(null)
+let rewardsFor = ''
+let rewardsTimer: ReturnType<typeof setTimeout> | null = null
+// Récompenses qui ressemblent à une participation (ticket, giveaway…) en premier
+const GIVEAWAY_WORDS = /giveaway|ticket|tirage|concours|participation|gagner|lot|cadeau/i
+const rewardItems = computed(() => {
+  const list = [...rewards.value].sort((a, b) => Number(GIVEAWAY_WORDS.test(b.title)) - Number(GIVEAWAY_WORDS.test(a.title)))
+  return list.map(r => ({
+    label: r.title,
+    value: r.id,
+    description: [`${formatNumber(r.cost)} points`, r.paused ? 'en pause' : null, r.inStock ? null : 'épuisée'].filter(Boolean).join(' · '),
+    avatar: r.image ? { src: r.image, alt: '' } : undefined
+  }))
+})
+const chosenReward = computed<string | undefined>({
+  get: () => rewards.value.find(r => r.title === form.value.rewardName && (form.value.rewardCost === null || r.cost === form.value.rewardCost))?.id,
+  set: (id) => {
+    const r = rewards.value.find(x => x.id === id)
+    if (!r) return
+    form.value.rewardName = r.title
+    form.value.rewardCost = r.cost
+  }
+})
+async function loadRewards(login: string) {
+  rewardsFor = login
+  rewardsLoading.value = true
+  rewardsError.value = null
+  try {
+    const list = await invoke<ChannelReward[]>('channel_rewards', { channel: login })
+    if (rewardsFor === login) rewards.value = list
+  } catch (e) {
+    if (rewardsFor === login) {
+      rewards.value = []
+      rewardsError.value = String(e)
+    }
+  } finally {
+    if (rewardsFor === login) rewardsLoading.value = false
+  }
+}
+watch(() => [open.value, form.value.kind, form.value.channel.trim().toLowerCase()] as const, ([isOpen, kind, login]) => {
+  if (rewardsTimer) clearTimeout(rewardsTimer)
+  if (!isOpen || kind !== 'channelpoints' || !login) {
+    if (!login) { rewards.value = []; rewardsFor = '' }
+    return
+  }
+  if (login === rewardsFor) return
+  rewardsTimer = setTimeout(() => { void loadRewards(login) }, 400)
+}, { immediate: true })
+
 async function inspect(login: string) {
   const seq = ++inspectSeq
   inspecting.value = true
@@ -589,6 +643,23 @@ async function save() {
               </UFormField>
             </div>
 
+            <UFormField
+              v-if="form.kind === 'channelpoints' && form.channel.trim()"
+              label="Récompenses de la chaîne"
+              :help="rewardsError ?? (rewardsLoading ? undefined : rewards.length ? 'Choisir la récompense du giveaway remplit son nom et son coût' : 'Cette chaîne ne propose aucune récompense en ce moment')"
+            >
+              <USelectMenu
+                v-model="chosenReward"
+                :items="rewardItems"
+                value-key="value"
+                :loading="rewardsLoading"
+                :disabled="!rewards.length"
+                :search-input="{ placeholder: 'Rechercher une récompense' }"
+                placeholder="Choisir dans la liste de la chaîne"
+                icon="i-lucide-coins"
+                class="w-full"
+              />
+            </UFormField>
             <div v-if="form.kind === 'channelpoints'" class="grid grid-cols-2 gap-4">
               <UFormField label="Récompense à acheter">
                 <UInput id="gw-reward" v-model="form.rewardName" placeholder="Ticket giveaway" class="w-full" />

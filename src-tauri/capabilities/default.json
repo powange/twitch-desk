@@ -82,6 +82,7 @@
     "allow-set-prize",
     "allow-resolve-category",
     "allow-search-categories",
+    "allow-channel-rewards",
     "allow-game-box-arts",
     "allow-save-streamer",
     "allow-get-streamers",
