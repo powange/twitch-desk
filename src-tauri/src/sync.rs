@@ -1808,7 +1808,10 @@ fn spawn_state(app: Arc<App>) {
                     _ => continue,
                 }
             };
-            let mut state = instance_state(&app.giveaways.view(), &sync_ids, &accounts);
+            let giveaways = app.giveaways.view();
+            let mut state = instance_state(&giveaways, &sync_ids, &accounts);
+            // Mentions de nos pseudos (les plus récentes d'abord, 30 au plus)
+            state["mentions"] = json!(giveaways.mentions);
             // Pages Points de chaîne et StreamElements de la web app
             let views = app.account_views();
             let (points, se) = phone_channels(&views);

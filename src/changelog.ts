@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.45.0',
+    date: '2026-11-03',
+    title: 'Mentions sur le téléphone',
+    changes: [
+      { kind: 'new', text: 'Web app du téléphone : section Mentions sur l\'accueil, sous les giveaways, avec les messages où un de tes pseudos est cité (qui, sur quelle chaîne, quand) et un bouton pour ouvrir le chat. Un appui sur une notification « Mention » ouvre directement cette section.' }
+    ]
+  },
+  {
     version: '0.44.1',
     date: '2026-11-03',
     changes: [
