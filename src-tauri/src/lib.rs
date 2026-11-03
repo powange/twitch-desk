@@ -14,6 +14,7 @@ mod toast;
 mod tray;
 mod usage;
 mod viewer;
+mod win_reply;
 mod twitch;
 
 use std::path::Path;
@@ -140,9 +141,18 @@ pub fn run() {
     tauri::Builder::default()
         // Deuxième lancement : la fenêtre ouverte revient au premier plan ; lancé par un clic sur une
         // notification (lien twitch-desk://), sur la page de l'alerte
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| match toast::start_page(args) {
-            Some(page) => toast::open_page(app, &page),
-            None => tray::show_main(app),
+        // Bouton « Annuler » d'une notification de réponse au gain : annulée sans ouvrir de fenêtre
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Some(id) = args.iter().find_map(|a| win_reply::id_of_cancel_url(a)) {
+                if let Some(state) = app.try_state::<Arc<app::App>>() {
+                    win_reply::cancel(&state, id);
+                }
+                return;
+            }
+            match toast::start_page(args) {
+                Some(page) => toast::open_page(app, &page),
+                None => tray::show_main(app),
+            }
         }))
         // Taille, position et plein écran des fenêtres retenus ; la visibilité au démarrage
         // dépend du réglage « Démarrer réduit »
@@ -315,6 +325,7 @@ pub fn run() {
             commands::search_categories,
             commands::channel_rewards,
             commands::reopen_giveaway,
+            win_reply::cancel_win_reply,
             commands::game_box_arts,
             commands::save_streamer,
             commands::get_streamers,

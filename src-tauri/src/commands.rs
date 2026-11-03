@@ -983,8 +983,12 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
         return Err("Ancienneté du follow invalide (1 à 3650 jours)".into());
     }
     let follow_min_days = streamer.follow_min_days.filter(|_| streamer.require_follow == Some(true));
+    let win_reply = streamer.win_reply.map(|r| r.replace(['\r', '\n'], " ").trim().chars().take(400).collect::<String>()).filter(|r| !r.is_empty());
+    if streamer.win_reply_delay.is_some_and(|d| !(0..=600).contains(&d)) {
+        return Err("Délai de la réponse invalide (0 à 600 secondes)".into());
+    }
     app.db
-        .save_streamer(&crate::db::Streamer { login, discord_url, notes, ignored_commands, follow_min_days, ..streamer })
+        .save_streamer(&crate::db::Streamer { login, discord_url, notes, ignored_commands, follow_min_days, win_reply, ..streamer })
         .map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();

@@ -164,7 +164,9 @@ watch(open, (isOpen) => {
   streamerDiscord.value = ''
   streamerNotes.value = ''
   streamerIgnored.value = []
-  streamerLoaded.value = { discord: '', notes: '', ignored: '' }
+  streamerWinReply.value = ''
+  streamerWinDelay.value = null
+  streamerLoaded.value = { discord: '', notes: '', ignored: '', winReply: '', winDelay: null }
   const g = props.giveaway
   const channel = g?.channel ?? props.channel ?? ''
   // La chaîne remplie ici ne relance pas l'inspection retardée : elle est faite tout de suite, une fois
@@ -216,6 +218,9 @@ interface ChannelSuggestion {
     requireDiscord: boolean | null
     requireGreeting: boolean | null
     minChatMinutes: number | null
+    // Réponse automatique au gain (présence requise), propre à ce PC
+    winReply: string | null
+    winReplyDelay: number | null
   } | null
 }
 
@@ -224,8 +229,12 @@ const streamerDiscord = ref('')
 const streamerNotes = ref('')
 // Commandes du chat ignorées par la détection sur sa chaîne
 const streamerIgnored = ref<string[]>([])
+// Réponse écrite dans le chat quand un de nos comptes gagne (présence requise), et son délai
+const WIN_REPLY_DELAY = 10
+const streamerWinReply = ref('')
+const streamerWinDelay = ref<number | null>(null)
 // Valeurs chargées, pour n'enregistrer que si elles changent
-const streamerLoaded = ref({ discord: '', notes: '', ignored: '' })
+const streamerLoaded = ref({ discord: '', notes: '', ignored: '', winReply: '', winDelay: null as number | null })
 const inspecting = ref(false)
 let inspectTimer: ReturnType<typeof setTimeout> | null = null
 let inspectSeq = 0
@@ -303,6 +312,7 @@ async function inspect(login: string) {
   const f = form.value
   const before = {
     discord: streamerDiscord.value, notes: streamerNotes.value, ignored: streamerIgnored.value.join(),
+    winReply: streamerWinReply.value, winDelay: streamerWinDelay.value,
     follow: f.follow, followDays: f.followDays, presence: f.presence, discordCond: f.discord, greeting: f.greeting,
     chatTime: f.chatTime, chatMinutes: f.chatMinutes
   }
@@ -312,7 +322,12 @@ async function inspect(login: string) {
     if (seq !== inspectSeq || form.value !== f) return
     suggestion.value = found
     // Fiche du streamer : ce qu'on a noté, sinon le lien Discord trouvé sur sa chaîne
-    streamerLoaded.value = { discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '', ignored: (found.streamer?.ignoredCommands ?? []).join() }
+    streamerLoaded.value = {
+      discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '', ignored: (found.streamer?.ignoredCommands ?? []).join(),
+      winReply: found.streamer?.winReply ?? '', winDelay: found.streamer?.winReplyDelay ?? null
+    }
+    if (streamerWinReply.value === before.winReply) streamerWinReply.value = found.streamer?.winReply ?? ''
+    if (streamerWinDelay.value === before.winDelay) streamerWinDelay.value = found.streamer?.winReplyDelay ?? null
     if (streamerDiscord.value === before.discord) streamerDiscord.value = found.streamer?.discordUrl ?? found.profile?.discord ?? ''
     if (streamerNotes.value === before.notes) streamerNotes.value = found.streamer?.notes ?? ''
     if (streamerIgnored.value.join() === before.ignored) streamerIgnored.value = [...(found.streamer?.ignoredCommands ?? [])]
@@ -427,7 +442,9 @@ async function saveStreamer() {
         requirePresence: fromTri(f.presence),
         requireDiscord: fromTri(f.discord),
         requireGreeting: fromTri(f.greeting),
-        minChatMinutes: f.chatTime === 'yes' ? (f.chatMinutes ?? null) : f.chatTime === 'no' ? 0 : null
+        minChatMinutes: f.chatTime === 'yes' ? (f.chatMinutes ?? null) : f.chatTime === 'no' ? 0 : null,
+        winReply: streamerWinReply.value.trim() || null,
+        winReplyDelay: streamerWinDelay.value
       }
     })
     toast.add({ title: `Fiche de ${f.channel} enregistrée`, color: 'success', icon: 'i-lucide-check' })
@@ -437,6 +454,13 @@ async function saveStreamer() {
   } finally {
     saving.value = false
   }
+}
+
+async function reopenAndSave() {
+  reopen.value = true
+  await save()
+  // Non enregistré (erreur) : la prochaine sauvegarde ne rouvre pas sans le demander
+  if (open.value) reopen.value = false
 }
 
 async function save() {
@@ -464,7 +488,9 @@ async function save() {
   }
   // Fiche du streamer à enregistrer si elle a changé (ou si le Discord vient d'être trouvé) ;
   // jamais si elle n'a pas été chargée (elle serait effacée)
-  const streamerChanged = !!suggestion.value && (streamerDiscord.value !== streamerLoaded.value.discord || streamerNotes.value !== streamerLoaded.value.notes || streamerIgnored.value.join() !== streamerLoaded.value.ignored)
+  const loaded = streamerLoaded.value
+  const streamerChanged = !!suggestion.value && (streamerDiscord.value !== loaded.discord || streamerNotes.value !== loaded.notes || streamerIgnored.value.join() !== loaded.ignored
+    || streamerWinReply.value.trim() !== loaded.winReply || streamerWinDelay.value !== loaded.winDelay)
   const invalid = streamerChanged ? discordError() : null
   if (invalid) {
     toast.add({ title: 'Lien Discord invalide', description: invalid, color: 'error' })
@@ -500,7 +526,10 @@ async function save() {
       // Conditions habituelles de la fiche (relue) reprises telles quelles, sinon elles seraient effacées
       const existing = await currentStreamer(f.channel)
       await invoke('save_streamer', {
-        streamer: { ...(existing ?? {}), login: f.channel, discordUrl: streamerDiscord.value.trim() || null, notes: streamerNotes.value || null, ignoredCommands: streamerIgnored.value }
+        streamer: {
+          ...(existing ?? {}), login: f.channel, discordUrl: streamerDiscord.value.trim() || null, notes: streamerNotes.value || null, ignoredCommands: streamerIgnored.value,
+          winReply: streamerWinReply.value.trim() || null, winReplyDelay: streamerWinDelay.value
+        }
       })
     }
     toast.add({ title: wasEdit ? 'Giveaway modifié' : 'Giveaway ajouté', color: 'success', icon: 'i-lucide-check' })
@@ -681,19 +710,12 @@ async function save() {
                 <UInput id="gw-draw" v-model="form.drawAt" type="datetime-local" class="w-full" />
               </UFormField>
               <UFormField v-if="giveaway" label="Gagnant" help="Le vider retire le gagnant et rouvre le giveaway" class="max-w-xs">
-                <UInput id="gw-winner" v-model="form.winner" :disabled="reopen" icon="i-lucide-trophy" placeholder="Pas encore tiré" class="w-full">
+                <UInput id="gw-winner" v-model="form.winner" icon="i-lucide-trophy" placeholder="Pas encore tiré" class="w-full">
                   <template v-if="form.winner" #trailing>
                     <UButton icon="i-lucide-x" size="xs" color="neutral" variant="link" aria-label="Retirer le gagnant" @click="form.winner = ''" />
                   </template>
                 </UInput>
               </UFormField>
-            </div>
-            <div v-if="closed" class="flex items-start gap-3 rounded-md border border-default p-3">
-              <USwitch
-                v-model="reopen"
-                label="Rouvrir ce giveaway"
-                :description="`Il est terminé${giveaway?.winner ? ` (gagnant : ${giveaway.winner}, qui sera retiré)` : ''}. Rouvert, il est ouvert si la chaîne est en live, sinon en pause jusqu'à son prochain live.`"
-              />
             </div>
             <UAlert
               v-if="form.kind === 'channelpoints'"
@@ -789,6 +811,20 @@ async function save() {
                 <UInputNumber id="gw-follow-days" v-model="form.followDays" :min="1" :max="3650" placeholder="—" size="sm" class="w-28" />
                 jour(s)
               </span>
+              <!-- Présence requise : réponse écrite dans le chat si un de nos comptes gagne (fiche du streamer) -->
+              <div v-if="c.key === 'presence' && form.presence === 'yes'" class="basis-full flex flex-col gap-2 pt-1">
+                <UFormField
+                  label="Réponse automatique si tu gagnes"
+                  :help="`Écrite dans le chat par le compte gagnant, ${streamerWinDelay ?? WIN_REPLY_DELAY} s après l'annonce (annulable). Vide : pas de réponse. Gardée dans la fiche de ${form.channel || 'ce streamer'}, sur ce PC seulement.`"
+                >
+                  <UInput id="gw-win-reply" v-model="streamerWinReply" :maxlength="400" placeholder="Merci beaucoup, je suis là !" class="w-full" />
+                </UFormField>
+                <span v-if="streamerWinReply.trim()" class="flex items-center justify-end gap-2 text-sm text-muted">
+                  après
+                  <UInputNumber id="gw-win-delay" v-model="streamerWinDelay" :min="0" :max="600" :placeholder="String(WIN_REPLY_DELAY)" size="sm" class="w-28" />
+                  seconde(s)
+                </span>
+              </div>
               <span v-if="c.key === 'chatTime' && form.chatTime === 'yes'" class="basis-full flex items-center justify-end gap-2 text-sm text-muted">
                 au moins
                 <UInputNumber id="gw-chat-minutes" v-model="form.chatMinutes" :min="1" :max="1440" placeholder="—" size="sm" class="w-28" />
@@ -800,7 +836,15 @@ async function save() {
       </form>
     </template>
     <template #footer>
-      <div class="flex justify-end gap-2 w-full">
+      <div class="flex justify-end items-center gap-2 w-full">
+        <!-- Giveaway terminé : enregistré et rouvert (ouvert si la chaîne est en live, sinon en
+             pause jusqu'à son prochain live ; gagnant retiré) -->
+        <UTooltip
+          v-if="closed"
+          :text="`Enregistre et rouvre ce giveaway${giveaway?.winner ? ` (le gagnant ${giveaway.winner} est retiré)` : ''} : ouvert si la chaîne est en live, sinon en pause jusqu'à son prochain live`"
+        >
+          <UButton label="Rouvrir" icon="i-lucide-rotate-ccw" color="neutral" variant="soft" class="mr-auto" :loading="saving && reopen" @click="reopenAndSave" />
+        </UTooltip>
         <UButton label="Annuler" color="neutral" variant="ghost" @click="open = false" />
         <UButton type="submit" form="giveaway-form" :label="editId !== null || streamerOnly ? 'Enregistrer' : 'Ajouter'" :loading="saving" />
       </div>

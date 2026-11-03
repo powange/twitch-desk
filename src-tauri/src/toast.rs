@@ -66,11 +66,11 @@ pub fn take_start_page(app: AppHandle) -> Option<String> {
 /// Notification Windows avec activation par protocole ; `false` : à montrer autrement
 /// (développement, ou échec)
 #[cfg(windows)]
-pub fn show(identifier: &str, title: &str, body: &str, page: &str) -> bool {
+pub fn show(identifier: &str, title: &str, body: &str, page: &str, action: Option<(&str, &str)>) -> bool {
     if cfg!(debug_assertions) {
         return false;
     }
-    match win::show(identifier, title, body, &url_of_page(page)) {
+    match win::show(identifier, title, body, &url_of_page(page), action) {
         Ok(()) => true,
         Err(e) => {
             tracing::warn!("notification Windows : {e}");
@@ -80,7 +80,7 @@ pub fn show(identifier: &str, title: &str, body: &str, page: &str) -> bool {
 }
 
 #[cfg(not(windows))]
-pub fn show(_identifier: &str, _title: &str, _body: &str, _page: &str) -> bool {
+pub fn show(_identifier: &str, _title: &str, _body: &str, _page: &str, _action: Option<(&str, &str)>) -> bool {
     false
 }
 
@@ -110,9 +110,15 @@ mod win {
         text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
     }
 
-    pub fn show(identifier: &str, title: &str, body: &str, url: &str) -> windows::core::Result<()> {
+    pub fn show(identifier: &str, title: &str, body: &str, url: &str, action: Option<(&str, &str)>) -> windows::core::Result<()> {
+        // Bouton : lien lancé comme un clic, sans ouvrir de page
+        let actions = action
+            .map(|(label, link)| {
+                format!(r#"<actions><action content="{}" activationType="protocol" arguments="{}"/></actions>"#, escape(label), escape(link))
+            })
+            .unwrap_or_default();
         let xml = format!(
-            r#"<toast activationType="protocol" launch="{}"><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual></toast>"#,
+            r#"<toast activationType="protocol" launch="{}"><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual>{actions}</toast>"#,
             escape(url),
             escape(title),
             escape(body)

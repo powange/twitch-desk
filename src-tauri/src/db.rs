@@ -389,6 +389,11 @@ const MIGRATIONS: &[&str] = &[r#"
     -- Modifications d'avant ces déclencheurs inconnues : au premier passage, tout est comparé
     INSERT INTO sync_meta (key, value) VALUES ('dirty_all', '1')
         ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+"#, r#"
+    -- Réponse automatique quand un de nos comptes gagne un giveaway avec présence requise :
+    -- phrase écrite dans le chat et délai en secondes (propres à ce PC, non synchronisés)
+    ALTER TABLE streamers ADD COLUMN win_reply TEXT;
+    ALTER TABLE streamers ADD COLUMN win_reply_delay INTEGER;
 "#];
 
 /// Types de giveaway
@@ -444,10 +449,18 @@ pub struct Streamer {
     pub require_discord: Option<bool>,
     pub require_greeting: Option<bool>,
     pub min_chat_minutes: Option<i64>,
+    /// Phrase écrite dans le chat par notre compte quand il gagne un giveaway avec présence
+    /// requise (None : pas de réponse) ; propre à ce PC
+    pub win_reply: Option<String>,
+    /// Délai avant cette réponse, en secondes (None : WIN_REPLY_DELAY)
+    pub win_reply_delay: Option<i64>,
 }
 
+/// Délai par défaut avant la réponse au gain, en secondes
+pub const WIN_REPLY_DELAY: i64 = 10;
+
 const STREAMER_SELECT: &str = "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_days,
-     require_presence, require_discord, require_greeting, min_chat_minutes FROM streamers";
+     require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay FROM streamers";
 
 fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
     Ok(Streamer {
@@ -461,6 +474,8 @@ fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
         require_discord: r.get(7)?,
         require_greeting: r.get(8)?,
         min_chat_minutes: r.get(9)?,
+        win_reply: r.get(10)?,
+        win_reply_delay: r.get(11)?,
     })
 }
 
@@ -1552,13 +1567,14 @@ impl Db {
     pub fn save_streamer(&self, s: &Streamer) -> DbResult<()> {
         self.conn().execute(
             "INSERT INTO streamers (login, discord_url, notes, ignored_commands, require_follow, follow_min_days,
-                 require_presence, require_discord, require_greeting, min_chat_minutes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(login) DO UPDATE SET discord_url = excluded.discord_url, notes = excluded.notes,
                  ignored_commands = excluded.ignored_commands, require_follow = excluded.require_follow,
                  follow_min_days = excluded.follow_min_days, require_presence = excluded.require_presence,
                  require_discord = excluded.require_discord, require_greeting = excluded.require_greeting,
-                 min_chat_minutes = excluded.min_chat_minutes",
+                 min_chat_minutes = excluded.min_chat_minutes, win_reply = excluded.win_reply,
+                 win_reply_delay = excluded.win_reply_delay",
             params![
                 s.login,
                 s.discord_url,
@@ -1569,7 +1585,9 @@ impl Db {
                 s.require_presence,
                 s.require_discord,
                 s.require_greeting,
-                s.min_chat_minutes
+                s.min_chat_minutes,
+                s.win_reply,
+                s.win_reply_delay
             ],
         )?;
         Ok(())

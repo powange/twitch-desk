@@ -84,6 +84,7 @@
     "allow-search-categories",
     "allow-channel-rewards",
     "allow-reopen-giveaway",
+    "allow-cancel-win-reply",
     "allow-game-box-arts",
     "allow-save-streamer",
     "allow-get-streamers",

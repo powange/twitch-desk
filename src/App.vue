@@ -90,6 +90,28 @@ function navigate(page: string | null) {
   if (page?.startsWith('/') && router.currentRoute.value.fullPath !== page) void router.push(page)
 }
 void listen<string>('navigate', e => navigate(e.payload))
+
+// Réponse automatique au gain : annonce avec « Annuler » pendant le délai, puis résultat
+const winToast = useToast()
+void listen<{ id: number, login: string, channel: string, text: string, delay: number }>('win-reply', (e) => {
+  const r = e.payload
+  winToast.add({
+    id: `win-reply-${r.id}`,
+    title: `${r.login} répond sur ${r.channel} dans ${r.delay} s`,
+    description: `« ${r.text} »`,
+    icon: 'i-lucide-message-circle-reply',
+    color: 'primary',
+    duration: (r.delay + 1) * 1000,
+    actions: [{ label: 'Annuler la réponse', color: 'neutral', variant: 'outline', onClick: () => { void invoke('cancel_win_reply', { id: r.id }) } }]
+  })
+})
+void listen<{ id: number, login: string, channel: string, outcome: 'sent' | 'failed' | 'cancelled', message: string | null }>('win-reply-done', (e) => {
+  const r = e.payload
+  winToast.remove(`win-reply-${r.id}`)
+  if (r.outcome === 'sent') winToast.add({ title: `Réponse envoyée sur ${r.channel}`, description: r.login, color: 'success', icon: 'i-lucide-check' })
+  else if (r.outcome === 'failed') winToast.add({ title: `Réponse non envoyée sur ${r.channel}`, description: r.message ?? '', color: 'error' })
+  else winToast.add({ title: `Réponse annulée sur ${r.channel}`, color: 'neutral', icon: 'i-lucide-x' })
+})
 void invoke<string | null>('take_start_page').then(navigate)
 
 onMounted(async () => {

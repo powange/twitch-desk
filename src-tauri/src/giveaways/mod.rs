@@ -931,7 +931,8 @@ impl Monitor {
 
     fn on_manual_winner(&mut self, channel: &str, winner: &str, giveaway_id: Option<i64>) {
         let target = manual_target(&self.app.db, channel, giveaway_id);
-        self.record_winner(channel, target, winner, None);
+        // Désigné à la main après coup : pas de réponse automatique
+        self.record_winner(channel, target, winner, None, false);
     }
 
     fn on_winner(&mut self, channel: &str, bot: &str, winner: &str, chance: Option<&str>) {
@@ -946,10 +947,11 @@ impl Monitor {
             let recent = self.app.db.recent_undrawn_giveaways(channel, &since).unwrap_or_default();
             winner_target(&recent, bot).cloned()
         });
-        self.record_winner(channel, target, winner, chance);
+        self.record_winner(channel, target, winner, chance, true);
     }
 
-    fn record_winner(&mut self, channel: &str, target: Option<GiveawayRow>, winner: &str, chance: Option<&str>) {
+    /// `announced` : gagnant annoncé dans le chat à l'instant (réponse automatique possible)
+    fn record_winner(&mut self, channel: &str, target: Option<GiveawayRow>, winner: &str, chance: Option<&str>, announced: bool) {
         let target = target.as_ref();
         if let Some(g) = target {
             let _ = self.app.db.set_giveaway_winner(g.id, winner, chance, &now_rfc3339());
@@ -958,7 +960,15 @@ impl Monitor {
         match ours {
             Some(login) => {
                 self.app.log(&login, EventKind::Giveaway, format!("Tu as gagné le giveaway de {channel} !"));
-                self.app.notify(Alert::Win, "Tu as gagné !", &format!("{login} a gagné le giveaway de {channel}"));
+                let body = format!("{login} a gagné le giveaway de {channel}");
+                match self.win_reply(channel, target, &login, announced) {
+                    Some((id, text, delay)) => {
+                        let body = format!("{body}. Réponse dans {delay} s : « {text} »");
+                        let cancel = crate::win_reply::cancel_url(id);
+                        self.app.notify_full(Alert::Win, "Tu as gagné !", &body, Alert::Win.page(), Some(("Annuler la réponse", &cancel)));
+                    }
+                    None => self.app.notify(Alert::Win, "Tu as gagné !", &body),
+                }
             }
             None if target.is_some() => {
                 self.app.log("giveaways", EventKind::Info, format!("Tirage sur {channel} : {winner}"));
@@ -966,6 +976,22 @@ impl Monitor {
             None => {}
         }
         self.publish();
+    }
+
+    /// Réponse au gain programmée (numéro, phrase, délai) : gagnant annoncé dans le chat, présence
+    /// au tirage requise, phrase définie dans la fiche du streamer
+    fn win_reply(&self, channel: &str, target: Option<&GiveawayRow>, login: &str, announced: bool) -> Option<(u64, String, u64)> {
+        let target = target?;
+        // Même gagnant déjà noté (annonce répétée par le bot) : une seule réponse
+        if !announced || target.details.require_presence != Some(true) || target.winner.as_deref().is_some_and(|w| w.eq_ignore_ascii_case(login)) {
+            return None;
+        }
+        let streamer = self.app.db.streamer(channel).ok().flatten()?;
+        let text = streamer.win_reply.filter(|t| !t.trim().is_empty())?;
+        let delay = streamer.win_reply_delay.unwrap_or(crate::db::WIN_REPLY_DELAY).clamp(0, 600) as u64;
+        let account_id = self.accounts.iter().find(|(_, l)| l == login).map(|(id, _)| *id)?;
+        let id = crate::win_reply::schedule(&self.app, account_id, login, channel, &text, delay);
+        Some((id, text, delay))
     }
 
     fn on_mention(&mut self, channel: &str, author: &str, text: &str) {

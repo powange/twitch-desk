@@ -303,6 +303,8 @@ pub struct App {
     pub scanner: Mutex<crate::scanner::ScannerState>,
     pub insights: Mutex<crate::insights::InsightsState>,
     pub sync: crate::sync::SyncHandle,
+    /// Réponses automatiques au gain en attente de leur délai
+    pub win_replies: crate::win_reply::WinReplies,
     languages: RwLock<HashMap<String, String>>,
     /// Statut live et infos StreamElements par chaîne, partagés entre comptes
     pub lives: crate::lives::Lives,
@@ -331,6 +333,7 @@ impl App {
             scanner: Mutex::new(crate::scanner::ScannerState::default()),
             insights: Mutex::new(crate::insights::InsightsState::default()),
             sync: crate::sync::SyncHandle::default(),
+            win_replies: crate::win_reply::WinReplies::default(),
             languages: RwLock::new(HashMap::new()),
             lives: crate::lives::Lives::default(),
         })
@@ -598,6 +601,12 @@ impl App {
 
     /// Comme `notify`, ouverte au clic sur `page` (ex. le stream à mettre en avant)
     pub fn notify_page(&self, alert: Alert, title: &str, body: &str, page: &str) {
+        self.notify_full(alert, title, body, page, None);
+    }
+
+    /// Comme `notify_page`, avec un bouton (libellé, lien `twitch-desk://`) sur la notification
+    /// Windows de l'application installée
+    pub fn notify_full(&self, alert: Alert, title: &str, body: &str, page: &str, action: Option<(&str, &str)>) {
         use tauri_plugin_notification::NotificationExt;
         // Téléphones connectés : chacun a choisi ses alertes, quels que soient les réglages du PC
         self.sync.phone_alert(alert.key(), title, body);
@@ -613,7 +622,7 @@ impl App {
             return;
         }
         // Windows : notification ouverte sur sa page même depuis le Centre de notifications
-        if crate::toast::show(&self.handle.config().identifier, title, body, page) {
+        if crate::toast::show(&self.handle.config().identifier, title, body, page, action) {
             return;
         }
         if let Err(e) = self.handle.notification().builder().title(title).body(body).extra("page", page).show() {
