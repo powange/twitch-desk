@@ -1497,6 +1497,9 @@ mod tests {
         assert_eq!(v.as_array().map(Vec::len), Some(0));
         let (_, v) = json_of(&s, request_auth("GET", "/api/v1/app/actions", &auth, "9.9.9.1", "")).await;
         assert_eq!((v[0]["status"].as_str(), v[0]["message"].as_str()), (Some("done"), Some("3 tickets achetés (5 au total)")));
+        // Mise à jour du PC : demande sans contenu
+        let (st, v) = json_of(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", r#"{"kind":"update_check"}"#)).await;
+        assert_eq!((st, v["kind"].as_str(), v["payload"].clone()), (StatusCode::OK, Some("update_check"), serde_json::json!({})));
         // État léger de l'application
         let (st, v) = json_of(&s, request_auth("GET", "/api/v1/app/state", &auth, "9.9.9.1", "")).await;
         assert_eq!((st, v["state"].is_null()), (StatusCode::OK, true));

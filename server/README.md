@@ -96,6 +96,8 @@ La web app affiche aussi, pour chaque compte du PC, ses chaînes de points de ch
 
 Depuis la page StreamElements, un téléphone peut demander l'achat de tickets. Le serveur garde la demande (5 minutes au plus) et l'annonce au PC par le flux temps réel (événement `action`) ; le PC l'exécute avec son propre jeton StreamElements, puis rend le résultat, annoncé au téléphone. Le serveur ne détient aucun jeton. Les achats ne sont possibles que si le PC les autorise (Paramètres → Synchronisation → « Autoriser les achats depuis le téléphone », désactivé par défaut) et pendant qu'il est ouvert.
 
+Depuis le menu ⋮, un téléphone peut aussi demander au PC de vérifier ses mises à jour, puis d'installer la nouvelle version (0.8.2) : le PC la télécharge (paquet signé, refusé sinon), l'installe et redémarre. Pas besoin d'autorisation pour cela : seule la version officielle publiée sur GitHub peut être installée.
+
 ## Variables d'environnement
 
 | Variable | Défaut | Rôle |

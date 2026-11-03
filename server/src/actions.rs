@@ -1,5 +1,5 @@
-//! Actions à distance (0.8) : un téléphone associé demande à son application d'agir (aujourd'hui :
-//! acheter des tickets StreamElements). La demande est gardée ici et annoncée au PC (flux
+//! Actions à distance (0.8) : un téléphone associé demande à son application d'agir : acheter
+//! des tickets StreamElements, vérifier ou installer une mise à jour (0.8.2). La demande est gardée ici et annoncée au PC (flux
 //! d'événements, « action ») ; le PC l'exécute s'il l'autorise, puis rend le résultat, annoncé au
 //! téléphone. Le serveur ne fait que transmettre : il ne détient aucun jeton Twitch ni
 //! StreamElements.
@@ -27,10 +27,37 @@ const KEEP: i64 = 20;
 pub struct NewAction {
     kind: String,
     /// Achat de tickets : compte (pseudo), chaîne, identifiant du giveaway StreamElements, nombre
+    #[serde(default)]
     account: String,
+    #[serde(default)]
     channel: String,
+    #[serde(default)]
     giveaway: String,
+    #[serde(default)]
     tickets: i64,
+}
+
+/// Contenu vérifié d'une demande, selon son type
+fn payload_of(body: &NewAction) -> Result<Value, ApiError> {
+    match body.kind.as_str() {
+        // Mise à jour de l'application : vérifier, ou installer puis redémarrer
+        "update_check" | "update_install" => Ok(serde_json::json!({})),
+        "se_buy" => {
+            let account = body.account.trim().to_lowercase();
+            let channel = body.channel.trim().to_lowercase();
+            if !login_ok(&account) || !login_ok(&channel) {
+                return Err(ApiError::BadRequest("Compte ou chaîne invalide".into()));
+            }
+            if body.giveaway.is_empty() || body.giveaway.len() > 64 || !body.giveaway.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(ApiError::BadRequest("Giveaway invalide".into()));
+            }
+            if !(1..=100_000).contains(&body.tickets) {
+                return Err(ApiError::BadRequest("Nombre de tickets invalide".into()));
+            }
+            Ok(serde_json::json!({ "account": account, "channel": channel, "giveaway": body.giveaway, "tickets": body.tickets }))
+        }
+        _ => Err(ApiError::BadRequest("Action inconnue".into())),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -86,21 +113,7 @@ pub async fn create(State(server): State<Shared>, Extension(access): Extension<A
     let Access::Device { id: device, instance } = access else {
         return Err(ApiError::BadRequest("Réservé aux appareils associés".into()));
     };
-    if body.kind != "se_buy" {
-        return Err(ApiError::BadRequest("Action inconnue".into()));
-    }
-    let account = body.account.trim().to_lowercase();
-    let channel = body.channel.trim().to_lowercase();
-    if !login_ok(&account) || !login_ok(&channel) {
-        return Err(ApiError::BadRequest("Compte ou chaîne invalide".into()));
-    }
-    if body.giveaway.is_empty() || body.giveaway.len() > 64 || !body.giveaway.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ApiError::BadRequest("Giveaway invalide".into()));
-    }
-    if !(1..=100_000).contains(&body.tickets) {
-        return Err(ApiError::BadRequest("Nombre de tickets invalide".into()));
-    }
-    let payload = serde_json::json!({ "account": account, "channel": channel, "giveaway": body.giveaway, "tickets": body.tickets }).to_string();
+    let payload = payload_of(&body)?.to_string();
     let target = instance.clone();
     let view = with_db(&server, move |conn| {
         expire(conn)?;

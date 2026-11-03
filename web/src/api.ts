@@ -80,12 +80,21 @@ export function state<T>(token: string): Promise<{ state: T | null, stateAt: str
 }
 
 // Demande d'achat de tickets StreamElements, exécutée par le PC (serveur 0.8 et plus)
-export function buyTickets<T>(token: string, body: { account: string, channel: string, giveaway: string, tickets: number }): Promise<T> {
+function requestAction<T>(token: string, body: Record<string, unknown>): Promise<T> {
   return call<T>('/app/actions', {
     method: 'POST',
     headers: { ...authHeader(token), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'se_buy', ...body })
+    body: JSON.stringify(body)
   })
+}
+
+export function buyTickets<T>(token: string, body: { account: string, channel: string, giveaway: string, tickets: number }): Promise<T> {
+  return requestAction<T>(token, { kind: 'se_buy', ...body })
+}
+
+// Mise à jour de l'application du PC : vérifier, ou installer puis redémarrer (serveur 0.8.2 et plus)
+export function updatePc<T>(token: string, kind: 'update_check' | 'update_install'): Promise<T> {
+  return requestAction<T>(token, { kind })
 }
 
 export function actions<T>(token: string): Promise<T[]> {

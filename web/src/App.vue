@@ -10,6 +10,7 @@ import PointsView from './components/PointsView.vue'
 import SeView from './components/SeView.vue'
 import DropsView from './components/DropsView.vue'
 import NotificationsModal from './components/NotificationsModal.vue'
+import UpdateModal from './components/UpdateModal.vue'
 import { active as pushActive, disable as disablePush, refresh as refreshPush, serverTooOld, support as pushSupport } from './push'
 
 // Lien d'association scanné alors que l'appareil est déjà associé : nouvelle association
@@ -122,7 +123,12 @@ function refreshStateSoon() {
   }, 300)
 }
 
-// Achats demandés au PC : suivis jusqu'au résultat, annoncé par un message
+// Demandes au PC (achats, mise à jour) : suivies jusqu'au résultat, annoncé par un message
+const ACTION_TITLES: Record<string, [string, string]> = {
+  se_buy: ['Achat fait par le PC', 'Achat refusé'],
+  update_check: ['Mise à jour du PC', 'Vérification impossible'],
+  update_install: ['Mise à jour lancée', 'Mise à jour impossible']
+}
 const phoneActions = ref<PhoneAction[]>([])
 const pendingActions = computed(() => phoneActions.value.filter(a => a.status === 'pending'))
 async function loadActions() {
@@ -133,9 +139,10 @@ async function loadActions() {
     for (const a of list) {
       const before = phoneActions.value.find(x => x.id === a.id)
       if (before?.status === 'pending' && a.status !== 'pending') {
+        const [done, failed] = ACTION_TITLES[a.kind] ?? ACTION_TITLES.se_buy!
         toast.add(a.status === 'done'
-          ? { title: 'Achat fait par le PC', description: a.message ?? '', color: 'success', icon: 'i-lucide-check' }
-          : { title: 'Achat refusé', description: a.message ?? '', color: 'error' })
+          ? { title: done, description: a.message ?? '', color: 'success', icon: 'i-lucide-check' }
+          : { title: failed, description: a.message ?? '', color: 'error' })
       }
     }
     phoneActions.value = list
@@ -200,9 +207,11 @@ function hideHint() {
 }
 
 const logoutOpen = ref(false)
+const updateOpen = ref(false)
 const menu = computed<DropdownMenuItem[][]>(() => [
   [
     { label: 'Notifications', icon: pushActive.value ? 'i-lucide-bell-ring' : 'i-lucide-bell', onSelect: () => { notificationsOpen.value = true } },
+    { label: 'Mise à jour du PC', icon: 'i-lucide-download', onSelect: () => { updateOpen.value = true } },
     { label: 'Actualiser', icon: 'i-lucide-refresh-cw', onSelect: () => { void load() } }
   ],
   [{ label: 'Se déconnecter de cet appareil', icon: 'i-lucide-log-out', color: 'error', onSelect: () => { logoutOpen.value = true } }]
@@ -292,6 +301,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
     </div>
 
     <NotificationsModal v-if="device" v-model:open="notificationsOpen" :token="device.token" />
+    <UpdateModal v-if="device" v-model:open="updateOpen" :state="data?.state ?? null" :token="device.token" :pending="pendingActions" @requested="onRequested" />
 
     <UModal v-model:open="logoutOpen" title="Se déconnecter de cet appareil ?">
       <template #body>

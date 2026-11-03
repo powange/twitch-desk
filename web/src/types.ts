@@ -99,6 +99,8 @@ export interface InstanceState {
   actionsAllowed?: boolean
   // Page Drops (application 0.42 et plus)
   drops?: DropsAccount[]
+  // Version de l'application du PC et dernière vérification des mises à jour (0.43 et plus)
+  pc?: { version: string, update: { available: string | null, checkedAt: string } | null }
 }
 
 export interface DropProgress {
@@ -133,7 +135,8 @@ export interface DropsAccount {
 export interface PhoneAction {
   id: string
   kind: string
-  payload: { account: string, channel: string, giveaway: string, tickets: number }
+  // Achat de tickets ; vide pour une mise à jour (« update_check », « update_install »)
+  payload: { account?: string, channel?: string, giveaway?: string, tickets?: number }
   status: 'pending' | 'done' | 'failed'
   message: string | null
   createdAt: string
