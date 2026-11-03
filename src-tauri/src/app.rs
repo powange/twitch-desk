@@ -593,6 +593,11 @@ impl App {
     /// Notification Windows et alerte sonore (jouée par l'interface), selon les réglages ;
     /// notification push sur les téléphones connectés
     pub fn notify(&self, alert: Alert, title: &str, body: &str) {
+        self.notify_page(alert, title, body, alert.page());
+    }
+
+    /// Comme `notify`, ouverte au clic sur `page` (ex. le stream à mettre en avant)
+    pub fn notify_page(&self, alert: Alert, title: &str, body: &str, page: &str) {
         use tauri_plugin_notification::NotificationExt;
         // Téléphones connectés : chacun a choisi ses alertes, quels que soient les réglages du PC
         self.sync.phone_alert(alert.key(), title, body);
@@ -608,10 +613,10 @@ impl App {
             return;
         }
         // Windows : notification ouverte sur sa page même depuis le Centre de notifications
-        if crate::toast::show(&self.handle.config().identifier, title, body, alert.page()) {
+        if crate::toast::show(&self.handle.config().identifier, title, body, page) {
             return;
         }
-        if let Err(e) = self.handle.notification().builder().title(title).body(body).extra("page", alert.page()).show() {
+        if let Err(e) = self.handle.notification().builder().title(title).body(body).extra("page", page).show() {
             tracing::warn!("notification : {e}");
         }
     }

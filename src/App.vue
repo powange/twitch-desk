@@ -87,7 +87,7 @@ void listen<string>('open-streamer', async (e) => {
 // quand c'est lui qui a démarré l'application
 const router = useRouter()
 function navigate(page: string | null) {
-  if (page?.startsWith('/') && router.currentRoute.value.path !== page) void router.push(page)
+  if (page?.startsWith('/') && router.currentRoute.value.fullPath !== page) void router.push(page)
 }
 void listen<string>('navigate', e => navigate(e.payload))
 void invoke<string | null>('take_start_page').then(navigate)

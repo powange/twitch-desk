@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useGiftPreview } from '../../composables/useGiftPreview'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
@@ -76,6 +77,29 @@ const matches = computed(() => {
   })
 })
 const ignoredCount = computed(() => (scanner.value?.matches ?? []).filter(m => m.ignored).length)
+
+// Clic sur une notification du scanner (?highlight=<chaîne>) : stream montré et mis en avant
+const route = useRoute()
+const router = useRouter()
+const highlighted = ref<string | null>(null)
+let highlightTimer: ReturnType<typeof setTimeout> | null = null
+async function highlight(login: string) {
+  const m = (scanner.value?.matches ?? []).find(x => x.login === login)
+  if (!m) return false
+  if (m.ignored) showIgnored.value = true
+  highlighted.value = login
+  await nextTick()
+  document.getElementById(`scan-${login}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  if (highlightTimer) clearTimeout(highlightTimer)
+  highlightTimer = setTimeout(() => { highlighted.value = null }, 8000)
+  return true
+}
+// Demande gardée jusqu'à ce que le stream soit dans la liste (scanner pas encore relu)
+const wanted = computed(() => typeof route.query.highlight === 'string' ? route.query.highlight.toLowerCase() : null)
+watch([wanted, () => scanner.value?.matches], async ([login]) => {
+  if (login && await highlight(login)) void router.replace({ query: {} })
+}, { immediate: true })
+onBeforeUnmount(() => { if (highlightTimer) clearTimeout(highlightTimer) })
 
 // Rafraîchit les « il y a … » et les durées de live
 const now = ref(Date.now())
@@ -317,7 +341,13 @@ const { openGift } = useGiftPreview()
             </tr>
           </thead>
           <tbody>
-            <tr v-for="m in matches" :key="m.login" class="border-t border-default" :class="m.ignored ? 'opacity-50' : ''">
+            <tr
+              v-for="m in matches"
+              :id="`scan-${m.login}`"
+              :key="m.login"
+              class="border-t border-default transition-colors duration-700"
+              :class="[m.ignored ? 'opacity-50' : '', highlighted === m.login ? 'bg-primary/15 outline-2 outline-primary -outline-offset-2' : '']"
+            >
               <td class="px-3 py-2">
                 <div class="flex items-center gap-2">
                   <img v-if="m.profileImage" :src="m.profileImage" alt="" class="size-7 rounded-full">

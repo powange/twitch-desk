@@ -19,11 +19,26 @@ pub const SCHEME: &str = "twitch-desk";
 #[derive(Default)]
 pub struct StartPage(pub Mutex<Option<String>>);
 
-/// Page d'un lien `twitch-desk://open/<page>` (chemin de l'interface, lettres, chiffres, `-` et `/`)
+/// Page d'un lien `twitch-desk://open/<page>` (chemin de l'interface, lettres, chiffres, `-`,
+/// `_` et `/`, avec au plus un paramètre `?clé=valeur`)
 pub fn page_of_url(url: &str) -> Option<String> {
     let rest = url.trim().trim_matches('"').strip_prefix(SCHEME)?.strip_prefix("://open")?;
-    let page = format!("/{}", rest.trim_matches('/'));
-    page.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '/').then_some(page)
+    let (path, query) = match rest.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (rest, None),
+    };
+    let word = |s: &str| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let path = format!("/{}", path.trim_matches('/'));
+    if !path.split('/').all(word) {
+        return None;
+    }
+    match query {
+        None => Some(path),
+        Some(q) => {
+            let (key, value) = q.split_once('=')?;
+            (word(key) && word(value) && !key.is_empty()).then(|| format!("{path}?{key}={value}"))
+        }
+    }
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -138,6 +153,9 @@ mod tests {
         assert_eq!(page_of_url("\"twitch-desk://open/giveaways/wins\"").as_deref(), Some("/giveaways/wins"));
         assert_eq!(page_of_url("twitch-desk://open").as_deref(), Some("/"));
         assert_eq!(page_of_url("twitch-desk://open/../x?y=1"), None);
+        assert_eq!(page_of_url("twitch-desk://open/giveaways/scanner?highlight=some_one").as_deref(), Some("/giveaways/scanner?highlight=some_one"));
+        assert_eq!(page_of_url("twitch-desk://open/giveaways/scanner?highlight=a&b=c"), None);
+        assert_eq!(page_of_url("twitch-desk://open/x?<script>"), None);
         assert_eq!(page_of_url("twitch-desk://other/x"), None);
         assert_eq!(page_of_url("--minimized"), None);
         assert_eq!(start_page(["exe".to_owned(), "twitch-desk://open/drops".to_owned()]).as_deref(), Some("/drops"));

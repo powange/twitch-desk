@@ -354,7 +354,9 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
     if notify && !fresh.is_empty() {
         for m in fresh.iter().take(MAX_NOTIFICATIONS) {
             app.log("scanner", EventKind::Giveaway, format!("Scanner : {} ({}) : {}", m.stream.login, m.stream.game_name, m.stream.title));
-            app.notify(crate::app::Alert::Scanner, &format!("Stream repéré : {}", m.stream.display_name), &m.stream.title);
+            // Clic : page Scanner, ce stream mis en avant
+            let page = format!("{}?highlight={}", crate::app::Alert::Scanner.page(), m.stream.login);
+            app.notify_page(crate::app::Alert::Scanner, &format!("Stream repéré : {}", m.stream.display_name), &m.stream.title, &page);
         }
         if fresh.len() > MAX_NOTIFICATIONS {
             let rest = fresh.len() - MAX_NOTIFICATIONS;
