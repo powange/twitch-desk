@@ -20,7 +20,7 @@ use web_push_native::{p256, Auth, WebPushBuilder};
 use crate::{now_text, with_db, Access, ApiError, Shared};
 
 /// Alertes de l'application (clés de `Alert` côté application)
-pub const ALERTS: [&str; 5] = ["giveaway", "win", "mention", "reminder", "scanner"];
+pub const ALERTS: [&str; 6] = ["giveaway", "win", "mention", "reminder", "scanner", "drop"];
 /// Durée de vie d'une notification chez le service de push (téléphone éteint plus longtemps :
 /// perdue, elle ne serait plus d'actualité) ; aussi celle de la signature VAPID
 const TTL: Duration = Duration::from_secs(3600);

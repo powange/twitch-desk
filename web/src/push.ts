@@ -8,9 +8,10 @@ export const ALERTS: { key: string, label: string, description: string }[] = [
   { key: 'win', label: 'Gain', description: 'Un de tes comptes a gagné' },
   { key: 'reminder', label: 'Rappel de tirage', description: 'Tirage imminent avec présence requise' },
   { key: 'mention', label: 'Mention', description: 'Un de tes pseudos est mentionné dans un chat' },
-  { key: 'scanner', label: 'Scanner', description: 'Nouveau stream repéré par le scanner' }
+  { key: 'scanner', label: 'Scanner', description: 'Nouveau stream repéré par le scanner' },
+  { key: 'drop', label: 'Drop obtenu', description: 'Un drop a été réclamé pour un de tes comptes' }
 ]
-const DEFAULT_EVENTS = ['giveaway', 'win', 'reminder', 'mention']
+const DEFAULT_EVENTS = ['giveaway', 'win', 'reminder', 'mention', 'drop']
 
 // « unsupported » : navigateur sans Web Push ; « install » : iPhone ou iPad, la page doit
 // d'abord être ajoutée à l'écran d'accueil ; « denied » : notifications refusées dans le navigateur

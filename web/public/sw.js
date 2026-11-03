@@ -61,22 +61,28 @@ self.addEventListener('push', (event) => {
     data = { body: event.data ? event.data.text() : '' }
   }
   const title = data.title || 'Twitch Desk'
+  // Onglet ouvert par un appui sur la notification
+  const tab = data.alert === 'drop' ? 'drops' : 'giveaways'
   event.waitUntil(self.registration.showNotification(title, {
     body: data.body || '',
     icon: '/app/icon-192.png',
     lang: 'fr',
-    data: { url: '/app/' }
+    data: { url: `/app/?tab=${tab}`, tab }
   }))
 })
 
 // Appui sur une notification : web app déjà ouverte mise au premier plan, sinon ouverte
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  const url = (event.notification.data && event.notification.data.url) || '/app/'
+  const data = event.notification.data || {}
+  const url = data.url || '/app/'
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       const client = list.find(c => new URL(c.url).pathname.startsWith('/app/'))
-      if (client) return client.focus()
+      if (client) {
+        if (data.tab) client.postMessage({ tab: data.tab })
+        return client.focus()
+      }
       return self.clients.openWindow(url)
     })
   )

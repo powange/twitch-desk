@@ -8,6 +8,7 @@ import PairScreen from './components/PairScreen.vue'
 import GiveawayCarousel from './components/GiveawayCarousel.vue'
 import PointsView from './components/PointsView.vue'
 import SeView from './components/SeView.vue'
+import DropsView from './components/DropsView.vue'
 import NotificationsModal from './components/NotificationsModal.vue'
 import { active as pushActive, disable as disablePush, refresh as refreshPush, serverTooOld, support as pushSupport } from './push'
 
@@ -22,23 +23,36 @@ let events: ReturnType<typeof openEvents> | null = null
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 // Onglet et comptes affichés, retenus sur ce téléphone
-type Tab = 'giveaways' | 'points' | 'se'
+type Tab = 'giveaways' | 'points' | 'se' | 'drops'
 function remembered(key: string, fallback: string) {
   try { return localStorage.getItem(`twitch-desk:${key}`) ?? fallback } catch { return fallback }
 }
 function remember(key: string, value: string) {
   try { localStorage.setItem(`twitch-desk:${key}`, value) } catch { /* stockage indisponible */ }
 }
-const tab = ref<Tab>((['giveaways', 'points', 'se'] as const).find(t => t === remembered('tab', 'giveaways')) ?? 'giveaways')
+const TAB_KEYS = ['giveaways', 'points', 'se', 'drops'] as const
+const asTab = (t: unknown) => TAB_KEYS.find(k => k === t)
+// Ouverte depuis une notification (« ?tab=drops ») : sur l'onglet de l'alerte
+const asked = asTab(new URLSearchParams(location.search).get('tab'))
+if (asked) history.replaceState(null, '', location.pathname + location.hash)
+const tab = ref<Tab>(asked ?? asTab(remembered('tab', 'giveaways')) ?? 'giveaways')
 const pointsAccount = ref(remembered('points-account', ''))
 const seAccount = ref(remembered('se-account', ''))
+const dropsAccount = ref(remembered('drops-account', ''))
 watch(tab, t => remember('tab', t))
 watch(pointsAccount, a => remember('points-account', a))
 watch(seAccount, a => remember('se-account', a))
+watch(dropsAccount, a => remember('drops-account', a))
+// Notification touchée, web app déjà ouverte : le service worker indique l'onglet
+navigator.serviceWorker?.addEventListener('message', (e: MessageEvent) => {
+  const t = asTab((e.data as { tab?: unknown } | null)?.tab)
+  if (t) tab.value = t
+})
 const TABS: { key: Tab, label: string, icon: string }[] = [
   { key: 'giveaways', label: 'Giveaways', icon: 'i-lucide-gift' },
   { key: 'points', label: 'Points', icon: 'i-lucide-coins' },
-  { key: 'se', label: 'StreamElements', icon: 'i-lucide-ticket' }
+  { key: 'se', label: 'StreamElements', icon: 'i-lucide-ticket' },
+  { key: 'drops', label: 'Drops', icon: 'i-lucide-package-open' }
 ]
 
 const open = computed(() => data.value?.giveaways.filter(g => g.status === 'open') ?? [])
@@ -232,6 +246,9 @@ const menu = computed<DropdownMenuItem[][]>(() => [
         <template v-else-if="data && tab === 'points'">
           <PointsView v-model:account="pointsAccount" :state="data.state" />
         </template>
+        <template v-else-if="data && tab === 'drops'">
+          <DropsView v-model:account="dropsAccount" :state="data.state" />
+        </template>
         <template v-else-if="data && tab === 'se'">
           <SeView v-model:account="seAccount" :state="data.state" :token="device.token" :pending="pendingActions" @requested="onRequested" />
         </template>
@@ -257,7 +274,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
 
       <!-- Onglets en bas de l'écran -->
       <nav class="fixed bottom-0 inset-x-0 z-10 border-t border-default bg-default/95 backdrop-blur pb-[env(safe-area-inset-bottom)]" aria-label="Pages">
-        <div class="max-w-2xl mx-auto grid grid-cols-3">
+        <div class="max-w-2xl mx-auto grid grid-cols-4">
           <button
             v-for="t in TABS"
             :key="t.key"

@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AccountPicker: typeof import('./src/components/AccountPicker.vue')['default']
+    DropsView: typeof import('./src/components/DropsView.vue')['default']
     GiveawayCard: typeof import('./src/components/GiveawayCard.vue')['default']
     GiveawayCarousel: typeof import('./src/components/GiveawayCarousel.vue')['default']
     NotificationsModal: typeof import('./src/components/NotificationsModal.vue')['default']
@@ -30,6 +31,7 @@ declare module 'vue' {
     UInput: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Input.vue')['default']
     UInputNumber: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/InputNumber.vue')['default']
     UModal: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Modal.vue')['default']
+    UProgress: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Progress.vue')['default']
     USwitch: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Switch.vue')['default']
   }
 }

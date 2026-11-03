@@ -97,6 +97,36 @@ export interface InstanceState {
   streamelements?: { login: string, connected: boolean, channels: SeChannel[] }[]
   // Achats depuis le téléphone autorisés sur le PC
   actionsAllowed?: boolean
+  // Page Drops (application 0.42 et plus)
+  drops?: DropsAccount[]
+}
+
+export interface DropProgress {
+  id: string
+  name: string
+  image: string | null
+  requiredMinutes: number
+  currentMinutes: number
+  claimed: boolean
+}
+
+export interface DropCampaign {
+  id: string
+  name: string
+  game: string
+  boxArt: string
+  endsAt: string
+  accountLinked: boolean
+  // Campagne de la chaîne regardée en ce moment
+  watched: boolean
+  drops: DropProgress[]
+}
+
+export interface DropsAccount {
+  login: string
+  enabled: boolean
+  target: { game: string, login: string, title: string } | null
+  campaigns: DropCampaign[]
 }
 
 // Demande envoyée au PC (achat de tickets StreamElements)
