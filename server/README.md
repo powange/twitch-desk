@@ -90,6 +90,12 @@ Depuis la web app (menu ⋮ → Notifications), un téléphone s'abonne aux aler
 - Une clé VAPID est créée au premier démarrage et gardée dans la base : la conserver (volume `/data`), sinon les téléphones devront réactiver leurs notifications.
 - Le contenu de chaque notification est chiffré pour le téléphone : le service de push ne le lit pas. Déconnecter un téléphone efface aussi son abonnement.
 
+### Pages Points de chaîne et StreamElements, achats depuis le téléphone (0.8)
+
+La web app affiche aussi, pour chaque compte du PC, ses chaînes de points de chaîne (état, solde, gain du jour) et ses chaînes StreamElements (points, gain du jour, giveaway en cours), d'après l'état publié par le PC. Le téléphone relit cet état seul (`GET /api/v1/app/state`), sans recharger les giveaways ni leurs images.
+
+Depuis la page StreamElements, un téléphone peut demander l'achat de tickets. Le serveur garde la demande (5 minutes au plus) et l'annonce au PC par le flux temps réel (événement `action`) ; le PC l'exécute avec son propre jeton StreamElements, puis rend le résultat, annoncé au téléphone. Le serveur ne détient aucun jeton. Les achats ne sont possibles que si le PC les autorise (Paramètres → Synchronisation → « Autoriser les achats depuis le téléphone », désactivé par défaut) et pendant qu'il est ouvert.
+
 ## Variables d'environnement
 
 | Variable | Défaut | Rôle |

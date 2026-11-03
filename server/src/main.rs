@@ -26,6 +26,7 @@
 //! avec son propre jeton (`Authorization: Device <jeton>`), les giveaways ouverts et l'état
 //! publié par son application ; il n'écrit rien.
 
+mod actions;
 mod mobile;
 mod push;
 mod web;
@@ -626,11 +627,27 @@ async fn events(State(server): State<Shared>, Extension(access): Extension<Acces
                         _ => break,
                     }
                 }
-                notice = notices.recv(), if device.is_some() => {
-                    let (id, instance) = device.as_ref().expect("appareil");
+                notice = notices.recv() => {
+                    // Applications : demande d'un téléphone (chacune ne garde que les siennes)
+                    let Some((id, instance)) = device.as_ref() else {
+                        match notice {
+                            Ok(mobile::Notice::Action(i)) => {
+                                let event = Event::default().event("action").data(serde_json::json!({ "instance": i }).to_string());
+                                if tx.send(event).await.is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
+                            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        }
+                    };
                     match notice {
                         Ok(mobile::Notice::State(i)) if &i == instance => {
                             Event::default().event("state").data(serde_json::json!({ "instance": i }).to_string())
+                        }
+                        Ok(mobile::Notice::ActionDone(d)) if &d == id => {
+                            Event::default().event("action").data(serde_json::json!({ "device": d }).to_string())
                         }
                         Ok(mobile::Notice::Revoked(d)) if &d == id => break,
                         Ok(_) => continue,
@@ -731,6 +748,20 @@ fn open_db(path: &str) -> rusqlite::Result<Connection> {
              key TEXT PRIMARY KEY,
              value TEXT NOT NULL
          );
+         -- Actions à distance (0.8) : demandes des téléphones (achat de tickets…), exécutées par le PC
+         CREATE TABLE IF NOT EXISTS actions (
+             id TEXT PRIMARY KEY,
+             instance TEXT NOT NULL,
+             device TEXT NOT NULL,
+             kind TEXT NOT NULL,
+             payload TEXT NOT NULL,
+             status TEXT NOT NULL,
+             message TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS actions_instance ON actions (instance, status);
+         CREATE INDEX IF NOT EXISTS actions_device ON actions (device, created_at);
          CREATE TABLE IF NOT EXISTS push_subscriptions (
              device TEXT PRIMARY KEY,
              endpoint TEXT NOT NULL,
@@ -808,12 +839,16 @@ fn app(server: Shared) -> Router {
         .route("/api/v1/instances/{id}/devices/{device}", delete(mobile::revoke_device))
         .route("/api/v1/pair/start", post(mobile::pair_start))
         .route("/api/v1/instances/{id}/notify", post(push::notify))
+        .route("/api/v1/instances/{id}/actions", get(actions::pending))
+        .route("/api/v1/instances/{id}/actions/{action}", put(actions::finish))
         // Code vérifié avant la lecture du corps (route_layer : routes connues seulement)
         .route_layer(middleware::from_fn_with_state(server.clone(), require_code));
     // Code partagé ou jeton d'appareil : lecture seule, et abonnement aux notifications de
     // l'appareil lui-même
     let read = Router::new()
         .route("/api/v1/app/overview", get(mobile::overview))
+        .route("/api/v1/app/state", get(mobile::state))
+        .route("/api/v1/app/actions", get(actions::mine).post(actions::create))
         .route("/api/v1/app/push", get(push::get_push).put(push::put_push).delete(push::delete_push))
         .route_layer(middleware::from_fn_with_state(server.clone(), require_access));
     // Association : sans code, limitée par adresse dans la route
@@ -1432,6 +1467,39 @@ mod tests {
         // Désabonnement
         assert_eq!(status(&s, request_auth("DELETE", "/api/v1/app/push", &auth2, "7.7.7.1", "")).await, StatusCode::NO_CONTENT);
         assert_eq!(targets("win"), 0);
+    }
+
+    #[tokio::test]
+    async fn phone_actions_go_through_the_pc() {
+        let s = server(&["giveaways"]);
+        let (token, _) = paired_device(&s, INSTANCE).await;
+        let auth = format!("Device {token}");
+        let body = r#"{"kind":"se_buy","account":"Alice","channel":"lunarsea","giveaway":"6ae9","tickets":3}"#;
+        // Le code partagé ne crée pas de demande ; type inconnu refusé
+        assert_eq!(status(&s, request("POST", "/api/v1/app/actions", Some("code-secret"), "9.9.9.1", body)).await, StatusCode::BAD_REQUEST);
+        let bad = body.replace("se_buy", "delete_all");
+        assert_eq!(status(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", &bad)).await, StatusCode::BAD_REQUEST);
+        let (st, v) = json_of(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", body)).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!((v["status"].as_str(), v["payload"]["account"].as_str()), (Some("pending"), Some("alice")));
+        let id = v["id"].as_str().unwrap().to_owned();
+        // Le téléphone ne lit pas la file du PC ; le PC la lit avec le code
+        let pending_uri = format!("/api/v1/instances/{INSTANCE}/actions");
+        assert_eq!(status(&s, request_auth("GET", &pending_uri, &auth, "9.9.9.1", "")).await, StatusCode::UNAUTHORIZED);
+        let (st, v) = json_of(&s, request("GET", &pending_uri, Some("code-secret"), "9.9.9.1", "")).await;
+        assert_eq!((st, v.as_array().map(Vec::len)), (StatusCode::OK, Some(1)));
+        // Résultat rendu par le PC, une seule fois
+        let finish_uri = format!("/api/v1/instances/{INSTANCE}/actions/{id}");
+        let done = r#"{"ok":true,"message":"3 tickets achetés (5 au total)"}"#;
+        assert_eq!(status(&s, request("PUT", &finish_uri, Some("code-secret"), "9.9.9.1", done)).await, StatusCode::NO_CONTENT);
+        assert_eq!(status(&s, request("PUT", &finish_uri, Some("code-secret"), "9.9.9.1", done)).await, StatusCode::NOT_FOUND);
+        let (_, v) = json_of(&s, request("GET", &pending_uri, Some("code-secret"), "9.9.9.1", "")).await;
+        assert_eq!(v.as_array().map(Vec::len), Some(0));
+        let (_, v) = json_of(&s, request_auth("GET", "/api/v1/app/actions", &auth, "9.9.9.1", "")).await;
+        assert_eq!((v[0]["status"].as_str(), v[0]["message"].as_str()), (Some("done"), Some("3 tickets achetés (5 au total)")));
+        // État léger de l'application
+        let (st, v) = json_of(&s, request_auth("GET", "/api/v1/app/state", &auth, "9.9.9.1", "")).await;
+        assert_eq!((st, v["state"].is_null()), (StatusCode::OK, true));
     }
 
     #[tokio::test]

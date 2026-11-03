@@ -48,6 +48,10 @@ pub enum Notice {
     State(String),
     /// Appareil révoqué : son flux se ferme
     Revoked(String),
+    /// Demande d'un téléphone pour cette application (identifiant de l'application)
+    Action(String),
+    /// Demande traitée par le PC (identifiant de l'appareil qui l'a faite)
+    ActionDone(String),
 }
 
 /// Identifiant d'application : tiré au hasard par l'application (uuid)
@@ -387,6 +391,21 @@ pub fn open_giveaways(conn: &Connection, collections: &std::collections::BTreeSe
     }
     list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     Ok(list.into_iter().map(|(_, _, g)| g).collect())
+}
+
+/// `GET /api/v1/app/state` (appareil associé) : état publié par son application seulement (léger,
+/// relu à chaque annonce « state », sans les giveaways ni leurs images)
+pub async fn state(State(server): State<Shared>, Extension(access): Extension<Access>) -> Result<Json<Value>, ApiError> {
+    let Access::Device { instance, .. } = access else {
+        return Err(ApiError::BadRequest("Réservé aux appareils associés".into()));
+    };
+    let (state, at) = with_db(&server, move |conn| {
+        Ok(conn.query_row("SELECT state, state_at FROM instances WHERE id = ?1", [&instance], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))
+        })?)
+    })
+    .await?;
+    Ok(Json(serde_json::json!({ "state": state.and_then(|t| serde_json::from_str::<Value>(&t).ok()), "stateAt": at })))
 }
 
 /// `GET /api/v1/app/overview` (appareil associé) : giveaways ouverts et en pause, état de
