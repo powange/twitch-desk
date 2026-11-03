@@ -9,6 +9,7 @@ import { useUpdater } from '../composables/useUpdater'
 import { useSnapshot } from '../composables/useSnapshot'
 import SyncSettings from '../components/SyncSettings.vue'
 import LogViewer from '../components/LogViewer.vue'
+import ChangelogView from '../components/ChangelogView.vue'
 import { useSettings } from '../composables/useSettings'
 
 const toast = useToast()
@@ -50,13 +51,14 @@ async function setAutostart(value: boolean) {
 }
 
 // Sections de la page : menu vertical à gauche, une section affichée à la fois
-type Section = 'general' | 'updates' | 'sync' | 'data' | 'logs'
+type Section = 'general' | 'updates' | 'sync' | 'data' | 'logs' | 'changelog'
 const SECTIONS: { key: Section, label: string, icon: string }[] = [
   { key: 'general', label: 'Général', icon: 'i-lucide-sliders-horizontal' },
   { key: 'updates', label: 'Mises à jour', icon: 'i-lucide-download' },
   { key: 'sync', label: 'Synchronisation', icon: 'i-lucide-refresh-cw' },
   { key: 'data', label: 'Données', icon: 'i-lucide-folder' },
-  { key: 'logs', label: 'Journaux', icon: 'i-lucide-scroll-text' }
+  { key: 'logs', label: 'Journaux', icon: 'i-lucide-scroll-text' },
+  { key: 'changelog', label: 'Changelog', icon: 'i-lucide-newspaper' }
 ]
 const SECTION_KEY = 'settings-section'
 function savedSection(): Section {
@@ -219,6 +221,12 @@ async function checkUpdates() {
             <USwitch v-model="settings.showUsage" aria-label="Afficher les ressources de l'application" />
           </div>
           <LogViewer />
+        </section>
+
+        <section v-if="section === 'changelog'" class="flex flex-col gap-2">
+          <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">Changelog</h2>
+          <p class="text-sm text-muted">Ce qui change à chaque version : nouveautés, améliorations et problèmes réglés.</p>
+          <ChangelogView :current="version || null" />
         </section>
       </div>
     </div>
