@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.39.2',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'improved', text: 'Page Alertes, colonne Participations : sur un giveaway StreamElements terminé, un clic sur ton pseudo et tes tickets ouvre la page de ce giveaway sur StreamElements, dans ton navigateur. En cours, il ouvre toujours la page StreamElements de l\'application.' }
+    ]
+  },
+  {
     version: '0.39.1',
     date: '2026-11-03',
     changes: [

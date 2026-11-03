@@ -119,6 +119,8 @@ function entered(g: GiveawayView, id: number) {
   return g.entriesView.some(e => e.accountId === id)
 }
 const participating = ref<number | null>(null)
+// Giveaway StreamElements terminé : adresse de sa page sur StreamElements
+const seClosedUrl = (g: GiveawayView) => g.kind === 'streamelements' && g.status === 'closed' && g.url?.startsWith('https://streamelements.com/') ? g.url : null
 
 async function participate(g: GiveawayView, ids = chosenFor(g)) {
   const todo = ids.filter(id => !entered(g, id))
@@ -417,12 +419,15 @@ function share(g: GiveawayView) {
               <td class="px-3 py-2 whitespace-nowrap" :class="g.drawAt ? '' : 'text-muted'">{{ formatDrawAt(g.drawAt) }}</td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap gap-1">
+                  <!-- StreamElements : giveaway clos → sa page sur StreamElements (navigateur) ; en cours
+                       ou en pause → page StreamElements de l'application, filtrée sur la chaîne -->
                   <component
-                    :is="g.kind === 'streamelements' ? RouterLink : 'span'"
+                    :is="seClosedUrl(g) ? 'button' : g.kind === 'streamelements' ? RouterLink : 'span'"
                     v-for="e in g.entriesView"
                     :key="e.accountId"
-                    v-bind="g.kind === 'streamelements' ? { to: { path: '/streamelements', query: { channels: g.channel } } } : {}"
-                    :title="g.kind === 'streamelements' ? 'Voir sur la page StreamElements' : undefined"
+                    v-bind="seClosedUrl(g) ? { type: 'button' } : g.kind === 'streamelements' ? { to: { path: '/streamelements', query: { channels: g.channel } } } : {}"
+                    :title="seClosedUrl(g) ? 'Voir ce giveaway sur StreamElements (navigateur)' : g.kind === 'streamelements' ? 'Voir sur la page StreamElements' : undefined"
+                    @click="seClosedUrl(g) && openExternal(seClosedUrl(g)!)"
                   >
                     <UBadge
                       :label="e.tickets !== null ? `${e.login} · ${e.tickets} ticket${e.tickets > 1 ? 's' : ''}` : e.login"
@@ -431,6 +436,7 @@ function share(g: GiveawayView) {
                       variant="subtle"
                       size="sm"
                       class="whitespace-nowrap"
+                      :trailing-icon="seClosedUrl(g) ? 'i-lucide-external-link' : undefined"
                       :class="g.kind === 'streamelements' ? 'hover:bg-success/20 cursor-pointer' : ''"
                       :title="e.tickets !== null ? 'Tickets StreamElements relevés sur StreamElements' : e.auto ? 'Participation automatique' : 'Participation envoyée par l\'application'"
                     />
