@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.42.0',
+    date: '2026-11-03',
+    title: 'Drops sur le téléphone',
+    changes: [
+      { kind: 'new', text: 'Web app du téléphone : nouvel onglet Drops, avec pour chaque compte la chaîne regardée, les campagnes en cours et la progression de chaque drop (minutes regardées, obtenu ou non).' },
+      { kind: 'new', text: 'Notification « Drop obtenu » quand l\'application réclame un drop terminé : sur le PC, et sur le téléphone si tu l\'as choisie dans Notifications (menu ⋮ de la web app). Un appui ouvre l\'onglet Drops. Elle a aussi son alerte sonore, à activer dans les réglages des giveaways.' }
+    ]
+  },
+  {
     version: '0.41.0',
     date: '2026-11-03',
     title: 'Points et StreamElements sur le téléphone',

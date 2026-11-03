@@ -1685,6 +1685,65 @@ fn phone_channels(views: &[crate::app::AccountView]) -> (Value, Value) {
     (Value::Array(points), Value::Array(se))
 }
 
+/// Campagnes publiées par compte, au plus (la regardée et les inachevées d'abord)
+const PHONE_CAMPAIGNS: usize = 20;
+
+/// Jaquette en 80×112 (gabarit `{width}x{height}` ou taille déjà choisie), comme l'interface
+fn phone_box_art(game: &crate::drops::Game) -> String {
+    static SIZE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"-\d+x\d+\.").unwrap());
+    match &game.box_art {
+        Some(url) => SIZE.replace(&url.replace("{width}", "80").replace("{height}", "112"), "-80x112.").into_owned(),
+        None => format!("https://static-cdn.jtvnw.net/ttv-boxart/{}-80x112.jpg", game.id),
+    }
+}
+
+/// Page Drops de la web app (lecture seule) : chaîne regardée et campagnes en cours de chaque
+/// compte, avec la progression de chaque drop
+fn phone_drops(views: &[crate::app::AccountView]) -> Value {
+    let list: Vec<Value> = views
+        .iter()
+        .map(|a| {
+            let d = &a.drops;
+            let watched = d.target.as_ref().and_then(|t| t.campaign_id.as_deref());
+            let mut campaigns: Vec<&crate::drops::Campaign> = d.campaigns.iter().filter(|c| c.active()).collect();
+            campaigns.sort_by_key(|c| (Some(c.id.as_str()) != watched, !c.unfinished()));
+            let campaigns: Vec<Value> = campaigns
+                .into_iter()
+                .take(PHONE_CAMPAIGNS)
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "name": c.name,
+                        "game": c.game.name,
+                        "boxArt": phone_box_art(&c.game),
+                        "endsAt": c.ends_at,
+                        "accountLinked": c.account_linked,
+                        "watched": Some(c.id.as_str()) == watched,
+                        "drops": c.drops.iter().map(|t| {
+                            let names: Vec<&str> = t.rewards.iter().map(|r| r.name.as_str()).collect();
+                            json!({
+                                "id": t.id,
+                                "name": if names.is_empty() { t.name.clone() } else { names.join(", ") },
+                                "image": t.rewards.first().and_then(|r| r.image.clone()),
+                                "requiredMinutes": t.required_minutes,
+                                "currentMinutes": t.current_minutes.min(t.required_minutes),
+                                "claimed": t.claimed,
+                            })
+                        }).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            json!({
+                "login": a.login,
+                "enabled": d.enabled,
+                "target": d.target.as_ref().map(|t| json!({ "game": t.game_name, "login": t.login, "title": t.title })),
+                "campaigns": campaigns,
+            })
+        })
+        .collect();
+    Value::Array(list)
+}
+
 /// Giveaways ouverts ou en pause : identifiant local → identifiant partagé
 fn open_sync_ids(conn: &Connection) -> rusqlite::Result<HashMap<i64, String>> {
     conn.prepare_cached("SELECT id, sync_id FROM giveaways WHERE sync_id IS NOT NULL AND status IN ('open', 'paused')")?
@@ -1720,9 +1779,11 @@ fn spawn_state(app: Arc<App>) {
             };
             let mut state = instance_state(&app.giveaways.view(), &sync_ids, &accounts);
             // Pages Points de chaîne et StreamElements de la web app
-            let (points, se) = phone_channels(&app.account_views());
+            let views = app.account_views();
+            let (points, se) = phone_channels(&views);
             state["points"] = points;
             state["streamelements"] = se;
+            state["drops"] = phone_drops(&views);
             state["actionsAllowed"] = json!(phone_actions_allowed(&app));
             let digest = hash(&state);
             if last.as_ref().is_some_and(|(url, h, at)| *url == cfg.url && *h == digest && at.elapsed() < STATE_REFRESH) {
@@ -2594,6 +2655,14 @@ mod tests {
         assert_ne!(instance_id(&Db::memory().unwrap().conn()).unwrap(), id);
         assert_eq!(default_instance_name(Some("alice".into())), "PC alice");
         assert!(!default_instance_name(None).is_empty());
+    }
+
+    #[test]
+    fn box_art_resized_for_the_phone() {
+        let game = |art: Option<&str>| crate::drops::Game { id: "263490".into(), name: "Rust".into(), slug: None, box_art: art.map(Into::into) };
+        assert_eq!(phone_box_art(&game(Some("https://x/rust-40x56.jpg"))), "https://x/rust-80x112.jpg");
+        assert_eq!(phone_box_art(&game(Some("https://x/rust-{width}x{height}.jpg"))), "https://x/rust-80x112.jpg");
+        assert_eq!(phone_box_art(&game(None)), "https://static-cdn.jtvnw.net/ttv-boxart/263490-80x112.jpg");
     }
 
     #[test]

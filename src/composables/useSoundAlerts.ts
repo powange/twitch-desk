@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 
 // Alertes sonores : sons générés (pas de fichier audio) au choix, ou fichier de l'utilisateur.
 // L'application les demande par l'événement « sound-alert » ; la fenêtre les joue, même cachée.
-export type SoundAlertKind = 'giveaway' | 'win' | 'mention' | 'reminder' | 'scanner'
+export type SoundAlertKind = 'giveaway' | 'win' | 'mention' | 'reminder' | 'scanner' | 'drop'
 
 // Son d'une alerte : identifiant d'un son prédéfini, ou « custom » (fichier choisi)
 export const CUSTOM_SOUND = 'custom'
@@ -13,7 +13,8 @@ export const SOUND_ALERTS: { kind: SoundAlertKind, label: string, hint: string }
   { kind: 'win', label: 'Victoire', hint: 'Un bot annonce l\'un de tes comptes comme gagnant' },
   { kind: 'mention', label: 'Mention', hint: 'Un de tes pseudos est cité dans un chat surveillé' },
   { kind: 'reminder', label: 'Rappel de tirage', hint: '5 min avant un tirage où la présence est requise' },
-  { kind: 'scanner', label: 'Stream repéré', hint: 'Nouveau stream trouvé par le scan automatique' }
+  { kind: 'scanner', label: 'Stream repéré', hint: 'Nouveau stream trouvé par le scan automatique' },
+  { kind: 'drop', label: 'Drop obtenu', hint: 'Un drop terminé a été réclamé pour un de tes comptes' }
 ]
 
 // Notes (Hz), écart entre les notes et durée de chacune (s), timbre
@@ -37,7 +38,8 @@ export const DEFAULT_SOUND: Record<SoundAlertKind, string> = {
   win: 'fanfare',
   mention: 'blip',
   reminder: 'alarm',
-  scanner: 'soft'
+  scanner: 'soft',
+  drop: 'rise'
 }
 
 let context: AudioContext | null = null

@@ -1022,6 +1022,7 @@ impl DropsEngine {
             match gql.claim_drop(&instance_id).await {
                 Ok(ClaimOutcome::Claimed) => {
                     app.log(&account.login, EventKind::Drop, format!("Drop réclamé : {name} ({game})"));
+                    app.notify(crate::app::Alert::Drop, &format!("Drop obtenu : {name}"), &format!("{game}, sur le compte {}", account.login));
                     self.mark_claimed(&instance_id);
                 }
                 // Déjà réclamé (sur le site, ou avant un redémarrage) : rien de nouveau à annoncer

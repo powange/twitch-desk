@@ -144,10 +144,12 @@ pub enum Alert {
     Reminder,
     /// Nouveau stream repéré par le scanner
     Scanner,
+    /// Drop obtenu (réclamé par l'application)
+    Drop,
 }
 
 impl Alert {
-    pub const ALL: [Alert; 5] = [Alert::Giveaway, Alert::Win, Alert::Mention, Alert::Reminder, Alert::Scanner];
+    pub const ALL: [Alert; 6] = [Alert::Giveaway, Alert::Win, Alert::Mention, Alert::Reminder, Alert::Scanner, Alert::Drop];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -156,6 +158,7 @@ impl Alert {
             Alert::Mention => "mention",
             Alert::Reminder => "reminder",
             Alert::Scanner => "scanner",
+            Alert::Drop => "drop",
         }
     }
 
@@ -165,6 +168,7 @@ impl Alert {
             Alert::Giveaway | Alert::Mention | Alert::Reminder => "/giveaways",
             Alert::Win => "/giveaways/wins",
             Alert::Scanner => "/giveaways/scanner",
+            Alert::Drop => "/drops",
         }
     }
 }

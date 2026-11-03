@@ -829,7 +829,7 @@ pub struct Settings {
     pub sound_alerts: bool,
     /// Volume des alertes, de 0 à 100
     pub sound_volume: u64,
-    /// Alertes avec un son : giveaway, win, mention, reminder, scanner
+    /// Alertes avec un son : giveaway, win, mention, reminder, scanner, drop
     pub sound_events: Vec<String>,
     /// Son de chaque alerte : son prédéfini, ou « custom » pour le fichier choisi (absent : son
     /// par défaut de l'alerte)
