@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import RefreshButton from '../../components/RefreshButton.vue'
 import ChannelCell from '../../components/ChannelCell.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
@@ -289,9 +290,12 @@ function share(g: GiveawayView) {
 
     <!-- File d'alertes -->
     <section class="flex flex-col gap-2">
-      <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">
-        File d'alertes <span v-if="alerts.length + mentions.length" class="text-primary">({{ alerts.length + mentions.length }})</span>
-      </h2>
+      <div class="flex items-center gap-2">
+        <h2 class="text-sm font-semibold uppercase text-muted tracking-wide flex-1">
+          File d'alertes <span v-if="alerts.length + mentions.length" class="text-primary">({{ alerts.length + mentions.length }})</span>
+        </h2>
+        <RefreshButton :action="() => invoke('refresh_giveaways')" />
+      </div>
       <p v-if="alerts.length === 0 && mentions.length === 0" class="text-sm text-muted">
         Rien en attente. Les giveaways détectés dans les chaînes surveillées et les mentions de tes pseudos apparaîtront ici, avec une notification Windows.
       </p>
@@ -431,8 +435,10 @@ function share(g: GiveawayView) {
           :sibling-count="1"
           show-edges
         />
+        <span class="flex-1" />
+        <!-- Giveaways en cours : statut live et giveaways StreamElements relus ; passés : relus -->
+        <RefreshButton :action="() => group.key === 'past' ? loadPast() : invoke('refresh_giveaways')" />
         <template v-if="group.key === 'past'">
-          <span class="flex-1" />
           <UButton v-if="pastFilterCount" label="Effacer les filtres" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" @click="pastFilter = emptyPastFilter()" />
           <UButton
             :label="pastFilterCount ? `Filtres (${pastFilterCount})` : 'Filtres'"

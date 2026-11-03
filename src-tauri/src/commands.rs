@@ -835,6 +835,20 @@ pub fn refresh_drops(app: AppState, account_id: i64) {
     app.send(account_id, MinerCommand::RefreshDrops);
 }
 
+/// Bouton « Actualiser » des pages Points de chaîne et StreamElements : chaînes du compte relues
+/// tout de suite
+#[tauri::command]
+pub fn refresh_channels(app: AppState, account_id: i64, list: ChannelList) {
+    app.send(account_id, MinerCommand::Refresh(list));
+}
+
+/// Bouton « Actualiser » des pages Alertes et Chaînes : statut live des chaînes surveillées et
+/// giveaways StreamElements suivis relus tout de suite
+#[tauri::command]
+pub fn refresh_giveaways(app: AppState) {
+    app.giveaways.send(MonitorCmd::Refresh);
+}
+
 #[tauri::command]
 pub fn reorder_drop_games(app: AppState, account_id: i64, ids: Vec<i64>) -> CmdResult<()> {
     app.db.reorder_drop_games(account_id, &ids).map_err(db_err)?;

@@ -66,6 +66,9 @@ pub enum MinerCommand {
     Wake,
     /// Relire l'inventaire des drops tout de suite
     RefreshDrops,
+    /// Bouton « Actualiser » d'une page : statut live, soldes (points de chaîne) ou soldes, règles
+    /// et giveaways StreamElements, relus tout de suite sans les caches partagés
+    Refresh(crate::db::ChannelList),
     /// Tickets connus après un achat depuis l'app
     SeTickets { channel_id: i64, giveaway_id: String, tickets: i64 },
 }
@@ -290,6 +293,10 @@ impl Miner {
                         Some(MinerCommand::Wake) => Ok(()),
                         Some(MinerCommand::RefreshDrops) => {
                             self.drops.refresh_inventory();
+                            Ok(())
+                        }
+                        Some(MinerCommand::Refresh(list)) => {
+                            self.refresh_now(list);
                             Ok(())
                         }
                         Some(MinerCommand::SeTickets { channel_id, giveaway_id, tickets }) => {
@@ -658,6 +665,31 @@ impl Miner {
             return;
         }
         self.poll_se_giveaway(now).await;
+    }
+
+    /// Tout relire au prochain passage pour les chaînes de la page : statut live (sans le cache
+    /// partagé), puis solde de points, ou solde, règle de gain et giveaway StreamElements
+    fn refresh_now(&mut self, list: crate::db::ChannelList) {
+        let now = Instant::now();
+        for ch in &mut self.channels {
+            match list {
+                crate::db::ChannelList::Points if ch.ch.in_points => {
+                    ch.recheck_at = Some(now);
+                    ch.context_at = None;
+                }
+                crate::db::ChannelList::Se if ch.ch.in_se => {
+                    ch.recheck_at = Some(now);
+                    ch.se_polled = None;
+                    ch.se_loyalty_at = None;
+                    ch.se_giveaway_at = None;
+                    if let Some(id) = ch.ch.se_channel_id.as_deref().filter(|id| !id.is_empty()) {
+                        self.app.lives.se_giveaway.invalidate(id);
+                        self.app.lives.se_loyalty.invalidate(id);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn se_ready(c: &ChannelRt) -> Option<String> {

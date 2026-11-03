@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import RefreshButton from '../components/RefreshButton.vue'
 import ChannelCell from '../components/ChannelCell.vue'
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -225,6 +226,8 @@ function affordable(channel: ChannelView): number | null {
       <form class="flex gap-2" @submit.prevent="addChannel">
         <UInput id="new-se-channel" v-model="newLogin" placeholder="Nom ou adresse de la chaîne (ex. lunarsea)" class="flex-1" icon="i-lucide-plus" />
         <UButton type="submit" label="Ajouter" :loading="adding" />
+        <!-- Statut live, soldes, règles de gain et giveaways relus tout de suite -->
+        <RefreshButton :action="() => account && invoke('refresh_channels', { accountId: account.id, list: 'se' })" />
       </form>
 
       <div class="flex items-center gap-2 flex-wrap">

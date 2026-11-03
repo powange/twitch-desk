@@ -328,6 +328,8 @@ pub fn run() {
             commands::set_giveaway_winners,
             commands::se_giveaway_info,
             commands::past_giveaways,
+            commands::refresh_channels,
+            commands::refresh_giveaways,
             win_reply::cancel_win_reply,
             commands::game_box_arts,
             commands::save_streamer,

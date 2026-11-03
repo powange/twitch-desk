@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.40.5',
+    date: '2026-11-03',
+    changes: [
+      { kind: 'new', text: 'Bouton « Actualiser » sur chaque tableau qui se met à jour tout seul : Points de chaîne, StreamElements, Chaînes, Mes gains, Drops (jeux souhaités) et Alertes (file d\'alertes, giveaways en cours, giveaways passés). Le statut live, les soldes et les giveaways sont relus tout de suite.' }
+    ]
+  },
+  {
     version: '0.40.4',
     date: '2026-11-03',
     changes: [

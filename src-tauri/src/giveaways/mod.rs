@@ -49,6 +49,8 @@ pub enum MonitorCmd {
     Close(i64),
     /// Giveaway terminé rouvert à la main (gagnant retiré)
     Reopen(i64),
+    /// Bouton « Actualiser » : statut live et giveaways StreamElements suivis relus tout de suite
+    Refresh,
     Delete(i64),
     DismissMention(u64),
     /// Gagnant désigné à la main (journal du chat) : giveaway choisi, sinon ouvert de la chaîne,
@@ -481,6 +483,11 @@ impl Monitor {
 
     /// Relit le statut des chaînes dues dans une tâche à part ; résultat dans `on_live_report`
     fn check_lives(&mut self) {
+        self.check_lives_now(false);
+    }
+
+    /// `fresh` : toutes les chaînes, sans le cache partagé (bouton « Actualiser »)
+    fn check_lives_now(&mut self, fresh: bool) {
         if self.live_busy.is_some_and(|t| t.elapsed() < LIVE_CHECK_EVERY) {
             return;
         }
@@ -489,7 +496,7 @@ impl Monitor {
             .channels
             .iter()
             .map(|c| c.login.clone())
-            .filter(|c| self.live.get(c).is_none_or(|l| now.duration_since(l.at) >= LIVE_CHECK_EVERY))
+            .filter(|c| fresh || self.live.get(c).is_none_or(|l| now.duration_since(l.at) >= LIVE_CHECK_EVERY))
             .take(crate::lives::BATCH)
             .collect();
         if due.is_empty() {
@@ -503,7 +510,7 @@ impl Monitor {
         let tx = self.live_tx.clone();
         let app = self.app.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = tx.send(fetch_lives(&app, &gqls, due).await).await;
+            let _ = tx.send(fetch_lives(&app, &gqls, due, fresh).await).await;
         });
     }
 
@@ -734,6 +741,14 @@ impl Monitor {
             }
             MonitorCmd::Close(id) => {
                 let _ = self.app.db.close_giveaway(id);
+                self.publish();
+            }
+            MonitorCmd::Refresh => {
+                self.live_busy = None;
+                self.check_lives_now(true);
+                self.se_busy = None;
+                self.se_checked.clear();
+                self.check_se_giveaways(None);
                 self.publish();
             }
             MonitorCmd::Reopen(id) => {
@@ -1553,8 +1568,8 @@ impl Drop for SendingGuard<'_> {
 
 /// Statut live des chaînes, partagé avec les superviseurs des comptes : cache, sinon requête
 /// groupée, sinon le premier client accepté (jeton refusé : compte suivant)
-async fn fetch_lives(app: &App, gqls: &[Gql], due: Vec<String>) -> LiveReport {
-    let since = crate::lives::since(LIVE_CHECK_EVERY);
+async fn fetch_lives(app: &App, gqls: &[Gql], due: Vec<String>, fresh: bool) -> LiveReport {
+    let since = if fresh { Instant::now() } else { crate::lives::since(LIVE_CHECK_EVERY) };
     let wanted: Vec<(String, Instant)> = due.into_iter().map(|c| (c, since)).collect();
     let fetch = app.lives.streams_status(&app.http, gqls, &wanted).await;
     let mut results = vec![];

@@ -662,6 +662,11 @@ impl DropsEngine {
     pub fn refresh_inventory(&mut self) {
         self.inventory_at = None;
         self.claim_attempts.clear();
+        // Streams avec drops et vérification des campagnes relus aussi (bouton « Actualiser »)
+        for r in self.rt.values_mut() {
+            r.streams_at = None;
+            r.verified = None;
+        }
     }
 
     /// Progression annoncée en direct (PubSub) ; drop inconnu : nouvelle campagne, relire l'inventaire

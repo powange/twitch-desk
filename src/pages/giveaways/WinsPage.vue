@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import RefreshButton from '../../components/RefreshButton.vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../../composables/useSnapshot'
@@ -61,6 +62,8 @@ function formatDate(iso: string | null) {
     <div class="flex items-baseline gap-3">
       <h1 class="text-xl font-semibold">Mes gains</h1>
       <span v-if="wins.length" class="text-sm text-muted">{{ wins.length }} giveaway(s) gagné(s) · {{ pending }} lot(s) en attente</span>
+      <span class="flex-1" />
+      <RefreshButton :action="load" />
     </div>
 
     <div class="border border-default rounded-lg overflow-x-auto">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import RefreshButton from '../components/RefreshButton.vue'
 import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../composables/useSnapshot'
@@ -176,7 +177,11 @@ function refreshDrops() {
 
       <!-- Jeux souhaités -->
       <section class="flex flex-col gap-2">
-        <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">Jeux souhaités</h2>
+        <div class="flex items-center gap-2">
+          <h2 class="text-sm font-semibold uppercase text-muted tracking-wide flex-1">Jeux souhaités</h2>
+          <!-- Streams avec drops, vérification des campagnes et inventaire relus tout de suite -->
+          <RefreshButton :action="refreshDrops" />
+        </div>
         <div class="flex gap-2">
           <CategorySearchInput id="new-drop-game" v-model="newGame" placeholder="Rechercher un jeu (ex. Sea of Thieves) ou coller l'adresse de sa catégorie Twitch" :loading="adding" @submit="addGame" />
           <UButton label="Ajouter" :loading="adding" :disabled="!newGame.trim()" @click="addGame()" />

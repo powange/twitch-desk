@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import RefreshButton from '../../components/RefreshButton.vue'
 import ChannelCell from '../../components/ChannelCell.vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
@@ -306,6 +307,8 @@ async function confirmRemove() {
     <form class="flex gap-2" @submit.prevent="addChannel">
       <UInput id="new-giveaway-channel" v-model="newChannel" placeholder="Nom ou adresse de la chaîne (ex. lunarsea)" class="flex-1" icon="i-lucide-plus" />
       <UButton type="submit" label="Ajouter" :loading="adding" />
+      <!-- Statut live des chaînes et giveaways StreamElements relus tout de suite -->
+      <RefreshButton :action="() => invoke('refresh_giveaways')" />
     </form>
 
     <div class="border border-default rounded-lg overflow-x-auto">

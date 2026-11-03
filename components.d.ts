@@ -30,6 +30,7 @@ declare module 'vue' {
     LogViewer: typeof import('./src/components/LogViewer.vue')['default']
     PhonePairing: typeof import('./src/components/PhonePairing.vue')['default']
     PointsChannelSettings: typeof import('./src/components/PointsChannelSettings.vue')['default']
+    RefreshButton: typeof import('./src/components/RefreshButton.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SolidIcon: typeof import('./src/components/SolidIcon.vue')['default']

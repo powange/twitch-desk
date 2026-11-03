@@ -88,6 +88,8 @@
     "allow-set-giveaway-winners",
     "allow-se-giveaway-info",
     "allow-past-giveaways",
+    "allow-refresh-channels",
+    "allow-refresh-giveaways",
     "allow-game-box-arts",
     "allow-save-streamer",
     "allow-get-streamers",

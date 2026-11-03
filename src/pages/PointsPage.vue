@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import RefreshButton from '../components/RefreshButton.vue'
 import ChannelCell from '../components/ChannelCell.vue'
 import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
@@ -79,6 +80,8 @@ const STATE_LEGEND: { state: ChannelState, text: string }[] = [
       <form class="flex gap-2" @submit.prevent="addChannel">
         <UInput id="new-points-channel" v-model="newLogin" placeholder="Nom ou adresse de la chaîne (ex. lunarsea)" class="flex-1" icon="i-lucide-plus" />
         <UButton type="submit" label="Ajouter" :loading="adding" />
+        <!-- Statut live et soldes relus tout de suite -->
+        <RefreshButton :action="() => invoke('refresh_channels', { accountId: account!.id, list: 'points' })" />
       </form>
 
       <div class="border border-default rounded-lg overflow-x-auto">

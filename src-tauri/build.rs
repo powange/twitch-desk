@@ -78,6 +78,8 @@ const COMMANDS: &[&str] = &[
     "set_giveaway_winners",
     "se_giveaway_info",
     "past_giveaways",
+    "refresh_channels",
+    "refresh_giveaways",
     "game_box_arts",
     "save_streamer",
     "get_streamers",
