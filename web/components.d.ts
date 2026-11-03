@@ -15,6 +15,7 @@ declare module 'vue' {
     DropsView: typeof import('./src/components/DropsView.vue')['default']
     GiveawayCard: typeof import('./src/components/GiveawayCard.vue')['default']
     GiveawayCarousel: typeof import('./src/components/GiveawayCarousel.vue')['default']
+    MentionList: typeof import('./src/components/MentionList.vue')['default']
     NotificationsModal: typeof import('./src/components/NotificationsModal.vue')['default']
     PairScreen: typeof import('./src/components/PairScreen.vue')['default']
     PointsView: typeof import('./src/components/PointsView.vue')['default']

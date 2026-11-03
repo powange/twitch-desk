@@ -99,10 +99,23 @@ export interface InstanceState {
   actionsAllowed?: boolean
   // Page Drops (application 0.42 et plus)
   drops?: DropsAccount[]
+  // Mentions de nos pseudos, les plus récentes d'abord (application 0.45 et plus)
+  mentions?: Mention[]
   // Page Scanner (application 0.44 et plus)
   scanner?: { scannedAt: string | null, matches: ScanMatch[] }
   // Version de l'application du PC et dernière vérification des mises à jour (0.43 et plus)
   pc?: { version: string, update: { available: string | null, checkedAt: string } | null }
+}
+
+// Un de nos pseudos cité dans un chat surveillé
+export interface Mention {
+  id: number
+  at: string
+  channel: string
+  // Notre compte mentionné
+  account: string
+  author: string
+  message: string
 }
 
 // Stream repéré par le scanner du PC

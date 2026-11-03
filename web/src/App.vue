@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { DropdownMenuItem } from '@nuxt/ui'
 import { ApiError, actions as listActions, loadDevice, openEvents, overview, saveDevice, state as loadStateOnly, type Device, type LiveStatus } from './api'
 import type { InstanceState, Overview, PhoneAction } from './types'
@@ -10,6 +10,7 @@ import PointsView from './components/PointsView.vue'
 import SeView from './components/SeView.vue'
 import DropsView from './components/DropsView.vue'
 import ScannerView from './components/ScannerView.vue'
+import MentionList from './components/MentionList.vue'
 import NotificationsModal from './components/NotificationsModal.vue'
 import UpdateModal from './components/UpdateModal.vue'
 import { active as pushActive, disable as disablePush, refresh as refreshPush, serverTooOld, support as pushSupport } from './push'
@@ -35,7 +36,10 @@ function remember(key: string, value: string) {
 const TAB_KEYS = ['giveaways', 'scanner', 'points', 'se', 'drops'] as const
 const asTab = (t: unknown) => TAB_KEYS.find(k => k === t)
 // Ouverte depuis une notification (« ?tab=drops ») : sur l'onglet de l'alerte
-const asked = asTab(new URLSearchParams(location.search).get('tab'))
+const query = new URLSearchParams(location.search)
+const asked = asTab(query.get('tab'))
+// « ?focus=mentions » : section Mentions de l'accueil montrée une fois les données lues
+const focus = ref<string | null>(query.get('focus'))
 if (asked) history.replaceState(null, '', location.pathname + location.hash)
 const tab = ref<Tab>(asked ?? asTab(remembered('tab', 'giveaways')) ?? 'giveaways')
 const pointsAccount = ref(remembered('points-account', ''))
@@ -47,8 +51,18 @@ watch(seAccount, a => remember('se-account', a))
 watch(dropsAccount, a => remember('drops-account', a))
 // Notification touchée, web app déjà ouverte : le service worker indique l'onglet
 navigator.serviceWorker?.addEventListener('message', (e: MessageEvent) => {
-  const t = asTab((e.data as { tab?: unknown } | null)?.tab)
+  const msg = e.data as { tab?: unknown, focus?: unknown } | null
+  const t = asTab(msg?.tab)
   if (t) tab.value = t
+  if (typeof msg?.focus === 'string') focus.value = msg.focus
+})
+watch([focus, () => data.value, tab], async ([f]) => {
+  if (!f || !data.value) return
+  await nextTick()
+  const el = document.getElementById(f)
+  if (!el) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  focus.value = null
 })
 // `title` : nom complet dans l'en-tête quand le libellé de l'onglet est abrégé
 const TABS: { key: Tab, label: string, icon: string, title?: string }[] = [
@@ -286,6 +300,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
             <p class="text-xs text-muted -mt-1">Live terminé, tirage pas encore fait.</p>
             <GiveawayCarousel v-model:index="pausedIndex" :giveaways="paused" :state="data.state" />
           </section>
+          <MentionList v-if="data.state?.mentions?.length" id="mentions" :mentions="data.state.mentions" class="scroll-mt-20" />
           <p v-if="data.stateAt" class="text-xs text-muted text-center">Participations publiées par le PC {{ timeAgo(data.stateAt) }}</p>
         </template>
       </main>
