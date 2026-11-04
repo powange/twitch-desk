@@ -338,6 +338,7 @@ pub fn run() {
             commands::set_giveaway_winners,
             commands::se_giveaway_info,
             commands::past_giveaways,
+            commands::past_giveaway_channels,
             commands::refresh_channels,
             commands::refresh_giveaways,
             commands::create_past_giveaway,

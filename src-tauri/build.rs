@@ -82,6 +82,7 @@ const COMMANDS: &[&str] = &[
     "set_giveaway_winners",
     "se_giveaway_info",
     "past_giveaways",
+    "past_giveaway_channels",
     "refresh_channels",
     "refresh_giveaways",
     "create_past_giveaway",

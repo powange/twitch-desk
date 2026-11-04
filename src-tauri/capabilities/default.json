@@ -92,6 +92,7 @@
     "allow-set-giveaway-winners",
     "allow-se-giveaway-info",
     "allow-past-giveaways",
+    "allow-past-giveaway-channels",
     "allow-refresh-channels",
     "allow-refresh-giveaways",
     "allow-create-past-giveaway",

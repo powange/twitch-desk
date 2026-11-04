@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.7',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'improved', text: 'Filtres des giveaways passés : « Streamer » est maintenant une liste avec recherche, qui ne propose que les streamers présents dans tes giveaways passés.' }
+    ]
+  },
+  {
     version: '0.48.6',
     date: '2026-11-04',
     changes: [

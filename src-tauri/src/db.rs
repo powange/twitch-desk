@@ -1731,6 +1731,14 @@ impl Db {
         Ok(())
     }
 
+    /// Chaînes des giveaways terminés, par ordre alphabétique (filtre des giveaways passés)
+    pub fn closed_giveaway_channels(&self) -> DbResult<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT DISTINCT channel FROM giveaways WHERE status = 'closed' ORDER BY channel")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect()
+    }
+
     /// Giveaways terminés qui passent `filter`, les plus récents d'abord, par page (`offset`,
     /// `limit`) ; et leur nombre
     pub fn closed_giveaways(&self, filter: &PastFilter, limit: usize, offset: usize) -> DbResult<(Vec<GiveawayRow>, usize)> {
@@ -1738,7 +1746,7 @@ impl Db {
         let condition = "status = 'closed'
             AND (:from IS NULL OR julianday(COALESCE(drawn_at, detected_at)) >= julianday(:from))
             AND (:to IS NULL OR julianday(COALESCE(drawn_at, detected_at)) <= julianday(:to))
-            AND (:channel IS NULL OR instr(channel, :channel) > 0)
+            AND (:channel IS NULL OR channel = :channel)
             AND (:kinds = '[]' OR kind IN (SELECT value FROM json_each(:kinds)))
             AND (:winner IS NULL OR EXISTS (SELECT 1 FROM json_each(giveaways.winners) w WHERE instr(lower(w.value), :winner) > 0))
             AND (:gifts = '[]' OR EXISTS (SELECT 1 FROM giveaway_gifts gg WHERE gg.giveaway_id = giveaways.id
@@ -2993,7 +3001,7 @@ mod tests {
         let by = |f: PastFilter| db.closed_giveaways(&f, 10, 0).unwrap().1;
         assert_eq!(by(PastFilter { winner: Some("BO".into()), ..all.clone() }), 1);
         assert_eq!(by(PastFilter { winner: Some("zed".into()), ..all.clone() }), 0);
-        assert_eq!(by(PastFilter { channel: Some("lunar".into()), kinds: vec!["command".into()], ..all.clone() }), 1);
+        assert_eq!(by(PastFilter { channel: Some("lunarsea".into()), kinds: vec!["command".into()], ..all.clone() }), 1);
         assert_eq!(by(PastFilter { kinds: vec!["streamelements".into()], ..all.clone() }), 0);
         assert_eq!(by(PastFilter { from: Some("2026-11-03T10:00:00.000Z".into()), to: Some("2026-11-03T11:00:00Z".into()), ..all.clone() }), 1);
         assert_eq!(by(PastFilter { from: Some("2026-11-04T00:00:00Z".into()), ..all.clone() }), 0);

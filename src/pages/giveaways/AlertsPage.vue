@@ -64,6 +64,13 @@ const pastFilterCount = computed(() => {
   return [f.from || f.to, f.channel.trim(), f.kinds.length, f.winner.trim(), f.giftIds.length].filter(Boolean).length
 })
 const giftFilterItems = computed(() => catalogGifts.value.map(g => ({ label: g.title, value: g.id })))
+// Streamers des giveaways passés (autocomplétion du filtre), relus à l'ouverture des filtres
+const pastChannels = ref<string[]>([])
+const channelFilterItems = computed(() => [{ label: 'Tous les streamers', value: '' }, ...pastChannels.value.map(c => ({ label: c, value: c }))])
+watch(pastFilterOpen, (isOpen) => {
+  if (!isOpen) return
+  invoke<string[]>('past_giveaway_channels').then((list) => { pastChannels.value = list }).catch(() => {})
+})
 // Dates du formulaire (jour local) → bornes RFC 3339, journées entières comprises
 function pastFilterArgs() {
   const f = pastFilter.value
@@ -680,7 +687,16 @@ function share(g: GiveawayView) {
             </UFormField>
           </div>
           <UFormField label="Streamer">
-            <UInput id="past-channel" v-model="pastFilter.channel" icon="i-lucide-tv" placeholder="Nom de la chaîne (ou une partie)" class="w-full" />
+            <USelectMenu
+              id="past-channel"
+              v-model="pastFilter.channel"
+              :items="channelFilterItems"
+              value-key="value"
+              icon="i-lucide-tv"
+              :search-input="{ placeholder: 'Rechercher un streamer' }"
+              placeholder="Tous les streamers"
+              class="w-full"
+            />
           </UFormField>
           <UFormField label="Type de giveaway">
             <USelect v-model="pastFilter.kinds" :items="GIVEAWAY_KIND_ITEMS" multiple placeholder="Tous les types" class="w-full" />

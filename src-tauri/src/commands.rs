@@ -1369,6 +1369,12 @@ pub async fn past_giveaways(
     blocking(&app, move |app| crate::giveaways::past_views(app, &filter, page, per_page)).await
 }
 
+/// Streamers des giveaways passés (autocomplétion du filtre)
+#[tauri::command]
+pub async fn past_giveaway_channels(app: AppState<'_>) -> CmdResult<Vec<String>> {
+    blocking(&app, |app| app.db.closed_giveaway_channels().map_err(db_err)).await?
+}
+
 #[tauri::command]
 pub async fn get_wins(app: AppState<'_>) -> CmdResult<Vec<crate::giveaways::GiveawayView>> {
     blocking(&app, crate::giveaways::won_views).await
