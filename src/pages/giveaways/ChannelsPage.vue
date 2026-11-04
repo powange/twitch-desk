@@ -20,6 +20,7 @@ import { useConditionActions } from '../../composables/useConditionActions'
 import type { ConditionTarget } from '../../composables/useConditionActions'
 import { useAction } from '../../composables/useAction'
 import { numberList, stringList, usePersisted } from '../../composables/usePersisted'
+import StreamerSelect from '../../components/StreamerSelect.vue'
 
 const { snapshot } = useSnapshot()
 const { openGift } = useGiftPreview()
@@ -86,6 +87,9 @@ function rank(c: GiveawayChannelView): number {
 const OFFLINE = 'offline'
 const categoryFilter = usePersisted('channels.categories', [] as string[], { sanitize: stringList })
 const giftFilter = usePersisted('channels.gifts', [] as number[], { sanitize: numberList })
+// Streamers (noms ou bouts de nom) : une chaîne passe si son nom en contient un
+const streamerFilter = usePersisted('channels.streamers', [] as string[], { sanitize: stringList })
+const streamerItems = computed(() => (view.value?.channels ?? []).map(c => c.login).sort((a, b) => a.localeCompare(b)))
 // Cadeau retenu retiré du catalogue : plus filtré (une fois le catalogue chargé)
 watch(byId, (all) => {
   if (!catalog.value) return
@@ -137,6 +141,7 @@ const giftItems = computed(() => {
     .map(({ gift, count }) => ({ label: `${gift.title} (${count})`, value: gift.id, image: gift.image }))
 })
 function matchesFilters(c: GiveawayChannelView) {
+  if (streamerFilter.value.length && !streamerFilter.value.some(s => c.login.toLowerCase().includes(s.toLowerCase()))) return false
   if (categoryFilter.value.length) {
     const key = c.live ? (c.live.gameId ?? '') : OFFLINE
     if (!categoryFilter.value.includes(key)) return false
@@ -144,8 +149,9 @@ function matchesFilters(c: GiveawayChannelView) {
   if (giftFilter.value.length && !channelGifts(c).some(x => giftFilter.value.includes(x.gift.id))) return false
   return true
 }
-const filtering = computed(() => categoryFilter.value.length > 0 || giftFilter.value.length > 0)
+const filtering = computed(() => streamerFilter.value.length > 0 || categoryFilter.value.length > 0 || giftFilter.value.length > 0)
 function clearFilters() {
+  streamerFilter.value = []
   categoryFilter.value = []
   giftFilter.value = []
 }
@@ -271,6 +277,7 @@ async function confirmRemove() {
     />
 
     <div class="flex items-center gap-2 flex-wrap">
+      <StreamerSelect v-model="streamerFilter" :items="streamerItems" multiple class="w-72" />
       <USelectMenu
         v-model="categoryFilter"
         :items="categoryItems"

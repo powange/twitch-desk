@@ -14,6 +14,7 @@ import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayConditions from '../../components/GiveawayConditions.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import ImportPastModal from '../../components/ImportPastModal.vue'
+import StreamerSelect from '../../components/StreamerSelect.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, GIVEAWAY_KIND_ITEMS, formatDrawAt } from '../../utils/giveaways'
@@ -66,15 +67,11 @@ const pastFilterCount = computed(() => {
 const giftFilterItems = computed(() => catalogGifts.value.map(g => ({ label: g.title, value: g.id })))
 // Streamers des giveaways passés (autocomplétion du filtre), relus à l'ouverture des filtres
 const pastChannels = ref<string[]>([])
-// Bout de nom tapé (« mav ») : filtre par mot-clé, affiché « Contient « mav » »
-const channelFilterItems = computed(() => {
-  const v = pastFilter.value.channel.trim()
-  const keyword = v && !pastChannels.value.includes(v.toLowerCase()) ? [{ label: `Contient « ${v} »`, value: v }] : []
-  return [{ label: 'Tous les streamers', value: '' }, ...keyword, ...pastChannels.value.map(c => ({ label: c, value: c }))]
-})
 watch(pastFilterOpen, (isOpen) => {
   if (!isOpen) return
-  invoke<string[]>('past_giveaway_channels').then((list) => { pastChannels.value = list }).catch(() => {})
+  invoke<string[]>('past_giveaway_channels')
+    .then((list) => { pastChannels.value = list })
+    .catch((e: unknown) => toast.add({ title: 'Streamers des giveaways passés non lus', description: String(e), color: 'error' }))
 })
 // Dates du formulaire (jour local) → bornes RFC 3339, journées entières comprises
 function pastFilterArgs() {
@@ -730,20 +727,7 @@ function share(g: GiveawayView) {
             </UFormField>
           </div>
           <UFormField label="Streamer">
-            <USelectMenu
-              id="past-channel"
-              v-model="pastFilter.channel"
-              :items="channelFilterItems"
-              value-key="value"
-              icon="i-lucide-tv"
-              :search-input="{ placeholder: 'Nom ou bout de nom (ex. mav)' }"
-              :create-item="{ position: 'top', when: 'always' }"
-              placeholder="Tous les streamers"
-              class="w-full"
-              @create="(term: string) => { pastFilter.channel = term.trim() }"
-            >
-              <template #create-item-label="{ item }">Contient « {{ item }} »</template>
-            </USelectMenu>
+            <StreamerSelect id="past-channel" v-model="pastFilter.channel" :items="pastChannels" class="w-full" />
           </UFormField>
           <UFormField label="Type de giveaway">
             <USelect v-model="pastFilter.kinds" :items="GIVEAWAY_KIND_ITEMS" multiple placeholder="Tous les types" class="w-full" />

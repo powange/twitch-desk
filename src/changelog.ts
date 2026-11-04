@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.14',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'new', text: 'Page Chaînes : filtre « Streamers » à choix multiple, avec recherche. Un bout de nom suffit (« mav » trouve lf_maverick), et « Contient « mav » » garde toutes les chaînes dont le nom contient ce bout.' },
+      { kind: 'fixed', text: 'Filtres des giveaways passés : la recherche du streamer trouve maintenant les noms qui contiennent les lettres tapées, même au milieu du nom. Si la liste des streamers ne peut pas être lue, un message le dit.' }
+    ]
+  },
+  {
     version: '0.48.13',
     date: '2026-11-04',
     changes: [
