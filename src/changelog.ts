@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.4',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'improved', text: 'Formulaire de giveaway : les informations d\'une chaîne déjà ouverte (encart du streamer, Discord, fiche) s\'affichent tout de suite, puis sont mises à jour en arrière-plan, avec un petit indicateur en haut à droite de l\'encart.' }
+    ]
+  },
+  {
     version: '0.48.3',
     date: '2026-11-04',
     changes: [

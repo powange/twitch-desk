@@ -5,6 +5,7 @@ import { useSnapshot } from '../composables/useSnapshot'
 import { suggestGifts, useGiftCatalog } from '../composables/useGiftCatalog'
 import GiftFormModal from './GiftFormModal.vue'
 import ChannelProfileCard, { type ChannelProfile } from './ChannelProfileCard.vue'
+import { cachedInspect, storeInspect } from '../composables/channelInspectCache'
 import { useOpenExternal } from '../utils/external'
 import { boxArt, channelUrl, formatNumber } from '../utils/format'
 import { GIVEAWAY_KIND_ITEMS } from '../utils/giveaways'
@@ -390,63 +391,82 @@ watch(() => [open.value, form.value.kind, form.value.channel.trim().toLowerCase(
   rewardsTimer = setTimeout(() => { void loadRewards(login) }, 400)
 }, { immediate: true })
 
-async function inspect(login: string) {
-  const seq = ++inspectSeq
-  inspecting.value = true
-  // Valeurs au départ de la requête : ce que l'utilisateur modifie pendant ce temps n'est pas écrasé
+// Valeurs des champs remplis d'après la fiche : ce que l'utilisateur modifie ensuite n'est pas écrasé
+function formSnapshot() {
   const f = form.value
-  const before = {
+  return {
     discord: streamerDiscord.value, notes: streamerNotes.value, ignored: streamerIgnored.value.join(),
     winReply: streamerWinReply.value, winDelay: streamerWinDelay.value, seName: streamerSeName.value,
     follow: f.follow, followDuration: f.followDuration, presence: f.presence, discordCond: f.discord, greeting: f.greeting,
     chatTime: f.chatTime, chatMinutes: f.chatMinutes
   }
+}
+
+// Fiche déjà lue : affichée tout de suite, puis relue (petit indicateur sur l'encart pendant ce temps)
+async function inspect(login: string) {
+  const seq = ++inspectSeq
+  inspecting.value = true
+  const f = form.value
+  let before = formSnapshot()
+  const cached = cachedInspect<ChannelSuggestion>(login)
+  if (cached) {
+    applySuggestion(cached, before, false)
+    before = formSnapshot()
+  }
   try {
     const found = await invoke<ChannelSuggestion>('inspect_giveaway_channel', { login })
+    storeInspect(login, found)
     // Une saisie plus récente (ou une réouverture) a pris le relais
     if (seq !== inspectSeq || form.value !== f) return
-    suggestion.value = found
-    // Fiche du streamer : ce qu'on a noté, sinon le lien Discord trouvé sur sa chaîne
-    streamerLoaded.value = {
-      discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '', ignored: (found.streamer?.ignoredCommands ?? []).join(),
-      winReply: found.streamer?.winReply ?? '', winDelay: found.streamer?.winReplyDelay ?? null, seName: found.streamer?.seName ?? ''
-    }
-    if (streamerSeName.value === before.seName) streamerSeName.value = found.streamer?.seName ?? ''
-    if (streamerWinReply.value === before.winReply) streamerWinReply.value = found.streamer?.winReply ?? ''
-    if (streamerWinDelay.value === before.winDelay) streamerWinDelay.value = found.streamer?.winReplyDelay ?? null
-    if (streamerDiscord.value === before.discord) streamerDiscord.value = found.streamer?.discordUrl ?? found.profile?.discord ?? ''
-    if (streamerNotes.value === before.notes) streamerNotes.value = found.streamer?.notes ?? ''
-    if (streamerIgnored.value.join() === before.ignored) streamerIgnored.value = [...(found.streamer?.ignoredCommands ?? [])]
-    const st = found.streamer
-    // Fiche du streamer, et nouveau giveaway : toutes les conditions reprises de la fiche (jamais
-    // celles changées pendant le chargement). Elles y sont gardées à jour quand on les change sur
-    // un giveaway en cours
-    if (st && (props.streamerOnly || !props.giveaway)) {
-      if (f.follow === before.follow) f.follow = toTri(st.requireFollow)
-      if (f.followDuration === before.followDuration) f.followDuration = st.followMinSecs ? formatDuration(st.followMinSecs) : ''
-      if (f.presence === before.presence) f.presence = toTri(st.requirePresence)
-      if (f.discord === before.discordCond) f.discord = toTri(st.requireDiscord)
-      if (f.greeting === before.greeting) f.greeting = toTri(st.requireGreeting)
-      if (f.chatTime === before.chatTime && f.chatMinutes === before.chatMinutes) {
-        f.chatTime = st.minChatMinutes === null ? 'unknown' : st.minChatMinutes > 0 ? 'yes' : 'no'
-        f.chatMinutes = st.minChatMinutes && st.minChatMinutes > 0 ? st.minChatMinutes : null
-      }
-    }
-    // En modification (ou fiche du streamer), la fiche de la chaîne suffit : on ne remplace pas ce qui a été saisi
-    // Ancien giveaway : ni le giveaway StreamElements du jour ni la commande vue dans le chat
-    if (props.giveaway || props.streamerOnly || pastMode.value) return
-    if (found.streamelements) {
-      f.kind = 'streamelements'
-      f.url = found.streamelements.url
-      if (found.streamelements.command) f.command = found.streamelements.command
-      if (found.streamelements.maxTickets) f.ticketMax = found.streamelements.maxTickets
-    } else if (found.detectedCommand && !f.command) {
-      f.command = found.detectedCommand
-    }
+    applySuggestion(found, before, true)
   } catch {
-    // Meilleur effort : rien à suggérer
+    // Meilleur effort : rien à suggérer (la fiche gardée reste affichée)
   } finally {
     if (seq === inspectSeq) inspecting.value = false
+  }
+}
+
+// `fresh` : relue à l'instant ; une fiche gardée ne pré-remplit pas le giveaway StreamElements
+// ni la commande du chat (ils changent d'un live à l'autre)
+function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof formSnapshot>, fresh: boolean) {
+  const f = form.value
+  suggestion.value = found
+  // Fiche du streamer : ce qu'on a noté, sinon le lien Discord trouvé sur sa chaîne
+  streamerLoaded.value = {
+    discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '', ignored: (found.streamer?.ignoredCommands ?? []).join(),
+    winReply: found.streamer?.winReply ?? '', winDelay: found.streamer?.winReplyDelay ?? null, seName: found.streamer?.seName ?? ''
+  }
+  if (streamerSeName.value === before.seName) streamerSeName.value = found.streamer?.seName ?? ''
+  if (streamerWinReply.value === before.winReply) streamerWinReply.value = found.streamer?.winReply ?? ''
+  if (streamerWinDelay.value === before.winDelay) streamerWinDelay.value = found.streamer?.winReplyDelay ?? null
+  if (streamerDiscord.value === before.discord) streamerDiscord.value = found.streamer?.discordUrl ?? found.profile?.discord ?? ''
+  if (streamerNotes.value === before.notes) streamerNotes.value = found.streamer?.notes ?? ''
+  if (streamerIgnored.value.join() === before.ignored) streamerIgnored.value = [...(found.streamer?.ignoredCommands ?? [])]
+  const st = found.streamer
+  // Fiche du streamer, et nouveau giveaway : toutes les conditions reprises de la fiche (jamais
+  // celles changées pendant le chargement). Elles y sont gardées à jour quand on les change sur
+  // un giveaway en cours
+  if (st && (props.streamerOnly || !props.giveaway)) {
+    if (f.follow === before.follow) f.follow = toTri(st.requireFollow)
+    if (f.followDuration === before.followDuration) f.followDuration = st.followMinSecs ? formatDuration(st.followMinSecs) : ''
+    if (f.presence === before.presence) f.presence = toTri(st.requirePresence)
+    if (f.discord === before.discordCond) f.discord = toTri(st.requireDiscord)
+    if (f.greeting === before.greeting) f.greeting = toTri(st.requireGreeting)
+    if (f.chatTime === before.chatTime && f.chatMinutes === before.chatMinutes) {
+      f.chatTime = st.minChatMinutes === null ? 'unknown' : st.minChatMinutes > 0 ? 'yes' : 'no'
+      f.chatMinutes = st.minChatMinutes && st.minChatMinutes > 0 ? st.minChatMinutes : null
+    }
+  }
+  // En modification (ou fiche du streamer), la fiche de la chaîne suffit : on ne remplace pas ce qui a été saisi
+  // Ancien giveaway : ni le giveaway StreamElements du jour ni la commande vue dans le chat
+  if (props.giveaway || props.streamerOnly || pastMode.value || !fresh) return
+  if (found.streamelements) {
+    f.kind = 'streamelements'
+    f.url = found.streamelements.url
+    if (found.streamelements.command) f.command = found.streamelements.command
+    if (found.streamelements.maxTickets) f.ticketMax = found.streamelements.maxTickets
+  } else if (found.detectedCommand && !f.command) {
+    f.command = found.detectedCommand
   }
 }
 const saving = ref(false)
@@ -704,7 +724,7 @@ async function save() {
                 placeholder="lunarsea"
                 autocomplete="off"
                 class="w-full"
-                :trailing-icon="inspecting ? 'i-lucide-loader-circle' : undefined"
+                :trailing-icon="inspecting && !profile ? 'i-lucide-loader-circle' : undefined"
                 :ui="{ trailingIcon: 'animate-spin' }"
               />
               <datalist id="gw-channel-list">
@@ -712,7 +732,10 @@ async function save() {
               </datalist>
             </UFormField>
             <!-- Fiche de la chaîne -->
-            <ChannelProfileCard v-if="profile" :profile="profile" />
+            <div v-if="profile" class="relative">
+              <ChannelProfileCard :profile="profile" />
+              <UIcon v-if="inspecting" name="i-lucide-loader-circle" class="absolute top-3 right-3 size-4 animate-spin text-muted" title="Mise à jour des informations de la chaîne…" />
+            </div>
             <p v-else-if="suggestion && !inspecting && form.channel.trim()" class="text-sm text-error">Chaîne introuvable sur Twitch.</p>
 
             <UAlert
