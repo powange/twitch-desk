@@ -1,4 +1,5 @@
 import type { GiveawayDetails, GiveawayKind } from '../types'
+import { formatDuration } from './duration'
 
 type BadgeColor = 'primary' | 'secondary' | 'success' | 'info' | 'warning' | 'error' | 'neutral'
 
@@ -59,10 +60,10 @@ export function participationConditions(d: GiveawayDetails, kind: GiveawayKind):
       ? {
           key: 'follow',
           icon: 'i-lucide-heart',
-          label: d.followMinDays ? `Follow requis depuis au moins ${d.followMinDays} jour(s)` : 'Follow requis pour participer',
+          label: d.followMinSecs ? `Follow requis depuis au moins ${formatDuration(d.followMinSecs)}` : 'Follow requis pour participer',
           colorClass: 'text-pink-600 dark:text-pink-400',
           strike: false,
-          suffix: d.followMinDays ? `${d.followMinDays} j` : undefined
+          suffix: d.followMinSecs ? formatDuration(d.followMinSecs) : undefined
         }
       : { key: 'follow', icon: 'i-lucide-heart-off', label: 'Follow non requis', colorClass: 'text-muted', strike: false })
   }

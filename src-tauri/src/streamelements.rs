@@ -223,6 +223,8 @@ pub struct GiveawayOutcome {
     /// Tickets achetés et participants
     pub total_tickets: i64,
     pub total_users: i64,
+    /// Tickets maximum par personne (None : pas de limite)
+    pub max_tickets: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -238,6 +240,8 @@ struct OutcomeRaw {
     total_amount: i64,
     #[serde(default)]
     total_users: i64,
+    #[serde(default)]
+    max_tickets: i64,
     #[serde(default)]
     winners: Vec<WinnerRaw>,
 }
@@ -264,6 +268,7 @@ fn to_outcome(raw: OutcomeRaw) -> GiveawayOutcome {
         description: raw.description.trim().to_owned(),
         total_tickets: raw.total_amount,
         total_users: raw.total_users,
+        max_tickets: (raw.max_tickets > 0).then_some(raw.max_tickets),
     }
 }
 
@@ -465,6 +470,9 @@ mod tests {
             serde_json::from_str(r#"{"_id":"1","state":"running","title":"Gilded Phoenix Ship Crest ","winners":[{"username":"DreKing_","tickets":189}]}"#).unwrap();
         let drawn = to_outcome(drawn);
         assert!(drawn.running && drawn.winners == ["dreking_"] && drawn.title == "Gilded Phoenix Ship Crest" && drawn.description.is_empty());
+        assert_eq!(drawn.max_tickets, None);
+        let limited: OutcomeRaw = serde_json::from_str(r#"{"_id":"1","state":"running","maxTickets":20}"#).unwrap();
+        assert_eq!(to_outcome(limited).max_tickets, Some(20));
         let done: OutcomeRaw = serde_json::from_str(r#"{"_id":"1","state":"completed"}"#).unwrap();
         let done = to_outcome(done);
         assert!(!done.running && done.finished() && done.winners.is_empty());

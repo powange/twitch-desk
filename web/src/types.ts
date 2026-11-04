@@ -28,7 +28,9 @@ export interface Giveaway {
   rewardName?: string | null
   rewardCost?: number | null
   requireFollow?: boolean | null
+  // Versions du PC avant la 0.48.2 : seulement en jours
   followMinDays?: number | null
+  followMinSecs?: number | null
   requirePresence?: boolean | null
   requireDiscord?: boolean | null
   requireGreeting?: boolean | null

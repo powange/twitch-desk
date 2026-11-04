@@ -319,7 +319,7 @@ export interface GiveawayDetails {
   // Présence minimum dans le chat en minutes (0 : non requis, null : on ne sait pas)
   minChatMinutes: number | null
   // Follow depuis au moins tant de jours (avec le follow requis)
-  followMinDays: number | null
+  followMinSecs: number | null
 }
 
 export interface GiveawayInput extends GiveawayDetails {

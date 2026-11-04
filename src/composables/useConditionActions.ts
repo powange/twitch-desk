@@ -1,6 +1,7 @@
 import { reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useOpenExternal } from '../utils/external'
+import { formatDuration } from '../utils/duration'
 
 // Conditions d'un giveaway (ou conditions habituelles d'un streamer) ; null : on ne sait pas
 export interface ConditionTarget {
@@ -8,7 +9,7 @@ export interface ConditionTarget {
   requirePresence: boolean | null
   requireDiscord: boolean | null
   requireFollow: boolean | null
-  followMinDays: number | null
+  followMinSecs: number | null
   requireGreeting: boolean | null
   minChatMinutes: number | null
   // Réponse automatique au gain (giveaways avec présence requise), et son délai en secondes
@@ -86,25 +87,25 @@ export function useConditionActions(targets: () => ConditionTarget[]) {
     return Array.isArray(f) ? f : null
   }
   const notFollowing = (channel: string) => (followList(channel) ?? []).filter(f => f.follows === false)
-  // Jours depuis le follow d'un compte
-  const followDays = (f: FollowState) => f.followedAt ? Math.floor((Date.now() - new Date(f.followedAt).getTime()) / 86_400_000) : null
+  // Secondes depuis le follow d'un compte
+  const followAge = (f: FollowState) => f.followedAt ? Math.floor((Date.now() - new Date(f.followedAt).getTime()) / 1000) : null
   // Comptes qui suivent, mais depuis moins longtemps que demandé
-  function tooRecent(t: Pick<ConditionTarget, 'channel' | 'followMinDays'>) {
-    const min = t.followMinDays
+  function tooRecent(t: Pick<ConditionTarget, 'channel' | 'followMinSecs'>) {
+    const min = t.followMinSecs
     if (!min) return []
-    return (followList(t.channel) ?? []).filter(f => f.follows && (followDays(f) ?? 0) < min)
+    return (followList(t.channel) ?? []).filter(f => f.follows && (followAge(f) ?? 0) < min)
   }
-  const followOk = (t: Pick<ConditionTarget, 'channel' | 'followMinDays'>) => {
+  const followOk = (t: Pick<ConditionTarget, 'channel' | 'followMinSecs'>) => {
     const list = followList(t.channel)
     return !!list && list.every(f => f.follows) && tooRecent(t).length === 0
   }
-  function followTooltip(t: Pick<ConditionTarget, 'channel' | 'followMinDays'>) {
+  function followTooltip(t: Pick<ConditionTarget, 'channel' | 'followMinSecs'>) {
     const list = followList(t.channel)
-    const head = t.followMinDays ? `Follow requis depuis au moins ${t.followMinDays} jour(s)` : 'Follow requis'
+    const head = t.followMinSecs ? `Follow requis depuis au moins ${formatDuration(t.followMinSecs)}` : 'Follow requis'
     if (!list) return follows[t.channel] === 'loading' ? `${head} : vérification…` : `${head} : état du follow inconnu`
     const missing = list.filter(f => f.follows === false).map(f => f.login)
     const unknown = list.filter(f => f.follows === null).map(f => f.login)
-    const recent = tooRecent(t).map(f => `${f.login} (${followDays(f)} j)`)
+    const recent = tooRecent(t).map(f => `${f.login} (${formatDuration(followAge(f) ?? 0)})`)
     const parts = [head]
     if (missing.length) parts.push(`pas suivie par ${missing.join(', ')} : clique pour suivre`)
     if (recent.length) parts.push(`follow trop récent : ${recent.join(', ')}`)
@@ -113,7 +114,7 @@ export function useConditionActions(targets: () => ConditionTarget[]) {
     return parts.join(' · ')
   }
   // État du cœur en texte, pour les lecteurs d'écran
-  function followLabel(t: Pick<ConditionTarget, 'channel' | 'followMinDays'>) {
+  function followLabel(t: Pick<ConditionTarget, 'channel' | 'followMinSecs'>) {
     const list = followList(t.channel)
     if (!list) return follows[t.channel] === 'loading' ? 'Follow requis : vérification en cours' : 'Follow requis : état inconnu'
     const missing = notFollowing(t.channel).map(f => f.login)

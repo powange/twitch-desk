@@ -280,6 +280,15 @@ fn int_of(v: &Value, key: &str) -> Option<i64> {
     v.get(key).and_then(Value::as_i64)
 }
 
+/// Ancienneté du follow en secondes ; document d'une version avant la 0.48.2 : en jours
+fn follow_secs_of(v: &Value) -> Option<i64> {
+    int_of(v, "followMinSecs").or_else(|| int_of(v, "followMinDays").and_then(|d| d.checked_mul(86_400)))
+}
+
+fn secs_to_days(secs: i64) -> i64 {
+    (secs + 86_399) / 86_400
+}
+
 fn strings_of(v: &Value, key: &str) -> Vec<String> {
     v.get(key)
         .and_then(Value::as_array)
@@ -412,7 +421,7 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                     "SELECT id, sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance, drawn_at,
                             ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                             require_follow, require_presence, require_discord, notes,
-                            require_greeting, min_chat_minutes, follow_min_days, winners, winner_chances
+                            require_greeting, min_chat_minutes, follow_min_secs, winners, winner_chances
                      FROM giveaways WHERE sync_id IS NOT NULL
                          AND (?2 IS NULL OR sync_id = ?2) AND (?3 = 0 OR status IN ('open', 'paused') OR detected_at >= ?1 OR manual = 1)",
                 )?
@@ -443,7 +452,9 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                             "notes": r.get::<_, Option<String>>(20)?,
                             "requireGreeting": r.get::<_, Option<bool>>(21)?,
                             "minChatMinutes": r.get::<_, Option<i64>>(22)?,
-                            "followMinDays": r.get::<_, Option<i64>>(23)?,
+                            "followMinSecs": r.get::<_, Option<i64>>(23)?,
+                            // Versions avant la 0.48.2 : en jours (arrondi au-dessus)
+                            "followMinDays": r.get::<_, Option<i64>>(23)?.map(secs_to_days),
                         }),
                         r.get::<_, String>(24)?,
                         r.get::<_, String>(25)?,
@@ -476,7 +487,7 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
             .collect(),
         "streamers" => conn
             .prepare_cached(
-                "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_days, require_presence,
+                "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_secs, require_presence,
                         require_discord, require_greeting, min_chat_minutes, se_name
                  FROM streamers WHERE ?1 IS NULL OR login = ?1",
             )?
@@ -491,7 +502,8 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                         "seName": r.get::<_, Option<String>>(10)?,
                         "conditions": {
                             "requireFollow": r.get::<_, Option<bool>>(4)?,
-                            "followMinDays": r.get::<_, Option<i64>>(5)?,
+                            "followMinSecs": r.get::<_, Option<i64>>(5)?,
+                            "followMinDays": r.get::<_, Option<i64>>(5)?.map(secs_to_days),
                             "requirePresence": r.get::<_, Option<bool>>(6)?,
                             "requireDiscord": r.get::<_, Option<bool>>(7)?,
                             "requireGreeting": r.get::<_, Option<bool>>(8)?,
@@ -872,14 +884,14 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                 str_of(data, "notes"),
                 bool_of(data, "requireGreeting"),
                 int_of(data, "minChatMinutes"),
-                int_of(data, "followMinDays"),
+                follow_secs_of(data),
             ];
             if local_id(conn, "giveaways", id)?.is_some() {
                 conn.execute(
                     "UPDATE giveaways SET channel = ?2, kind = ?3, command = ?4, url = ?5, detected_at = ?6, status = ?7, manual = ?8,
                          winner = ?9, winner_chance = ?10, drawn_at = ?11, ticket_unique = ?12, ticket_max = ?13,
                          reward_name = ?14, reward_cost = ?15, draw_at = ?16, require_follow = ?17, require_presence = ?18,
-                         require_discord = ?19, notes = ?20, require_greeting = ?21, min_chat_minutes = ?22, follow_min_days = ?23,
+                         require_discord = ?19, notes = ?20, require_greeting = ?21, min_chat_minutes = ?22, follow_min_secs = ?23,
                          reminded = CASE WHEN draw_at IS ?16 THEN reminded ELSE 0 END
                      WHERE sync_id = ?1",
                     values,
@@ -890,7 +902,7 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                 conn.execute(
                     "INSERT INTO giveaways (sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance,
                          drawn_at, ticket_unique, ticket_max, reward_name, reward_cost, draw_at, require_follow, require_presence,
-                         require_discord, notes, require_greeting, min_chat_minutes, follow_min_days, handled)
+                         require_discord, notes, require_greeting, min_chat_minutes, follow_min_secs, handled)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
                          ?21, ?22, ?23, ?7 = 'closed')",
                     values,
@@ -952,12 +964,12 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
             // Conditions habituelles (absentes : version plus ancienne, celles d'ici restent)
             if let Some(c) = data.get("conditions") {
                 conn.execute(
-                    "UPDATE streamers SET require_follow = ?2, follow_min_days = ?3, require_presence = ?4, require_discord = ?5,
+                    "UPDATE streamers SET require_follow = ?2, follow_min_secs = ?3, require_presence = ?4, require_discord = ?5,
                          require_greeting = ?6, min_chat_minutes = ?7 WHERE login = ?1",
                     params![
                         id,
                         bool_of(c, "requireFollow"),
-                        int_of(c, "followMinDays"),
+                        follow_secs_of(c),
                         bool_of(c, "requirePresence"),
                         bool_of(c, "requireDiscord"),
                         bool_of(c, "requireGreeting"),

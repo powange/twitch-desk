@@ -8,6 +8,7 @@ import ChannelProfileCard, { type ChannelProfile } from './ChannelProfileCard.vu
 import { useOpenExternal } from '../utils/external'
 import { boxArt, channelUrl, formatNumber } from '../utils/format'
 import { GIVEAWAY_KIND_ITEMS } from '../utils/giveaways'
+import { formatDuration, parseDuration } from '../utils/duration'
 import type { GiveawayInput, GiveawayView } from '../types'
 import IgnoredCommandsEditor from './IgnoredCommandsEditor.vue'
 
@@ -53,7 +54,7 @@ const seGiveawayId = computed(() => /\/giveaway\/([0-9a-f]+)\/?$/i.exec(form.val
 
 // Giveaway StreamElements lu sur StreamElements d'après son lien : titre, description,
 // participants, tickets, gagnants, état
-interface SeGiveawayInfo { running: boolean, state: string, winners: string[], title: string, description: string, totalTickets: number, totalUsers: number }
+interface SeGiveawayInfo { running: boolean, state: string, winners: string[], title: string, description: string, totalTickets: number, totalUsers: number, maxTickets: number | null }
 const seInfo = ref<SeGiveawayInfo | null>(null)
 const seInfoLoading = ref(false)
 const seInfoError = ref<string | null>(null)
@@ -71,7 +72,12 @@ watch(() => [open.value, form.value.kind, form.value.url.trim(), seGiveawayId.va
     seInfoLoading.value = true
     try {
       const info = await invoke<SeGiveawayInfo | null>('se_giveaway_info', { url })
-      if (seq === seInfoSeq) { seInfo.value = info; seInfoError.value = null }
+      if (seq === seInfoSeq) {
+        seInfo.value = info
+        seInfoError.value = null
+        // Maximum par personne annoncé par StreamElements, sans écraser une valeur déjà saisie
+        if (info?.maxTickets && form.value.ticketMax == null) form.value.ticketMax = info.maxTickets
+      }
     } catch (e) {
       if (seq === seInfoSeq) { seInfo.value = null; seInfoError.value = String(e) }
     } finally {
@@ -136,7 +142,8 @@ const form = ref({
   greeting: 'unknown' as TriState,
   chatTime: 'unknown' as TriState,
   chatMinutes: null as number | null,
-  followDays: null as number | null,
+  // Ancienneté du follow écrite « 7j », « 2h 30min »…
+  followDuration: '',
   notes: '',
   giftIds: [] as number[],
   // Gagnants et leur chance de gagner (« 20.92% », vide : inconnue)
@@ -259,7 +266,7 @@ watch(open, (isOpen) => {
     greeting: toTri(g?.requireGreeting ?? null),
     chatTime: g?.minChatMinutes == null ? 'unknown' : g.minChatMinutes > 0 ? 'yes' : 'no',
     chatMinutes: g?.minChatMinutes ? g.minChatMinutes : null,
-    followDays: g?.followMinDays ?? null,
+    followDuration: g?.followMinSecs ? formatDuration(g.followMinSecs) : '',
     notes: g?.notes ?? '',
     giftIds: [...(g?.giftIds ?? [])],
     winners: (g?.winners ?? []).map((w, i) => ({ login: w, chance: chanceInput(g?.winnerChances[w.toLowerCase()] ?? (i === 0 ? g?.winnerChance : null)) }))
@@ -287,7 +294,7 @@ interface ChannelSuggestion {
     ignoredCommands: string[]
     // Conditions habituelles du streamer
     requireFollow: boolean | null
-    followMinDays: number | null
+    followMinSecs: number | null
     requirePresence: boolean | null
     requireDiscord: boolean | null
     requireGreeting: boolean | null
@@ -391,7 +398,7 @@ async function inspect(login: string) {
   const before = {
     discord: streamerDiscord.value, notes: streamerNotes.value, ignored: streamerIgnored.value.join(),
     winReply: streamerWinReply.value, winDelay: streamerWinDelay.value, seName: streamerSeName.value,
-    follow: f.follow, followDays: f.followDays, presence: f.presence, discordCond: f.discord, greeting: f.greeting,
+    follow: f.follow, followDuration: f.followDuration, presence: f.presence, discordCond: f.discord, greeting: f.greeting,
     chatTime: f.chatTime, chatMinutes: f.chatMinutes
   }
   try {
@@ -416,7 +423,7 @@ async function inspect(login: string) {
     // un giveaway en cours
     if (st && (props.streamerOnly || !props.giveaway)) {
       if (f.follow === before.follow) f.follow = toTri(st.requireFollow)
-      if (f.followDays === before.followDays) f.followDays = st.followMinDays ?? null
+      if (f.followDuration === before.followDuration) f.followDuration = st.followMinSecs ? formatDuration(st.followMinSecs) : ''
       if (f.presence === before.presence) f.presence = toTri(st.requirePresence)
       if (f.discord === before.discordCond) f.discord = toTri(st.requireDiscord)
       if (f.greeting === before.greeting) f.greeting = toTri(st.requireGreeting)
@@ -496,8 +503,23 @@ async function currentStreamer(login: string): Promise<Record<string, unknown> |
 }
 
 // Fiche du streamer : Discord, notes, commandes ignorées et conditions habituelles
+// Ancienneté du follow : vide (pas de minimum) ou durée lisible, 3650 jours au plus
+const FOLLOW_MAX_SECS = 3650 * 86_400
+const followDurationError = computed(() => {
+  const f = form.value
+  if (f.follow !== 'yes' || !f.followDuration.trim()) return null
+  const secs = parseDuration(f.followDuration)
+  if (secs === null) return 'Écris une durée comme 7j, 12h, 30min, 45s ou 2h 30min.'
+  if (secs > FOLLOW_MAX_SECS) return '3650 jours au plus.'
+  return null
+})
 async function saveStreamer() {
   const f = form.value
+  if (followDurationError.value) {
+    toast.add({ title: 'Ancienneté du follow invalide', description: followDurationError.value, color: 'error' })
+    section.value = 'conditions'
+    return
+  }
   const invalid = discordError()
   if (invalid) {
     toast.add({ title: 'Lien Discord invalide', description: invalid, color: 'error' })
@@ -518,7 +540,7 @@ async function saveStreamer() {
         notes: streamerNotes.value || null,
         ignoredCommands: streamerIgnored.value,
         requireFollow: fromTri(f.follow),
-        followMinDays: f.follow === 'yes' ? (f.followDays || null) : null,
+        followMinSecs: f.follow === 'yes' ? parseDuration(f.followDuration) : null,
         requirePresence: fromTri(f.presence),
         requireDiscord: fromTri(f.discord),
         requireGreeting: fromTri(f.greeting),
@@ -563,7 +585,7 @@ async function save() {
     requireGreeting: fromTri(f.greeting),
     // Présence dans le chat : durée si requise, 0 si non requise, null si on ne sait pas
     minChatMinutes: f.chatTime === 'yes' ? (f.chatMinutes ?? null) : f.chatTime === 'no' ? 0 : null,
-    followMinDays: f.follow === 'yes' ? (f.followDays || null) : null,
+    followMinSecs: f.follow === 'yes' ? parseDuration(f.followDuration) : null,
     notes: f.notes || null,
     giftIds: f.giftIds
   }
@@ -572,6 +594,11 @@ async function save() {
   const loaded = streamerLoaded.value
   const streamerChanged = !!suggestion.value && (streamerDiscord.value !== loaded.discord || streamerNotes.value !== loaded.notes || streamerIgnored.value.join() !== loaded.ignored
     || streamerWinReply.value.trim() !== loaded.winReply || streamerWinDelay.value !== loaded.winDelay || streamerSeName.value.trim() !== loaded.seName)
+  if (followDurationError.value) {
+    toast.add({ title: 'Ancienneté du follow invalide', description: followDurationError.value, color: 'error' })
+    section.value = 'conditions'
+    return
+  }
   if (pastMode.value && !pastAt.value) {
     toast.add({ title: 'Date du giveaway manquante', description: 'Indique quand ce giveaway a eu lieu.', color: 'error' })
     section.value = 'giveaway'
@@ -967,10 +994,19 @@ async function save() {
                 />
               </UFieldGroup>
               <!-- Précisions : ancienneté du follow, durée de présence -->
-              <span v-if="c.key === 'follow' && form.follow === 'yes'" class="basis-full flex items-center justify-end gap-2 text-sm text-muted">
+              <span v-if="c.key === 'follow' && form.follow === 'yes'" class="basis-full flex flex-wrap items-center justify-end gap-2 text-sm text-muted">
                 depuis au moins
-                <UInputNumber id="gw-follow-days" v-model="form.followDays" :min="1" :max="3650" placeholder="—" size="sm" class="w-28" />
-                jour(s)
+                <UInput
+                  id="gw-follow-duration"
+                  v-model="form.followDuration"
+                  placeholder="ex. 7j, 2h 30min"
+                  size="sm"
+                  class="w-36"
+                  :color="followDurationError ? 'error' : undefined"
+                  :highlight="!!followDurationError"
+                  :title="followDurationError ?? 'j : jours, h : heures, min : minutes, s : secondes, combinables (2h 30min). Vide : pas de minimum'"
+                />
+                <span v-if="followDurationError" class="basis-full text-right text-xs text-error">{{ followDurationError }}</span>
               </span>
               <!-- Présence requise : réponse écrite dans le chat si un de nos comptes gagne (fiche du streamer) -->
               <div v-if="c.key === 'presence' && form.presence === 'yes'" class="basis-full flex flex-col gap-2 pt-1">

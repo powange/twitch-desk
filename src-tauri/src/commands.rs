@@ -1072,10 +1072,10 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
     if streamer.min_chat_minutes.is_some_and(|m| !(0..=1440).contains(&m)) {
         return Err("Temps de présence dans le chat invalide (24 h au plus)".into());
     }
-    if streamer.follow_min_days.is_some_and(|n| !(1..=3650).contains(&n)) {
-        return Err("Ancienneté du follow invalide (1 à 3650 jours)".into());
+    if streamer.follow_min_secs.is_some_and(|n| !(1..=crate::giveaways::FOLLOW_MAX_SECS).contains(&n)) {
+        return Err("Ancienneté du follow invalide (1 s à 3650 j)".into());
     }
-    let follow_min_days = streamer.follow_min_days.filter(|_| streamer.require_follow == Some(true));
+    let follow_min_secs = streamer.follow_min_secs.filter(|_| streamer.require_follow == Some(true));
     let win_reply = streamer.win_reply.map(|r| r.replace(['\r', '\n'], " ").trim().chars().take(400).collect::<String>()).filter(|r| !r.is_empty());
     if streamer.win_reply_delay.is_some_and(|d| !(0..=600).contains(&d)) {
         return Err("Délai de la réponse invalide (0 à 600 secondes)".into());
@@ -1088,7 +1088,7 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
     };
     let se_changed = app.db.streamer(&login).map_err(db_err)?.and_then(|s| s.se_name) != se_name;
     app.db
-        .save_streamer(&crate::db::Streamer { login: login.clone(), discord_url, notes, ignored_commands, follow_min_days, win_reply, se_name, ..streamer })
+        .save_streamer(&crate::db::Streamer { login: login.clone(), discord_url, notes, ignored_commands, follow_min_secs, win_reply, se_name, ..streamer })
         .map_err(db_err)?;
     if se_changed {
         refresh_se_names(&app, &login);
@@ -1128,7 +1128,7 @@ pub(crate) fn refresh_se_names(app: &App, login: &str) {
 fn conditions_of(s: &crate::db::Streamer) -> crate::db::GiveawayDetails {
     crate::db::GiveawayDetails {
         require_follow: s.require_follow,
-        follow_min_days: s.follow_min_days,
+        follow_min_secs: s.follow_min_secs,
         require_presence: s.require_presence,
         require_discord: s.require_discord,
         require_greeting: s.require_greeting,
@@ -1141,7 +1141,7 @@ fn conditions_of(s: &crate::db::Streamer) -> crate::db::GiveawayDetails {
 fn keep_known(wanted: &mut crate::db::GiveawayDetails, sheet: Option<&crate::db::GiveawayDetails>) {
     let Some(s) = sheet else { return };
     wanted.require_follow = wanted.require_follow.or(s.require_follow);
-    wanted.follow_min_days = wanted.follow_min_days.or(s.follow_min_days);
+    wanted.follow_min_secs = wanted.follow_min_secs.or(s.follow_min_secs);
     wanted.require_presence = wanted.require_presence.or(s.require_presence);
     wanted.require_discord = wanted.require_discord.or(s.require_discord);
     wanted.require_greeting = wanted.require_greeting.or(s.require_greeting);

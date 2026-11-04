@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ConditionActions, ConditionTarget } from '../../composables/useConditionActions'
 import SolidIcon from '../SolidIcon.vue'
+import { formatDuration } from '../../utils/duration'
 
 // Une cellule par condition : ? inconnu, picto si requis (cliquable pour agir), rien sinon.
 // Les pictos non cliquables restent atteignables au clavier (tabindex) pour lire leur bulle.
@@ -71,7 +72,7 @@ defineProps<{ target: ConditionTarget, actions: ConditionActions }>()
           <UIcon v-else name="i-lucide-heart" class="size-4 block" :class="actions.tooRecent(target).length ? 'text-warning' : 'text-pink-600 dark:text-pink-400'" />
         </span>
       </UTooltip>
-      <span v-if="target.requireFollow && target.followMinDays" class="text-xs text-muted ml-1 whitespace-nowrap">{{ target.followMinDays }} j</span>
+      <span v-if="target.requireFollow && target.followMinSecs" class="text-xs text-muted ml-1 whitespace-nowrap">{{ formatDuration(target.followMinSecs) }}</span>
     </div>
   </td>
   <td class="px-2 py-2">

@@ -193,7 +193,7 @@ function computeConditions(c: GiveawayChannelView): ConditionTarget {
     requirePresence: s?.requirePresence ?? null,
     requireDiscord: s?.requireDiscord ?? null,
     requireFollow: s?.requireFollow ?? null,
-    followMinDays: s?.followMinDays ?? null,
+    followMinSecs: s?.followMinSecs ?? null,
     requireGreeting: s?.requireGreeting ?? null,
     minChatMinutes: s?.minChatMinutes ?? null
   }

@@ -1648,6 +1648,38 @@ const RECENT_UNDRAWN_HOURS: i64 = 6;
 /// Annonce d'un autre gagnant peu après un tirage : ajoutée au giveaway tiré (plusieurs gagnants),
 /// sauf si un nouveau giveaway de la chaîne est arrivé entre-temps
 const MORE_WINNERS_WITHIN: chrono::Duration = chrono::Duration::minutes(15);
+
+/// Ancienneté du follow requise : 3650 jours au plus
+pub const FOLLOW_MAX_SECS: i64 = 3650 * 86_400;
+
+/// Durée écrite « 7j », « 2h 30min », « 1j12h », « 45s » (j, h, min, m, s ; espaces libres) en
+/// secondes ; None : vide, unité inconnue ou nul
+pub fn parse_duration(text: &str) -> Option<i64> {
+    let s = text.trim().to_lowercase().replace(' ', "");
+    if s.is_empty() {
+        return None;
+    }
+    let (mut total, mut rest) = (0i64, s.as_str());
+    while !rest.is_empty() {
+        let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        if digits == 0 {
+            return None;
+        }
+        let n: i64 = rest[..digits].parse().ok()?;
+        rest = &rest[digits..];
+        let unit = rest.find(|c: char| c.is_ascii_digit()).unwrap_or(rest.len());
+        let factor = match &rest[..unit] {
+            "j" | "d" => 86_400,
+            "h" => 3_600,
+            "min" | "m" | "mn" => 60,
+            "s" | "sec" => 1,
+            _ => return None,
+        };
+        rest = &rest[unit..];
+        total = total.checked_add(n.checked_mul(factor)?)?;
+    }
+    (total > 0).then_some(total)
+}
 /// Annonce du bot StreamElements gardée tant que son giveaway StreamElements est illisible, au
 /// plus ce temps (avant MORE_WINNERS_WITHIN : les gagnants suivants retrouvent le même giveaway)
 const SE_ANNOUNCE_WAIT: Duration = Duration::from_secs(8 * 60);
@@ -1808,12 +1840,12 @@ pub fn validate_input(mut g: GiveawayInput) -> Result<GiveawayInput, String> {
     if d.min_chat_minutes.is_some_and(|m| !(0..=1440).contains(&m)) {
         return Err("Temps de présence dans le chat invalide (24 h au plus)".into());
     }
-    if d.follow_min_days.is_some_and(|n| !(1..=3650).contains(&n)) {
-        return Err("Ancienneté du follow invalide (1 à 3650 jours)".into());
+    if d.follow_min_secs.is_some_and(|n| !(1..=FOLLOW_MAX_SECS).contains(&n)) {
+        return Err("Ancienneté du follow invalide (1 s à 3650 j)".into());
     }
     // Ancienneté du follow : n'a de sens qu'avec le follow requis
     if d.require_follow != Some(true) {
-        d.follow_min_days = None;
+        d.follow_min_secs = None;
     }
     Ok(g)
 }
@@ -1917,10 +1949,18 @@ mod tests {
 
         // Ancienneté du follow gardée seulement avec le follow requis
         let mut f = input("command");
-        f.details.follow_min_days = Some(30);
-        assert_eq!(validate_input(f.clone()).unwrap().details.follow_min_days, None);
+        f.details.follow_min_secs = Some(30);
+        assert_eq!(parse_duration("7j"), Some(7 * 86_400));
+        assert_eq!(parse_duration(" 2h 30min "), Some(9_000));
+        assert_eq!(parse_duration("1j12h"), Some(129_600));
+        assert_eq!(parse_duration("45s"), Some(45));
+        assert_eq!(parse_duration("5m"), Some(300));
+        assert_eq!(parse_duration("2 semaines"), None);
+        assert_eq!(parse_duration("12"), None);
+        assert_eq!(parse_duration("0h"), None);
+        assert_eq!(validate_input(f.clone()).unwrap().details.follow_min_secs, None);
         f.details.require_follow = Some(true);
-        assert_eq!(validate_input(f).unwrap().details.follow_min_days, Some(30));
+        assert_eq!(validate_input(f).unwrap().details.follow_min_secs, Some(30));
 
         // Commande pas encore connue : acceptée, la détection la complétera
         let mut c = input("command");

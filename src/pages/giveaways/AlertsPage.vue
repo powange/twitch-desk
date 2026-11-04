@@ -2,6 +2,7 @@
 import RefreshButton from '../../components/RefreshButton.vue'
 import ChannelCell from '../../components/ChannelCell.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { formatDuration } from '../../utils/duration'
 import { invoke } from '@tauri-apps/api/core'
 import { useRouter } from 'vue-router'
 import { useSnapshot } from '../../composables/useSnapshot'
@@ -351,7 +352,7 @@ function share(g: GiveawayView) {
               @click="cond.followChannel(g.channel)"
             >
               <UIcon :name="cond.following === g.channel ? 'i-lucide-loader-circle' : 'i-lucide-heart'" class="size-4" :class="cond.following === g.channel ? 'animate-spin' : ''" />
-              <span v-if="g.followMinDays" class="text-xs font-medium">{{ g.followMinDays }} j</span>
+              <span v-if="g.followMinSecs" class="text-xs font-medium">{{ formatDuration(g.followMinSecs) }}</span>
             </button>
             <span
               v-else
@@ -363,7 +364,7 @@ function share(g: GiveawayView) {
             >
               <SolidIcon v-if="cond.followOk(g)" name="heart" class="size-4" />
               <UIcon v-else name="i-lucide-heart" class="size-4" />
-              <span v-if="g.followMinDays" class="text-xs font-medium">{{ g.followMinDays }} j</span>
+              <span v-if="g.followMinSecs" class="text-xs font-medium">{{ formatDuration(g.followMinSecs) }}</span>
             </span>
           </UTooltip>
           <GiveawayConditions :details="{ ...g, requireFollow: g.requireFollow ? null : g.requireFollow }" :kind="g.kind" />

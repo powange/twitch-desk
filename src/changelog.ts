@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.2',
+    date: '2026-11-04',
+    title: 'Ancienneté du follow en heures ou minutes',
+    changes: [
+      { kind: 'improved', text: 'Conditions d\'un giveaway et fiche du streamer : l\'ancienneté du follow s\'écrit maintenant comme une durée, par exemple « 7j », « 12h », « 30min », « 45s » ou « 2h 30min » (j : jours, h : heures, min : minutes, s : secondes). Les durées déjà enregistrées en jours sont gardées.' },
+      { kind: 'fixed', text: 'Giveaway StreamElements : en collant le lien du giveaway, « Tickets maximum par personne » est rempli avec la limite fixée sur StreamElements (si le champ est vide).' }
+    ]
+  },
+  {
     version: '0.48.1',
     date: '2026-11-04',
     title: 'Gagnants StreamElements et giveaways passés',

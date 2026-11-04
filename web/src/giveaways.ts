@@ -20,6 +20,20 @@ export interface Condition {
 }
 
 // Conditions connues (non renseignée : rien d'affiché)
+// Ancienneté du follow requise : « 7j », « 2h 30min » ; null : pas de minimum
+function followMin(g: Giveaway): string | null {
+  const secs = g.followMinSecs ?? (g.followMinDays ? g.followMinDays * 86_400 : null)
+  if (!secs) return null
+  const parts: string[] = []
+  let rest = secs
+  for (const [unit, size] of [['j', 86_400], ['h', 3_600], ['min', 60], ['s', 1]] as const) {
+    const n = Math.floor(rest / size)
+    if (n) parts.push(`${n}${unit}`)
+    rest -= n * size
+  }
+  return parts.join(' ')
+}
+
 export function conditions(g: Giveaway): Condition[] {
   const out: Condition[] = []
   if (g.kind === 'ticket' && g.ticketUnique != null) {
@@ -39,7 +53,7 @@ export function conditions(g: Giveaway): Condition[] {
   }
   if (g.requireFollow != null) {
     out.push(g.requireFollow
-      ? { key: 'follow', icon: 'i-lucide-heart', label: g.followMinDays ? `Follow depuis ${g.followMinDays} j` : 'Follow', required: true, colorClass: 'text-pink-600 dark:text-pink-400' }
+      ? { key: 'follow', icon: 'i-lucide-heart', label: followMin(g) ? `Follow depuis ${followMin(g)}` : 'Follow', required: true, colorClass: 'text-pink-600 dark:text-pink-400' }
       : { key: 'follow', icon: 'i-lucide-heart-off', label: 'Follow non requis', required: false, colorClass: 'text-muted' })
   }
   if (g.requireGreeting != null) {

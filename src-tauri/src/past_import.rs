@@ -34,6 +34,8 @@ enum GiftRef {
 struct Conditions {
     follow: Option<bool>,
     follow_days: Option<i64>,
+    /// Ancienneté écrite comme dans le formulaire (« 7j », « 2h 30min ») : prime sur followDays
+    follow_duration: Option<String>,
     presence: Option<bool>,
     discord: Option<bool>,
     greeting: Option<bool>,
@@ -162,7 +164,10 @@ fn check(item: ImportItem, gifts: &[crate::db::Gift]) -> Result<Checked, String>
             notes: item.notes,
             require_greeting: c.greeting,
             min_chat_minutes: c.chat_minutes,
-            follow_min_days: c.follow_days,
+            follow_min_secs: match c.follow_duration.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                Some(d) => Some(crate::giveaways::parse_duration(d).ok_or_else(|| format!("followDuration « {d} » invalide (ex. 7j, 2h 30min)"))?),
+                None => c.follow_days.and_then(|d| d.checked_mul(86_400)),
+            },
         },
     };
     let input = crate::giveaways::validate_input(input)?;
