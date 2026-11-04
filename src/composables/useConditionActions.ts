@@ -50,7 +50,7 @@ async function loadFollows(channel: string) {
 
 // Bonjour à confirmer (fenêtre GreetingConfirmModal, montée une fois dans App.vue) : message
 // tiré au hasard pour chaque compte qui ne l'a pas encore dit, modifiable avant l'envoi
-export interface HelloDraft { accountId: number, login: string, message: string }
+export interface HelloDraft { accountId: number, login: string, message: string, enabled: boolean }
 export const helloRequest = reactive({
   open: false,
   channel: '',
@@ -58,15 +58,31 @@ export const helloRequest = reactive({
   drafts: [] as HelloDraft[],
   sending: false
 })
-export const randomPhrase = (phrases: string[], not?: string) => {
-  const pool = phrases.length > 1 ? phrases.filter(p => p !== not) : phrases
+// Phrase au hasard, différente de celles de `taken` (messages des autres comptes, phrase
+// actuelle) tant qu'il en reste
+export const randomPhrase = (phrases: string[], taken: string[] = []) => {
+  const used = new Set(taken.map(t => t.trim()))
+  const free = phrases.filter(p => !used.has(p))
+  const pool = free.length ? free : phrases
   return pool[Math.floor(Math.random() * pool.length)] ?? ''
+}
+// Comptes cochés qui écriraient le même message (Twitch et les modérateurs le repèrent)
+export const duplicateHello = () => {
+  const seen = new Set<string>()
+  return helloRequest.drafts.some((d) => {
+    if (!d.enabled) return false
+    const m = d.message.trim().toLowerCase()
+    if (!m) return false
+    if (seen.has(m)) return true
+    seen.add(m)
+    return false
+  })
 }
 // Envoi confirmé : chaque compte écrit son message ; états de bonjour relus
 export async function sendHello(toast: ReturnType<typeof useToast>) {
   const { channel, drafts } = helloRequest
-  const messages = drafts.map(d => ({ accountId: d.accountId, message: d.message.trim() })).filter(d => d.message)
-  if (!messages.length) return
+  const messages = drafts.filter(d => d.enabled).map(d => ({ accountId: d.accountId, message: d.message.trim() })).filter(d => d.message)
+  if (!messages.length || duplicateHello()) return
   helloRequest.sending = true
   try {
     greetings[channel] = await invoke<GreetingState[]>('say_hello', { channel, messages })
@@ -226,7 +242,8 @@ export function useConditionActions(targets: () => ConditionTarget[]) {
         open: true,
         channel,
         phrases,
-        drafts: missing.map(s => ({ accountId: s.accountId, login: s.login, message: randomPhrase(phrases) })),
+        // Une phrase différente par compte (tant qu'il y en a assez)
+        drafts: missing.reduce<HelloDraft[]>((list, s) => [...list, { accountId: s.accountId, login: s.login, enabled: true, message: randomPhrase(phrases, list.map(d => d.message)) }], []),
         sending: false
       })
     } catch (e) {

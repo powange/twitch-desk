@@ -679,10 +679,22 @@ fn hello_phrases(app: &App, settings: &crate::db::Settings, channel: &str) -> Ve
         .unwrap_or_default()
 }
 
-/// Phrases de bonjour proposées pour une chaîne (fenêtre de confirmation)
+/// Bonjour refusé hors live : il ne compte que pendant le live (statut relu au plus toutes les
+/// 2 min, partagé avec le reste de l'application ; statut illisible : autorisé)
+async fn ensure_live_for_hello(app: &App, channel: &str) -> CmdResult<()> {
+    let wanted = [(channel.to_owned(), crate::lives::since(std::time::Duration::from_secs(120)))];
+    let fetch = app.lives.streams_status(&app.http, &[], &wanted).await;
+    if let Some(Ok(None)) = fetch.results.get(channel) {
+        return Err(format!("{channel} n'est pas en live : un bonjour ne compte que pendant son live"));
+    }
+    Ok(())
+}
+
+/// Phrases de bonjour proposées pour une chaîne (fenêtre de confirmation) ; chaîne hors live : refusé
 #[tauri::command]
-pub fn greeting_phrases(app: AppState, channel: String) -> CmdResult<Vec<String>> {
+pub async fn greeting_phrases(app: AppState<'_>, channel: String) -> CmdResult<Vec<String>> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    ensure_live_for_hello(&app, &channel).await?;
     let phrases = hello_phrases(&app, &app.db.settings(), &channel);
     if phrases.is_empty() {
         return Err("Aucune phrase de bonjour : ajoute-en dans Giveaways → Réglages".into());
@@ -714,6 +726,7 @@ pub async fn say_hello(app: AppState<'_>, channel: String, messages: Option<Vec<
     if phrases.is_empty() && chosen.is_none() {
         return Err("Aucune phrase de bonjour : ajoute-en dans Giveaways → Réglages".into());
     }
+    ensure_live_for_hello(&app, &channel).await?;
     let mut errors = vec![];
     let mut first = true;
     for account in app.db.accounts().map_err(db_err)? {

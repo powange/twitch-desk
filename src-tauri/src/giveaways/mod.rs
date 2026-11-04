@@ -728,13 +728,19 @@ impl Monitor {
             if !outcome.winners.is_empty() {
                 drawn_channels.insert(g.channel.clone());
                 let channel = g.channel.clone();
-                for winner in &outcome.winners {
+                let announced: Vec<String> = self.se_announced.get(&channel).cloned().unwrap_or_default();
+                for (n, winner) in outcome.winners.iter().enumerate() {
                     let Ok(Some(row)) = self.app.db.giveaway(id) else { break };
                     if row.winners.iter().any(|w| w.eq_ignore_ascii_case(winner)) {
                         continue;
                     }
+                    // Heure du tirage donnée par StreamElements : réponse automatique seulement pour
+                    // un tirage récent (ou que le bot vient d'annoncer), jamais des heures après
+                    let drawn_at = outcome.drawn_at.get(n).cloned().flatten();
+                    let recent = drawn_at.as_deref().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).is_some_and(|t| chrono::Utc::now().signed_duration_since(t) <= WIN_REPLY_RECENT);
+                    let just_announced = announced.iter().any(|w| w.eq_ignore_ascii_case(winner));
                     self.app.log("giveaways", EventKind::Info, format!("Giveaway StreamElements de {channel} tiré : {winner}"));
-                    self.record_winner(&channel, Some(row), winner, None, true);
+                    self.record_winner_at(&channel, Some(row), winner, None, recent || just_announced, drawn_at.as_deref());
                 }
             } else if outcome.finished() {
                 let _ = self.app.db.close_giveaway(g.id);
@@ -1311,10 +1317,20 @@ impl Monitor {
 
     /// `announced` : gagnant annoncé dans le chat à l'instant (réponse automatique possible)
     fn record_winner(&mut self, channel: &str, target: Option<GiveawayRow>, winner: &str, chance: Option<&str>, announced: bool) {
+        self.record_winner_at(channel, target, winner, chance, announced, None);
+    }
+
+    /// `drawn_at` : heure du tirage si on la connaît (StreamElements), sinon maintenant
+    fn record_winner_at(&mut self, channel: &str, target: Option<GiveawayRow>, winner: &str, chance: Option<&str>, announced: bool, drawn_at: Option<&str>) {
         let target = target.as_ref();
+        // Heure normalisée comme les autres (secondes, UTC)
+        let at = drawn_at
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+            .unwrap_or_else(now_rfc3339);
         // Ajouté aux gagnants du giveaway ; déjà gagnant (annonce répétée) : rien de neuf
         if let Some(g) = target {
-            if !self.app.db.set_giveaway_winner(g.id, winner, chance, &now_rfc3339()).unwrap_or(false) {
+            if !self.app.db.set_giveaway_winner(g.id, winner, chance, &at).unwrap_or(false) {
                 return;
             }
         }
@@ -1799,6 +1815,9 @@ pub fn parse_duration(text: &str) -> Option<i64> {
 /// Annonce du bot StreamElements gardée tant que son giveaway StreamElements est illisible, au
 /// plus ce temps (avant MORE_WINNERS_WITHIN : les gagnants suivants retrouvent le même giveaway)
 const SE_ANNOUNCE_WAIT: Duration = Duration::from_secs(8 * 60);
+/// Gagnant trouvé en relisant StreamElements : réponse automatique seulement si son tirage date
+/// de moins que ça (application fermée pendant le tirage : pas de remerciement des heures après)
+const WIN_REPLY_RECENT: chrono::Duration = chrono::Duration::minutes(5);
 
 fn winner_target<'a>(open: &'a [GiveawayRow], bot: &str) -> Option<&'a GiveawayRow> {
     // StreamElements tire aussi ses giveaways par commande dans le chat (même annonce) : son

@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.9',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'improved', text: 'Condition « Avoir dit bonjour » : impossible de dire bonjour à une chaîne hors live (un bonjour ne compte que pendant le live). Un message l\'explique au lieu d\'ouvrir la fenêtre d\'envoi.' },
+      { kind: 'improved', text: 'Fenêtre « Dire bonjour » : une case par compte pour choisir ceux qui écrivent, et une phrase différente pour chaque compte (le dé en tire une que les autres n\'ont pas). L\'envoi est bloqué si deux comptes ont le même message.' },
+      { kind: 'fixed', text: 'Giveaways StreamElements : l\'heure du tirage donnée par StreamElements est maintenant enregistrée. La réponse automatique n\'est écrite que pour un tirage de moins de 5 minutes : si l\'application était fermée pendant le tirage, plus de remerciement envoyé dans le chat des heures après.' }
+    ]
+  },
+  {
     version: '0.48.8',
     date: '2026-11-04',
     changes: [

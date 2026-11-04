@@ -217,6 +217,9 @@ pub struct GiveawayOutcome {
     /// à venir), « completed » (tiré), « canceled »…
     pub state: String,
     pub winners: Vec<String>,
+    /// Heure du tirage de chaque gagnant (même ordre que `winners` ; None : inconnue)
+    #[serde(skip)]
+    pub drawn_at: Vec<Option<String>>,
     /// Titre et description (ils annoncent souvent les lots)
     pub title: String,
     pub description: String,
@@ -247,9 +250,13 @@ struct OutcomeRaw {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WinnerRaw {
     #[serde(default)]
     username: String,
+    /// Heure du tirage de ce gagnant
+    #[serde(default)]
+    created_at: Option<String>,
 }
 
 impl GiveawayOutcome {
@@ -260,10 +267,17 @@ impl GiveawayOutcome {
 }
 
 fn to_outcome(raw: OutcomeRaw) -> GiveawayOutcome {
+    let (winners, drawn_at): (Vec<String>, Vec<Option<String>>) = raw
+        .winners
+        .into_iter()
+        .map(|w| (w.username.trim().to_lowercase(), w.created_at))
+        .filter(|(w, _)| !w.is_empty())
+        .unzip();
     GiveawayOutcome {
         running: raw.state == "running",
         state: raw.state.clone(),
-        winners: raw.winners.into_iter().map(|w| w.username.trim().to_lowercase()).filter(|w| !w.is_empty()).collect(),
+        winners,
+        drawn_at,
         title: raw.title.trim().to_owned(),
         description: raw.description.trim().to_owned(),
         total_tickets: raw.total_amount,
@@ -471,6 +485,9 @@ mod tests {
         let drawn = to_outcome(drawn);
         assert!(drawn.running && drawn.winners == ["dreking_"] && drawn.title == "Gilded Phoenix Ship Crest" && drawn.description.is_empty());
         assert_eq!(drawn.max_tickets, None);
+        assert_eq!(drawn.drawn_at, [None]);
+        let timed: OutcomeRaw = serde_json::from_str(r#"{"state":"completed","winners":[{"username":"dreking_","createdAt":"2026-11-02T01:07:27.772Z"}]}"#).unwrap();
+        assert_eq!(to_outcome(timed).drawn_at, [Some("2026-11-02T01:07:27.772Z".to_owned())]);
         let limited: OutcomeRaw = serde_json::from_str(r#"{"_id":"1","state":"running","maxTickets":20}"#).unwrap();
         assert_eq!(to_outcome(limited).max_tickets, Some(20));
         let done: OutcomeRaw = serde_json::from_str(r#"{"_id":"1","state":"completed"}"#).unwrap();
