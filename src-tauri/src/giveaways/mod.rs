@@ -49,6 +49,8 @@ pub enum MonitorCmd {
     Close(i64),
     /// Giveaway terminé rouvert à la main (gagnant retiré)
     Reopen(i64),
+    /// Gagnants retirés : ouvert ou en pause selon le live, ancienneté repartie de maintenant
+    WinnersCleared(i64),
     /// Bouton « Actualiser » : statut live et giveaways StreamElements suivis relus tout de suite
     Refresh,
     Delete(i64),
@@ -773,22 +775,26 @@ impl Monitor {
         }
     }
 
-    /// Giveaway d'un gagnant annoncé par `bot` : ouvert, sinon en pause (même giveaway, tirage d'un
-    /// live suivant), sinon tiré il y a moins de MORE_WINNERS_WITHIN sans nouveau giveaway depuis
-    /// (plusieurs gagnants), sinon clos récemment sans gagnant (fin du live juste avant le tirage).
+    /// Giveaway d'un gagnant annoncé par `bot` : tiré il y a moins de MORE_WINNERS_WITHIN sans
+    /// nouveau giveaway depuis (plusieurs gagnants), sinon ouvert, sinon en pause (même giveaway,
+    /// tirage d'un live suivant), sinon clos récemment sans gagnant (fin du live juste avant le tirage).
     /// `skip_se` : le giveaway StreamElements de la chaîne n'est pas tiré, il est écarté
     fn fallback_target(&self, channel: &str, bot: &str, skip_se: bool) -> Option<GiveawayRow> {
         let keep = |rows: Vec<GiveawayRow>| -> Vec<GiveawayRow> { rows.into_iter().filter(|g| !skip_se || g.kind != "streamelements").collect() };
+        // Tiré il y a moins de MORE_WINNERS_WITHIN sans nouveau giveaway depuis : un autre gagnant
+        // du même tirage (plusieurs gagnants). Passé avant les ouverts : sinon un 2e giveaway
+        // ouvert de la chaîne (détecté avant ce tirage) recevrait ce gagnant et serait clos à tort
+        let since = (chrono::Utc::now() - MORE_WINNERS_WITHIN).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let drawn = keep(self.app.db.recent_drawn_giveaway(channel, &since).ok().flatten().into_iter().collect());
+        if let Some(g) = winner_target(&drawn, bot) {
+            return Some(g.clone());
+        }
         let open = keep(self.open_giveaways(channel));
         winner_target(&open, bot)
             .cloned()
             .or_else(|| {
                 let paused = keep(self.app.db.paused_giveaways(Some(channel)).unwrap_or_default());
                 winner_target(&paused, bot).cloned()
-            })
-            .or_else(|| {
-                let since = (chrono::Utc::now() - MORE_WINNERS_WITHIN).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-                self.app.db.recent_drawn_giveaway(channel, &since).ok().flatten()
             })
             .or_else(|| {
                 let since = (chrono::Utc::now() - chrono::Duration::hours(RECENT_UNDRAWN_HOURS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -938,6 +944,12 @@ impl Monitor {
                     self.app.log("giveaways", EventKind::Info, if live { "Giveaway rouvert" } else { "Giveaway rouvert, en pause jusqu'au prochain live" });
                     self.publish();
                 }
+            }
+            MonitorCmd::WinnersCleared(id) => {
+                let live = self.app.db.giveaway(id).ok().flatten().is_none_or(|g| self.live.get(&g.channel).is_none_or(|l| l.info.is_some()));
+                let _ = self.app.db.restart_giveaway(id, live, &now_rfc3339());
+                self.reload();
+                self.app.sync.poke();
             }
             MonitorCmd::Delete(id) => {
                 let _ = self.app.db.delete_giveaway(id);
@@ -1616,6 +1628,17 @@ async fn giveaway_reward(app: &App, giveaway: &GiveawayRow) -> Result<crate::twi
     Ok(reward)
 }
 
+/// Identifiant de transaction d'un achat : le même pour un giveaway, un compte et une récompense
+/// (titre, coût), d'un essai à l'autre. Twitch ne fait payer qu'une fois une même transaction
+fn redeem_transaction_id(giveaway_id: i64, account_id: i64, reward: &crate::twitch::gql::ChannelReward) -> String {
+    // FNV-1a : stable d'un lancement et d'une version à l'autre
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in format!("{}|{}|{}", reward.id, reward.title, reward.cost).bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{:08x}{:08x}{h:016x}", giveaway_id as u32, account_id as u32)
+}
+
 /// Achète la récompense du giveaway avec les comptes choisis (une fois par compte)
 async fn redeem(app: &Arc<App>, giveaway: &GiveawayRow, account_ids: &[i64]) -> Result<Vec<ParticipationResult>, String> {
     let reward = giveaway_reward(app, giveaway).await?;
@@ -1649,7 +1672,11 @@ async fn redeem(app: &Arc<App>, giveaway: &GiveawayRow, account_ids: &[i64]) -> 
             None => Err("jeton introuvable : reconnecte ce compte".to_owned()),
             Some(tokens) => {
                 let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id.clone()));
-                gql.redeem_reward(&reward).await.map_err(|e| e.to_string())
+                gql.redeem_reward(&reward, &redeem_transaction_id(giveaway.id, *id, &reward)).await.map_err(|e| match e {
+                    // Réponse perdue : Twitch a peut-être fait l'achat (un nouvel essai ne repaie pas)
+                    crate::twitch::TwitchError::Http(_) => format!("achat incertain, vérifie ton solde sur Twitch ({e})"),
+                    e => e.to_string(),
+                })
             }
         };
         match outcome {

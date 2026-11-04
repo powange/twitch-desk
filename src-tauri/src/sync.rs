@@ -122,7 +122,15 @@ struct PhoneAlert {
     alert: &'static str,
     title: String,
     body: String,
+    /// Mise en file : une alerte trop ancienne n'est plus renvoyée après une erreur
+    #[serde(skip)]
+    queued: std::time::Instant,
 }
+
+/// Alerte non transmise (réseau, serveur redémarré) : renvoyée à ce rythme, pendant au plus
+/// PHONE_ALERT_TTL (un « Tu as gagné » plus vieux n'a plus d'intérêt)
+const PHONE_ALERT_RETRY: Duration = Duration::from_secs(30);
+const PHONE_ALERT_TTL: Duration = Duration::from_secs(15 * 60);
 
 impl SyncHandle {
     pub fn view(&self) -> SyncView {
@@ -155,7 +163,7 @@ impl SyncHandle {
         if queue.len() >= MAX_PHONE_ALERTS {
             queue.pop_front();
         }
-        queue.push_back(PhoneAlert { alert, title: title.to_owned(), body: body.to_owned() });
+        queue.push_back(PhoneAlert { alert, title: title.to_owned(), body: body.to_owned(), queued: std::time::Instant::now() });
         drop(queue);
         self.phone_alert.notify_one();
     }
@@ -2019,16 +2027,27 @@ pub fn set_phone_actions(app: State<'_, Arc<App>>, enabled: bool) -> Result<(), 
 fn spawn_phone_alerts(app: Arc<App>) {
     tauri::async_runtime::spawn(async move {
         let mut unsupported: Option<(String, std::time::Instant)> = None;
+        let mut retry = false;
         loop {
-            app.sync.phone_alert.notified().await;
-            let alerts: Vec<PhoneAlert> = app.sync.phone_alerts.lock().unwrap().drain(..).collect();
+            if retry {
+                // Nouvel essai après une erreur (ou plus tôt si une nouvelle alerte arrive)
+                let _ = tokio::time::timeout(PHONE_ALERT_RETRY, app.sync.phone_alert.notified()).await;
+            } else {
+                app.sync.phone_alert.notified().await;
+            }
+            retry = false;
+            let alerts: Vec<PhoneAlert> = app.sync.phone_alerts.lock().unwrap().drain(..).filter(|a| a.queued.elapsed() < PHONE_ALERT_TTL).collect();
+            if alerts.is_empty() {
+                continue;
+            }
             let Some(cfg) = config(&app) else { continue };
             if unsupported.as_ref().is_some_and(|(url, at)| *url == cfg.url && at.elapsed() < STATE_UNSUPPORTED_PAUSE) {
                 continue;
             }
             let Ok(id) = instance_id(&app.db.conn()) else { continue };
             register(&app, &cfg).await;
-            for alert in alerts {
+            let mut rest = alerts.into_iter();
+            while let Some(alert) = rest.next() {
                 let req = app.http.post(format!("{}/api/v1/instances/{id}/notify", cfg.url)).json(&alert);
                 match send(req, &cfg.code).await {
                     Ok(_) => unsupported = None,
@@ -2036,7 +2055,20 @@ fn spawn_phone_alerts(app: Arc<App>) {
                         unsupported = Some((cfg.url.clone(), std::time::Instant::now()));
                         break;
                     }
-                    Err(e) => tracing::debug!("alerte pour les téléphones : {e}"),
+                    Err(e) => {
+                        // Serveur injoignable : cette alerte et les suivantes remises en tête de
+                        // file (sans attendre l'échec de chacune), nouvel essai plus tard
+                        tracing::debug!("alerte pour les téléphones : {e} ; nouvel essai dans 30 s");
+                        let mut queue = app.sync.phone_alerts.lock().unwrap();
+                        for a in std::iter::once(alert).chain(rest).collect::<Vec<_>>().into_iter().rev() {
+                            queue.push_front(a);
+                        }
+                        while queue.len() > MAX_PHONE_ALERTS {
+                            queue.pop_front();
+                        }
+                        retry = true;
+                        break;
+                    }
                 }
             }
         }

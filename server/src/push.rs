@@ -167,16 +167,38 @@ pub async fn put_push(
     events.dedup();
     let events = serde_json::to_string(&events).expect("liste");
     let s = server.clone();
-    let info = with_db(&server, move |conn| {
+    let (info, replaced) = with_db(&server, move |conn| {
+        // Même navigateur associé de nouveau (nouveau QR code) : l'ancien appareil de cette
+        // application, abonné à la même adresse, est remplacé (sinon chaque alerte arriverait deux
+        // fois, et il compterait dans la limite d'appareils)
+        let replaced: Vec<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT s.device FROM push_subscriptions s JOIN devices old ON old.id = s.device
+                 WHERE s.endpoint = ?1 AND s.device <> ?2
+                   AND old.instance = (SELECT instance FROM devices WHERE id = ?2)",
+            )?;
+            let rows = stmt.query_map(params![body.endpoint, device], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for old in &replaced {
+            conn.execute("DELETE FROM push_subscriptions WHERE device = ?1", [old])?;
+            conn.execute("DELETE FROM devices WHERE id = ?1", [old])?;
+        }
+        // Autre application (autre PC) sur le même navigateur : seulement l'abonnement en double
+        conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?1 AND device <> ?2", params![body.endpoint, device])?;
         conn.execute(
             "INSERT INTO push_subscriptions (device, endpoint, p256dh, auth, events, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(device) DO UPDATE SET endpoint = excluded.endpoint, p256dh = excluded.p256dh, auth = excluded.auth,
              events = excluded.events",
             params![device, body.endpoint, body.keys.p256dh, body.keys.auth, events, now_text()],
         )?;
-        Ok(info_of(conn, &s, &device)?)
+        Ok((info_of(conn, &s, &device)?, replaced))
     })
     .await?;
+    for old in replaced {
+        tracing::info!("appareil {old} remplacé (même navigateur associé de nouveau)");
+        let _ = server.notices.send(crate::mobile::Notice::Revoked(old));
+    }
     Ok(Json(info))
 }
 

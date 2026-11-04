@@ -206,8 +206,9 @@ impl Gql {
     }
 
     /// Achète une récompense de points de chaîne (sans texte) ; Twitch vérifie le coût, le titre
-    /// et la description : récompense modifiée entre-temps, achat refusé
-    pub async fn redeem_reward(&self, reward: &ChannelReward) -> Result<()> {
+    /// et la description : récompense modifiée entre-temps, achat refusé. `transaction_id` fixe
+    /// pour un même achat : un nouvel essai après une réponse perdue n'est pas payé deux fois
+    pub async fn redeem_reward(&self, reward: &ChannelReward, transaction_id: &str) -> Result<()> {
         let data = self
             .query(
                 "mutation RedeemCustomReward($input: RedeemCommunityPointsCustomRewardInput!) { \
@@ -218,7 +219,7 @@ impl Gql {
                     "prompt": reward.prompt,
                     "rewardID": reward.id,
                     "title": reward.title,
-                    "transactionID": uuid::Uuid::new_v4().simple().to_string(),
+                    "transactionID": transaction_id,
                 } }),
             )
             .await?;
@@ -883,6 +884,8 @@ fn check_redeem(data: &Value) -> Result<()> {
     let result = data.get("redeemCommunityPointsCustomReward").filter(|r| !r.is_null());
     if let Some(code) = result.and_then(|r| r.pointer("/error/code")).and_then(Value::as_str) {
         let why = match code {
+            // Même transaction déjà payée (essai précédent dont la réponse s'est perdue) : acheté
+            "DUPLICATE_TRANSACTION" | "TRANSACTION_ALREADY_COMMITTED" | "TRANSACTION_IN_PROGRESS" => return Ok(()),
             "NOT_ENOUGH_POINTS" => "pas assez de points",
             "STREAM_NOT_LIVE" => "la chaîne n'est pas en live",
             "DISABLED" | "NOT_FOUND" => "récompense désactivée",

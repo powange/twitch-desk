@@ -573,7 +573,7 @@ pub fn set_giveaway_winners(app: AppState, id: i64, winners: Vec<WinnerInput>) -
     if !app.db.set_giveaway_winners(id, &list, &at).map_err(db_err)? {
         return Err("Ce giveaway n'existe plus".into());
     }
-    app.giveaways.send(MonitorCmd::Reload);
+    app.giveaways.send(if list.is_empty() { MonitorCmd::WinnersCleared(id) } else { MonitorCmd::Reload });
     app.sync.poke();
     Ok(())
 }
@@ -584,7 +584,7 @@ pub fn clear_giveaway_winner(app: AppState, id: i64) -> CmdResult<()> {
     if !app.db.clear_giveaway_winner(id).map_err(db_err)? {
         return Err("Ce giveaway n'existe plus".into());
     }
-    app.giveaways.send(MonitorCmd::Reload);
+    app.giveaways.send(MonitorCmd::WinnersCleared(id));
     app.sync.poke();
     Ok(())
 }

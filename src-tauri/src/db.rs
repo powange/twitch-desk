@@ -1746,7 +1746,7 @@ impl Db {
         let condition = "status = 'closed'
             AND (:from IS NULL OR julianday(COALESCE(drawn_at, detected_at)) >= julianday(:from))
             AND (:to IS NULL OR julianday(COALESCE(drawn_at, detected_at)) <= julianday(:to))
-            AND (:channel IS NULL OR channel = :channel)
+            AND (:channel IS NULL OR instr(channel, :channel) > 0)
             AND (:kinds = '[]' OR kind IN (SELECT value FROM json_each(:kinds)))
             AND (:winner IS NULL OR EXISTS (SELECT 1 FROM json_each(giveaways.winners) w WHERE instr(lower(w.value), :winner) > 0))
             AND (:gifts = '[]' OR EXISTS (SELECT 1 FROM giveaway_gifts gg WHERE gg.giveaway_id = giveaways.id
@@ -2067,14 +2067,24 @@ impl Db {
         Ok(n > 0)
     }
 
-    /// Gagnants retirés (erreur de détection ou de saisie) : le giveaway est rouvert, les règles de
-    /// clôture habituelles s'appliquent ensuite
+    /// Gagnants retirés (erreur de détection ou de saisie) : le giveaway est rouvert ici ; le
+    /// moniteur le remet ensuite ouvert ou en pause selon le live, ancienneté repartie de
+    /// maintenant (MonitorCmd::WinnersCleared), sinon la règle d'ancienneté le refermerait
     pub fn clear_giveaway_winner(&self, id: i64) -> DbResult<bool> {
         let n = self.conn().execute(
             "UPDATE giveaways SET winner = NULL, winners = '[]', winner_chances = '{}', winner_chance = NULL, drawn_at = NULL, status = 'open' WHERE id = ?1",
             [id],
         )?;
         Ok(n > 0)
+    }
+
+    /// Giveaway sans gagnant remis en route : ouvert (`live`) ou en pause, détecté à `at`
+    pub fn restart_giveaway(&self, id: i64, live: bool, at: &str) -> DbResult<()> {
+        self.conn().execute(
+            "UPDATE giveaways SET status = ?2, detected_at = ?3 WHERE id = ?1 AND winner IS NULL AND status <> 'closed'",
+            params![id, if live { "open" } else { "paused" }, at],
+        )?;
+        Ok(())
     }
 
     /// Clôt les giveaways ouverts détectés avant `before` (date RFC 3339), sauf tirage annoncé plus
@@ -3001,7 +3011,7 @@ mod tests {
         let by = |f: PastFilter| db.closed_giveaways(&f, 10, 0).unwrap().1;
         assert_eq!(by(PastFilter { winner: Some("BO".into()), ..all.clone() }), 1);
         assert_eq!(by(PastFilter { winner: Some("zed".into()), ..all.clone() }), 0);
-        assert_eq!(by(PastFilter { channel: Some("lunarsea".into()), kinds: vec!["command".into()], ..all.clone() }), 1);
+        assert_eq!(by(PastFilter { channel: Some("lunar".into()), kinds: vec!["command".into()], ..all.clone() }), 1);
         assert_eq!(by(PastFilter { kinds: vec!["streamelements".into()], ..all.clone() }), 0);
         assert_eq!(by(PastFilter { from: Some("2026-11-03T10:00:00.000Z".into()), to: Some("2026-11-03T11:00:00Z".into()), ..all.clone() }), 1);
         assert_eq!(by(PastFilter { from: Some("2026-11-04T00:00:00Z".into()), ..all.clone() }), 0);

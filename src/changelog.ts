@@ -14,6 +14,26 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.12',
+    date: '2026-11-04',
+    title: 'Corrections du rapport et nouveautés affichées après une mise à jour',
+    changes: [
+      { kind: 'new', text: 'Après une mise à jour, une fenêtre montre une fois les nouveautés de toutes les versions arrivées depuis ta dernière ouverture.' },
+      { kind: 'improved', text: 'Filtres des giveaways passés : « Streamer » accepte aussi un bout de nom. Tape « mav » et choisis « Contient « mav » » pour retrouver lf_maverick.' },
+      { kind: 'fixed', text: 'Deux giveaways ouverts sur une chaîne : le 2e gagnant annoncé dans les 15 minutes d\'un tirage va dans le giveaway tiré, au lieu de fermer l\'autre.' },
+      { kind: 'fixed', text: 'Retirer les gagnants d\'un giveaway le rouvre vraiment (ouvert, ou en pause si la chaîne est hors ligne) au lieu d\'être refermé dans la minute.' },
+      { kind: 'fixed', text: '« Annuler la réponse » d\'une notification restée d\'un lancement précédent n\'annule plus une autre réponse, et ne démarre plus l\'application si elle était fermée.' },
+      { kind: 'fixed', text: 'Achat de récompense de points de chaîne : un nouvel essai après une réponse perdue de Twitch n\'est plus payé deux fois, et le message indique un achat incertain à vérifier.' },
+      { kind: 'fixed', text: 'Alertes du téléphone : une alerte non transmise (coupure, serveur redémarré) est renvoyée toutes les 30 secondes pendant 15 minutes au lieu d\'être perdue.' },
+      { kind: 'fixed', text: 'Ancien giveaway : les changements faits dans la fiche du streamer (Discord, notes, commandes ignorées, réponse automatique) sont enregistrés.' },
+      { kind: 'fixed', text: 'Le badge StreamElements d\'un compte ouvre la page StreamElements sur ce compte, et plus sur celui choisi auparavant.' },
+      { kind: 'fixed', text: 'Bouton « Participer » du tableau : il participe avec tous les comptes qui ne l\'ont pas encore fait, au lieu de ne rien faire parfois.' },
+      { kind: 'fixed', text: 'Chance de gagner invalide : refusée avant l\'envoi, et le message ne dit plus « non enregistré » quand seuls les gagnants ont été refusés.' },
+      { kind: 'fixed', text: 'Récompenses de points de chaîne du formulaire : relues à chaque ouverture et après une erreur, et vidées dès qu\'on change de chaîne.' },
+      { kind: 'fixed', text: 'Téléphone associé de nouveau (nouveau QR code) : l\'ancien appareil est remplacé, plus de notifications en double.' }
+    ]
+  },
+  {
     version: '0.48.11',
     date: '2026-11-04',
     changes: [

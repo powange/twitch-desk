@@ -1470,6 +1470,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn same_browser_paired_again_replaces_its_old_device() {
+        let s = server(&["giveaways"]);
+        let (old_token, _) = paired_device(&s, INSTANCE).await;
+        let (new_token, _) = paired_device(&s, INSTANCE).await;
+        let p256dh = "BLn9b-VR0ca83knDNZ32dCHGyjJp-1riX9ZTN40MqV8K_LpQmLqxC_DoHvqvFXO_nGdAB4W9dogZb_sM-uV4JbY";
+        let body = format!(r#"{{"endpoint":"https://push.example.com/same","keys":{{"p256dh":"{p256dh}","auth":"_ordMnz7uTCmrpBTeUV4Bw"}},"events":["win"]}}"#);
+        assert_eq!(status(&s, request_auth("PUT", "/api/v1/app/push", &format!("Device {old_token}"), "7.7.7.1", &body)).await, StatusCode::OK);
+        // Nouveau QR code scanné dans le même navigateur : même adresse d'abonnement
+        assert_eq!(status(&s, request_auth("PUT", "/api/v1/app/push", &format!("Device {new_token}"), "7.7.7.1", &body)).await, StatusCode::OK);
+        // Une seule notification par alerte, l'ancien appareil n'est plus associé
+        assert_eq!(push::targets(&s.db.lock().unwrap(), INSTANCE, "win").unwrap().len(), 1);
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/app/overview", &format!("Device {old_token}"), "7.7.7.1", "")).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/app/overview", &format!("Device {new_token}"), "7.7.7.1", "")).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn phone_actions_go_through_the_pc() {
         let s = server(&["giveaways"]);
         let (token, _) = paired_device(&s, INSTANCE).await;

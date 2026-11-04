@@ -18,10 +18,19 @@ struct Pending {
     channel: String,
 }
 
-#[derive(Default)]
 pub struct WinReplies {
     next: AtomicU64,
     pending: Mutex<HashMap<u64, Pending>>,
+}
+
+/// Numéros propres à chaque lancement (heure du lancement en millisecondes × 1000) : le lien
+/// « Annuler » d'une notification d'un lancement précédent ne vise aucune réponse de celui-ci.
+/// Sous 2^53 : lisible tel quel par l'interface
+impl Default for WinReplies {
+    fn default() -> Self {
+        let start = chrono::Utc::now().timestamp_millis().max(0) as u64 * 1000;
+        Self { next: AtomicU64::new(start), pending: Mutex::default() }
+    }
 }
 
 /// Réponse annoncée à l'interface (bouton « Annuler » pendant le délai)

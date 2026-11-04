@@ -11,11 +11,13 @@ import { useWatchStream } from '../utils/viewer'
 import { formatNumber } from '../utils/format'
 import type { ChannelView, GiveawayView } from '../types'
 import AccountPicker from '../components/AccountPicker.vue'
+import { useSelectedAccount } from '../composables/useSelectedAccount'
 import { stringList, usePersisted } from '../composables/usePersisted'
 
 const openExternal = useOpenExternal()
 const watchStream = useWatchStream()
 const { accounts, account, channels, newLogin, adding, addChannel, setOptions, optionsOf, toRemove, removing, confirmRemove } = useChannelList('se')
+const { accountId } = useSelectedAccount()
 
 // Filtre par streamer (choix multiple), retenu sur ce poste ; « ?channels=a,b » le préremplit
 // pour cette visite (lien depuis les alertes) sans remplacer le filtre retenu
@@ -24,6 +26,11 @@ const savedFilter = usePersisted('se.streamers', [] as string[], { sanitize: str
 const streamerFilter = ref<string[]>([...savedFilter.value])
 // Filtre venu du lien, pas encore modifié à la main : pas retenu
 let fromUrl: string | null = null
+// « ?account=id » (badge d'un compte sur la page Alertes) : ce compte affiché
+watch(() => route.query.account, (q) => {
+  const id = Number(Array.isArray(q) ? q[0] : q)
+  if (Number.isFinite(id) && id > 0 && accounts.value.some(a => a.id === id)) accountId.value = id
+}, { immediate: true })
 watch(() => route.query.channels, (q) => {
   const value = Array.isArray(q) ? q.join(',') : (q ?? '')
   if (value) {

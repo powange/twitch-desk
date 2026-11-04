@@ -3,7 +3,8 @@ import { computed } from 'vue'
 import { CHANGELOG, type ChangeKind } from '../changelog'
 
 // Version installée : mise en avant dans la liste
-const props = defineProps<{ current: string | null }>()
+// `only` : versions à montrer (nouveautés après une mise à jour), sinon toutes
+const props = defineProps<{ current: string | null, only?: string[] }>()
 
 const KINDS: Record<ChangeKind, { label: string, color: 'success' | 'info' | 'warning', icon: string }> = {
   new: { label: 'Nouveauté', color: 'success', icon: 'i-lucide-sparkles' },
@@ -12,7 +13,7 @@ const KINDS: Record<ChangeKind, { label: string, color: 'success' | 'info' | 'wa
 }
 // Dans chaque version : nouveautés, puis améliorations, puis corrections
 const ORDER: ChangeKind[] = ['new', 'improved', 'fixed']
-const releases = computed(() => CHANGELOG.map(r => ({
+const releases = computed(() => CHANGELOG.filter(r => !props.only || props.only.includes(r.version)).map(r => ({
   ...r,
   changes: [...r.changes].sort((a, b) => ORDER.indexOf(a.kind) - ORDER.indexOf(b.kind))
 })))

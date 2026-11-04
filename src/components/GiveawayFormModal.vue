@@ -376,18 +376,24 @@ async function loadRewards(login: string) {
     if (rewardsFor === login) {
       rewards.value = []
       rewardsError.value = String(e)
+      // Erreur : relue au prochain changement (type, chaîne) ou à la réouverture
+      rewardsFor = ''
     }
   } finally {
-    if (rewardsFor === login) rewardsLoading.value = false
+    if (rewardsFor === login || rewardsFor === '') rewardsLoading.value = false
   }
 }
 watch(() => [open.value, form.value.kind, form.value.channel.trim().toLowerCase()] as const, ([isOpen, kind, login]) => {
   if (rewardsTimer) clearTimeout(rewardsTimer)
-  if (!isOpen || kind !== 'channelpoints' || !login) {
-    if (!login) { rewards.value = []; rewardsFor = '' }
+  // Formulaire fermé : relues à la prochaine ouverture (prix, pauses changés entre-temps)
+  if (!isOpen) { rewardsFor = ''; return }
+  if (kind !== 'channelpoints' || !login) {
+    if (!login) { rewards.value = []; rewardsFor = ''; rewardsError.value = null }
     return
   }
   if (login === rewardsFor) return
+  // Autre chaîne : l'ancienne liste n'est plus choisissable pendant le chargement
+  if (rewardsFor && rewardsFor !== login) { rewards.value = []; rewardsError.value = null }
   rewardsTimer = setTimeout(() => { void loadRewards(login) }, 400)
 }, { immediate: true })
 
@@ -619,12 +625,24 @@ async function save() {
     section.value = 'conditions'
     return
   }
+  // Chances vérifiées avant tout envoi : sinon le giveaway serait modifié, puis ses gagnants refusés
+  const badChance = f.winners.find((w) => {
+    const c = chanceInput(w.chance)
+    if (!c) return false
+    const n = Number(c)
+    return !Number.isFinite(n) || n < 0 || n > 100
+  })
+  if (badChance) {
+    toast.add({ title: 'Chance de gagner invalide', description: `${badChance.login} : « ${badChance.chance.trim()} ». Indique un nombre entre 0 et 100 (ex. 20,92), ou laisse vide.`, color: 'error' })
+    section.value = 'giveaway'
+    return
+  }
   if (pastMode.value && !pastAt.value) {
     toast.add({ title: 'Date du giveaway manquante', description: 'Indique quand ce giveaway a eu lieu.', color: 'error' })
     section.value = 'giveaway'
     return
   }
-  const invalid = streamerChanged && !pastMode.value ? discordError() : null
+  const invalid = streamerChanged ? discordError() : null
   if (invalid) {
     toast.add({ title: 'Lien Discord invalide', description: invalid, color: 'error' })
     section.value = 'channel'
@@ -632,10 +650,13 @@ async function save() {
   }
   const wasEdit = editId.value !== null
   saving.value = true
+  // Fiche du giveaway enregistrée : une erreur ensuite (gagnants) ne porte que sur la suite
+  let updated = false
   try {
     const id = editId.value
     if (id !== null) {
       await invoke('update_giveaway', { id, input })
+      updated = true
       // Rouvert : ouvert si la chaîne est en live, sinon en pause ; gagnant retiré
       if (reopen.value && closed.value) await invoke('reopen_giveaway', { id })
       // Gagnant changé à la main : désigné (le giveaway est clos), ou retiré (il est rouvert)
@@ -659,15 +680,15 @@ async function save() {
     // Créé une seule fois : un nouvel essai modifie ce giveaway
     else createdId.value = await invoke<number>('create_giveaway', { input })
   } catch (e) {
-    toast.add({ title: 'Giveaway non enregistré', description: String(e), color: 'error' })
+    toast.add({ title: updated ? 'Giveaway modifié, mais pas ses gagnants' : 'Giveaway non enregistré', description: String(e), color: 'error' })
     const target = sectionForError(String(e))
     if (target) section.value = target
     saving.value = false
     return
   }
   try {
-    // Ancien giveaway : la fiche du streamer n'est pas touchée
-    if (streamerChanged && !pastMode.value) {
+    // Fiche du streamer modifiée (aussi depuis un ancien giveaway) : enregistrée
+    if (streamerChanged) {
       // Conditions habituelles de la fiche (relue) reprises telles quelles, sinon elles seraient effacées
       const existing = await currentStreamer(f.channel)
       await invoke('save_streamer', {
@@ -925,7 +946,7 @@ async function save() {
 
             <!-- Communs à tous les types de giveaway -->
             <USeparator label="Pour tous les types de giveaway" :ui="{ label: 'text-xs text-muted' }" />
-              <UFormField v-if="giveaway || pastMode" label="Gagnants" help="Autant que nécessaire, avec leur chance de gagner si elle est connue. Tous retirés : le giveaway est rouvert" class="max-w-sm">
+              <UFormField v-if="giveaway || pastMode" label="Gagnants" :help="pastMode ? 'Autant que nécessaire, avec leur chance de gagner si elle est connue. Facultatif : le giveaway est enregistré terminé' : 'Autant que nécessaire, avec leur chance de gagner si elle est connue. Tous retirés : le giveaway est rouvert'" class="max-w-sm">
                 <div class="flex flex-col gap-2">
                   <!-- Un gagnant par ligne : pseudo, chance de gagner, retrait -->
                   <div v-for="w in form.winners" :key="w.login" class="flex items-center gap-2">

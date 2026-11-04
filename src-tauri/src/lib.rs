@@ -170,6 +170,12 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Premier lancement par le bouton « Annuler la réponse » d'une ancienne notification
+            // (application fermée) : aucune réponse en attente, rien à démarrer. Application déjà
+            // ouverte : le second lancement lui passe le lien (plugin single-instance) sans arriver ici
+            if std::env::args().any(|a| win_reply::id_of_cancel_url(&a).is_some()) {
+                std::process::exit(0);
+            }
             let data_dir = app.path().app_data_dir()?;
             let log_dir = data_dir.join("logs");
             std::fs::create_dir_all(&log_dir)?;
