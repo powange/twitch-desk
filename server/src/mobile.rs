@@ -93,13 +93,22 @@ fn check_instance(id: &str) -> Result<(), ApiError> {
     }
 }
 
+/// Précision de la dernière visite d'un appareil
+const LAST_SEEN_EVERY: chrono::Duration = chrono::Duration::minutes(5);
+
 /// Appareil reconnu par son jeton : (appareil, application) ; dernière visite notée
 pub fn device_for_token(conn: &Connection, token: &str) -> rusqlite::Result<Option<(String, String)>> {
     let found: Option<(String, String)> = conn
         .query_row("SELECT id, instance FROM devices WHERE token_hash = ?1", [token_hash(token)], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
+    // Dernière visite réécrite au plus toutes les LAST_SEEN_EVERY (pas une écriture par requête)
     if let Some((id, _)) = &found {
-        conn.execute("UPDATE devices SET last_seen = ?2 WHERE id = ?1", params![id, now_text()])?;
+        let now = chrono::Utc::now();
+        let before = (now - LAST_SEEN_EVERY).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        conn.execute(
+            "UPDATE devices SET last_seen = ?2 WHERE id = ?1 AND (last_seen IS NULL OR last_seen < ?3)",
+            params![id, now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true), before],
+        )?;
     }
     Ok(found)
 }
@@ -345,54 +354,86 @@ fn docs_of(conn: &Connection, collection: &str) -> rusqlite::Result<HashMap<Stri
     let mut map = HashMap::new();
     for row in rows {
         let (id, data) = row?;
-        if let Ok(v) = serde_json::from_str::<Value>(&data) {
-            if v.is_object() {
-                map.insert(id, v);
-            }
+        if let Some(v) = object_of(&data) {
+            map.insert(id, v);
         }
     }
     Ok(map)
+}
+
+fn object_of(data: &str) -> Option<Value> {
+    serde_json::from_str::<Value>(data).ok().filter(Value::is_object)
+}
+
+/// Un document présent (None : absent, supprimé ou illisible)
+fn doc_of(conn: &Connection, collection: &str, id: &str) -> rusqlite::Result<Option<Value>> {
+    let data: Option<String> = conn
+        .prepare_cached("SELECT data FROM docs WHERE collection = ?1 AND id = ?2 AND deleted = 0 AND data IS NOT NULL")?
+        .query_row(params![collection, id], |r| r.get(0))
+        .optional()?;
+    Ok(data.as_deref().and_then(object_of))
 }
 
 fn text(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_owned)
 }
 
+/// Image d'un cadeau envoyée à part (`gift_image`) : adresse avec l'empreinte de l'image (gardée
+/// en cache par le téléphone tant qu'elle ne change pas) ; image en ligne : son adresse
+fn gift_image_url(gift_id: &str, image: &str) -> Option<String> {
+    if image.starts_with("https://") {
+        return Some(image.to_owned());
+    }
+    if !image.starts_with("data:image/") {
+        return None;
+    }
+    let hash: String = Sha256::digest(image.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let id: String = gift_id.bytes().map(|b| if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    Some(format!("/api/v1/app/gifts/{id}/image?v={hash}"))
+}
+
 /// Giveaways ouverts ou en pause, ouverts d'abord, les plus récents en premier ; cadeaux
-/// remplacés par leur titre, image, jeu et groupe
+/// remplacés par leur titre, adresse de leur image, jeu et groupe. Seuls ces giveaways et leurs
+/// cadeaux sont lus (pas les terminés, ni les images des autres cadeaux)
 pub fn open_giveaways(conn: &Connection, collections: &std::collections::BTreeSet<String>) -> rusqlite::Result<Vec<Value>> {
     if !collections.contains("giveaways") {
         return Ok(vec![]);
     }
-    let gifts = if collections.contains("gifts") { docs_of(conn, "gifts")? } else { HashMap::new() };
-    let groups = if collections.contains("groups") { docs_of(conn, "groups")? } else { HashMap::new() };
+    let with_gifts = collections.contains("gifts");
+    let groups = if with_gifts && collections.contains("groups") { docs_of(conn, "groups")? } else { HashMap::new() };
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, data FROM docs WHERE collection = 'giveaways' AND deleted = 0 AND data IS NOT NULL
+           AND json_valid(data) AND (json_extract(data, '$.open') = 1 OR json_extract(data, '$.status') = 'paused')",
+    )?;
+    let rows: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let mut gifts: HashMap<String, Option<Value>> = HashMap::new();
     let mut list: Vec<(bool, String, Value)> = vec![];
-    for (id, mut g) in docs_of(conn, "giveaways")? {
+    for (id, data) in rows {
+        let Some(mut g) = object_of(&data) else { continue };
         let open = g.get("open").and_then(Value::as_bool).unwrap_or(false);
         let paused = g.get("status").and_then(Value::as_str) == Some("paused");
         if !open && !paused {
             continue;
         }
-        let resolved: Vec<Value> = g
-            .get("gifts")
-            .and_then(Value::as_array)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(Value::as_str)
-                    .filter_map(|gid| {
-                        let gift = gifts.get(gid)?;
-                        let group = text(gift, "group").and_then(|gr| groups.get(&gr)).and_then(|gr| text(gr, "name"));
-                        Some(serde_json::json!({
-                            "id": gid,
-                            "title": text(gift, "title"),
-                            "image": text(gift, "image").filter(|i| i.starts_with("data:image/") || i.starts_with("https://")),
-                            "gameName": text(gift, "gameName"),
-                            "group": group,
-                        }))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let ids: Vec<String> = g.get("gifts").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+        let mut resolved = vec![];
+        if with_gifts {
+            for gid in ids {
+                if !gifts.contains_key(&gid) {
+                    let doc = doc_of(conn, "gifts", &gid)?;
+                    gifts.insert(gid.clone(), doc);
+                }
+                let Some(Some(gift)) = gifts.get(&gid) else { continue };
+                let group = text(gift, "group").and_then(|gr| groups.get(&gr)).and_then(|gr| text(gr, "name"));
+                resolved.push(serde_json::json!({
+                    "id": gid,
+                    "title": text(gift, "title"),
+                    "image": text(gift, "image").and_then(|i| gift_image_url(&gid, &i)),
+                    "gameName": text(gift, "gameName"),
+                    "group": group,
+                }));
+            }
+        }
         let detected = text(&g, "detectedAt").unwrap_or_default();
         g["id"] = Value::String(id);
         g["gifts"] = Value::Array(resolved);
@@ -401,6 +442,44 @@ pub fn open_giveaways(conn: &Connection, collections: &std::collections::BTreeSe
     }
     list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     Ok(list.into_iter().map(|(_, _, g)| g).collect())
+}
+
+/// Image d'un cadeau décodée (type, octets) ; None : pas de cadeau ou image non intégrée
+pub fn gift_image(conn: &Connection, id: &str) -> rusqlite::Result<Option<(String, Vec<u8>)>> {
+    use base64ct::{Base64, Encoding};
+    let Some(gift) = doc_of(conn, "gifts", id)? else { return Ok(None) };
+    let Some(image) = text(&gift, "image") else { return Ok(None) };
+    let Some(rest) = image.strip_prefix("data:") else { return Ok(None) };
+    let Some((meta, payload)) = rest.split_once(',') else { return Ok(None) };
+    let Some(mime) = meta.strip_suffix(";base64") else { return Ok(None) };
+    // Types d'images seulement (pas de SVG : il peut porter du script)
+    if !matches!(mime, "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/avif") {
+        return Ok(None);
+    }
+    Ok(Base64::decode_vec(payload.trim()).ok().map(|bytes| (mime.to_owned(), bytes)))
+}
+
+/// `GET /api/v1/app/gifts/{id}/image` (appareil associé) : image d'un cadeau, gardée en cache par
+/// le téléphone (l'adresse donnée par la vue change avec l'image)
+pub async fn gift_image_route(State(server): State<Shared>, Extension(access): Extension<Access>, Path(id): Path<String>) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    if !matches!(access, Access::Device { .. }) {
+        return Err(ApiError::BadRequest("Réservé aux appareils associés".into()));
+    }
+    if !server.collections.contains("gifts") {
+        return Err(ApiError::NotFound("Pas de cadeaux sur ce serveur".into()));
+    }
+    let found = with_db(&server, move |conn| Ok(gift_image(conn, &id)?)).await?;
+    let Some((mime, bytes)) = found else { return Err(ApiError::NotFound("Image introuvable".into())) };
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, mime),
+            (axum::http::header::CACHE_CONTROL, "private, max-age=31536000, immutable".to_owned()),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 /// `GET /api/v1/app/state` (appareil associé) : état publié par son application seulement (léger,

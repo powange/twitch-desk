@@ -242,3 +242,22 @@ export async function deletePush(token: string): Promise<void> {
   }
   if (!res.ok) throw await errorOf(res)
 }
+
+// Images des lots (serveur 0.8.6 et plus) : lues une fois par adresse (qui change avec l'image),
+// avec le cache du navigateur entre deux ouvertures
+const images = new Map<string, Promise<string | null>>()
+export function giftImage(path: string): Promise<string | null> {
+  let found = images.get(path)
+  if (!found) {
+    const d = loadDevice()
+    found = d
+      ? fetch(path, { headers: authHeader(d.token) })
+          .then(r => r.ok ? r.blob() : null)
+          .then(b => b ? URL.createObjectURL(b) : null)
+          .catch(() => null)
+      : Promise.resolve(null)
+    found.then((u) => { if (!u) images.delete(path) })
+    images.set(path, found)
+  }
+  return found
+}

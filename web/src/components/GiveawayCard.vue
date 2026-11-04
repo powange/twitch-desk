@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import type { ChannelLive, Giveaway, InstanceState } from '../types'
 import { chatUrl, conditions, copyText, GIVEAWAY_KIND, playerUrl, streamUrl } from '../giveaways'
 import { formatNumber, formatWhen } from '../format'
+import GiftImage from './GiftImage.vue'
 
 const props = defineProps<{ giveaway: Giveaway, state: InstanceState | null }>()
 const toast = useToast()
@@ -78,7 +79,7 @@ async function copy() {
       <!-- Lots -->
       <ul v-if="g.gifts.length" class="flex flex-col gap-2">
         <li v-for="gift in g.gifts" :key="gift.id" class="flex items-center gap-3">
-          <img v-if="gift.image" :src="gift.image" alt="" class="size-12 rounded-md object-cover bg-muted shrink-0" loading="lazy">
+          <GiftImage v-if="gift.image" :src="gift.image" />
           <div v-else class="size-12 rounded-md bg-muted flex items-center justify-center shrink-0">
             <UIcon name="i-lucide-gift" class="size-5 text-muted" />
           </div>

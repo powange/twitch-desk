@@ -122,7 +122,7 @@ Paramètres → Synchronisation : adresse du serveur (`https://sync.exemple.fr`)
 
 ## API
 
-Sauf mention contraire, les routes demandent `Authorization: Bearer <SYNC_CODE>`. Un téléphone associé utilise `Authorization: Device <jeton>`, accepté seulement par `/api/v1/app/overview` et `/api/v1/events`.
+Sauf mention contraire, les routes demandent `Authorization: Bearer <SYNC_CODE>`. Un téléphone associé utilise `Authorization: Device <jeton>`, accepté seulement par les routes `/api/v1/app/…` et `/api/v1/events` ; son flux n'annonce que les modifications des giveaways, cadeaux et groupes (ce que montre sa vue).
 
 - `GET /health` : `ok` (le serveur et sa base répondent), sinon 503
 - `GET /api/v1/info` : version, collections partagées, numéro de la dernière modification
@@ -138,7 +138,8 @@ Web app (0.6 et plus) :
 - `POST /api/v1/pair/claim` (sans code ; 5 codes incorrects en 10 min par adresse, puis 429 pendant 10 min) : `{ "code": "123456", "deviceName": "iPhone" }` → `{ "token": "…", "deviceId": "…", "instance": { "id": "…", "name": "…" } }`
 - `GET /api/v1/instances/{id}/devices` : `[{ "id", "name", "createdAt", "lastSeen" }]`
 - `DELETE /api/v1/instances/{id}/devices/{deviceId}` : révoque le téléphone (204, 404 s'il est inconnu)
-- `GET /api/v1/app/overview` (jeton d'appareil) : `{ instance, device, state, stateAt, giveaways, seq }` ; giveaways ouverts puis en pause (les plus récents d'abord), cadeaux remplacés par `{ id, title, image, gameName, group }`
+- `GET /api/v1/app/overview` (jeton d'appareil) : `{ instance, device, state, stateAt, giveaways, seq }` ; giveaways ouverts puis en pause (les plus récents d'abord), cadeaux remplacés par `{ id, title, image, gameName, group }` (`image` : adresse ; une image intégrée au cadeau est servie à part, voir la route suivante)
+- `GET /api/v1/app/gifts/{id}/image?v=<empreinte>` (jeton d'appareil) : image intégrée d'un cadeau (PNG, JPEG, WebP, GIF ou AVIF), en cache privé un an ; l'empreinte change avec l'image
 - `GET /app/…` (sans authentification) : fichiers de la web app ; `/app/assets/…` en cache un an (noms à empreinte), le reste revérifié à chaque visite ; une adresse sans extension renvoie `index.html`
 
 À la première ouverture par la 0.4, une base existante est compactée une fois (`VACUUM`) après que le contenu est retiré de l'historique : le démarrage peut prendre quelques secondes de plus.

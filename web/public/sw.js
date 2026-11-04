@@ -15,10 +15,35 @@ self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()))
 })
 
+// Fichiers à empreinte des versions précédentes : retirés du cache (sinon il grossit à chaque
+// déploiement). Gardés : ceux que cite la page actuelle, et ceux que citent ses scripts (morceaux
+// chargés à la demande). Sans réseau : rien n'est retiré
+async function dropOldAssets() {
+  const response = await fetch('/app/', { cache: 'no-store' })
+  if (!response.ok) return
+  const page = await response.text()
+  const cache = await caches.open(CACHE)
+  await cache.put('/app/', new Response(page, { headers: response.headers }))
+  const entries = [...new Set(page.match(/\/app\/assets\/[^"'\s)]+\.js/g) || [])]
+  const scripts = await Promise.all(entries.map(p =>
+    cache.match(p).then(r => r || fetch(p)).then(r => r.ok ? r.text() : '').catch(() => null)))
+  // Un script illisible : on ne sait pas ce qu'il charge, rien n'est retiré
+  if (scripts.includes(null)) return
+  const cited = page + scripts.join('\n')
+  const requests = await cache.keys()
+  await Promise.all(requests
+    .filter((r) => {
+      const path = new URL(r.url).pathname
+      return path.startsWith('/app/assets/') && !cited.includes(path.slice('/app/assets/'.length))
+    })
+    .map(r => cache.delete(r)))
+}
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
       .then(keys => Promise.all(keys.filter(k => k !== CACHE && k !== PUSH_CACHE).map(k => caches.delete(k))))
+      .then(() => dropOldAssets().catch(() => {}))
       .then(() => self.clients.claim())
   )
 })

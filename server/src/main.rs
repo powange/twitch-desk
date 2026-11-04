@@ -90,6 +90,9 @@ struct Server {
     /// Numéro de la dernière modification, suivi par les flux d'événements ; `None` : arrêt du
     /// serveur, les flux se ferment
     seq: watch::Sender<Option<i64>>,
+    /// Dernière modification de ce que montrent les téléphones (giveaways, cadeaux, groupes) :
+    /// les autres (chaînes, fiches…) ne leur font pas tout relire
+    phone_seq: watch::Sender<Option<i64>>,
     /// Places des flux d'événements (MAX_STREAMS)
     streams: Arc<Semaphore>,
     /// Codes d'association refusés, par adresse (plus strict que `guard`)
@@ -121,6 +124,7 @@ impl Server {
             proxy_hops,
             guard: Guard::default(),
             seq: watch::Sender::new(Some(seq)),
+            phone_seq: watch::Sender::new(Some(seq)),
             streams: Arc::new(Semaphore::new(MAX_STREAMS)),
             pair_guard: Guard::new(mobile::PAIR_MAX_FAILURES, mobile::PAIR_WINDOW, mobile::PAIR_BLOCK),
             pairings: Mutex::new(HashMap::new()),
@@ -132,14 +136,18 @@ impl Server {
 
     /// Nouvelle modification annoncée aux flux (le numéro ne fait qu'avancer : deux envois
     /// simultanés peuvent finir dans le désordre)
-    fn announce(&self, seq: i64) {
-        self.seq.send_if_modified(|current| match current {
+    fn announce(&self, seq: i64, for_phones: bool) {
+        let advance = |current: &mut Option<i64>| match current {
             Some(c) if *c < seq => {
                 *c = seq;
                 true
             }
             _ => false,
-        });
+        };
+        self.seq.send_if_modified(advance);
+        if for_phones {
+            self.phone_seq.send_if_modified(advance);
+        }
     }
 }
 
@@ -555,9 +563,10 @@ async fn push(State(server): State<Shared>, Json(body): Json<Push>) -> Result<Js
     let author = body.author.map(|a| a.chars().take(60).collect::<String>());
     let now = now_text();
     let who = author.clone();
-    let (accepted, seq) = with_db(&server, move |conn| {
+    let (accepted, seq, for_phones) = with_db(&server, move |conn| {
         let tx = conn.transaction()?;
         let mut accepted = 0;
+        let mut for_phones = false;
         for c in body.changes {
             let data = if c.deleted { None } else { c.data.map(|d| d.to_string()) };
             if data.as_ref().is_some_and(|d| d.len() > MAX_DOCUMENT) {
@@ -591,17 +600,21 @@ async fn push(State(server): State<Shared>, Json(body): Json<Push>) -> Result<Js
                 params![c.collection, c.id, data, c.deleted, seq, now, author],
             )?;
             accepted += 1;
+            for_phones |= PHONE_COLLECTIONS.contains(&c.collection.as_str());
         }
         tx.commit()?;
-        Ok((accepted, last_seq(conn)?))
+        Ok((accepted, last_seq(conn)?, for_phones))
     })
     .await?;
     if accepted > 0 {
         tracing::info!("{accepted} modification(s) de {}", who.as_deref().unwrap_or("?"));
-        server.announce(seq);
+        server.announce(seq, for_phones);
     }
     Ok(Json(PushResult { accepted, seq }))
 }
+
+/// Collections montrées par la vue des téléphones
+const PHONE_COLLECTIONS: [&str; 3] = ["giveaways", "gifts", "groups"];
 
 fn seq_event(seq: i64) -> Event {
     Event::default().event("seq").data(serde_json::json!({ "seq": seq }).to_string())
@@ -620,7 +633,11 @@ async fn events(State(server): State<Shared>, Extension(access): Extension<Acces
         return (StatusCode::SERVICE_UNAVAILABLE, [(header::RETRY_AFTER, "60")], body).into_response();
     };
     let (tx, rx) = mpsc::channel::<Event>(16);
-    let mut seq = server.seq.subscribe();
+    // Téléphones : annoncés seulement pour ce que montre leur vue
+    let mut seq = match access {
+        Access::Full => server.seq.subscribe(),
+        Access::Device { .. } => server.phone_seq.subscribe(),
+    };
     let mut notices = server.notices.subscribe();
     let device = match access {
         Access::Full => None,
@@ -865,6 +882,7 @@ fn app(server: Shared) -> Router {
     let read = Router::new()
         .route("/api/v1/app/overview", get(mobile::overview))
         .route("/api/v1/app/state", get(mobile::state))
+        .route("/api/v1/app/gifts/{id}/image", get(mobile::gift_image_route))
         .route("/api/v1/app/actions", get(actions::mine).post(actions::create))
         .route("/api/v1/app/push", get(push::get_push).put(push::put_push).delete(push::delete_push))
         .route_layer(middleware::from_fn_with_state(server.clone(), require_access));
@@ -986,6 +1004,7 @@ async fn main() -> std::process::ExitCode {
         let _ = ctrl_c.await;
         // Flux d'événements fermés : l'arrêt n'attend pas qu'ils se terminent d'eux-mêmes
         stopping.seq.send_replace(None);
+        stopping.phone_seq.send_replace(None);
         let _ = stop_tx.send(true);
     });
     let stopped = |mut rx: watch::Receiver<bool>| async move {
@@ -1202,11 +1221,12 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(200), body.next()).await.is_err());
 
         // Le numéro ne recule pas
-        s.announce(0);
+        s.announce(0, true);
         assert!(tokio::time::timeout(Duration::from_millis(200), body.next()).await.is_err());
 
         // Arrêt du serveur : le flux se ferme
         s.seq.send_replace(None);
+        s.phone_seq.send_replace(None);
         assert!(tokio::time::timeout(Duration::from_secs(5), body.next()).await.unwrap().is_none());
     }
 
@@ -1366,7 +1386,7 @@ mod tests {
             author: Some("alice".into()),
             changes: vec![
                 change("groups", "g1", Some(serde_json::json!({"name": "Voiles"}))),
-                change("gifts", "c1", Some(serde_json::json!({"title": "Obsidian Sails", "image": "data:image/png;base64,AAA", "group": "g1", "gameName": "Sea of Thieves"}))),
+                change("gifts", "c1", Some(serde_json::json!({"title": "Obsidian Sails", "image": "data:image/png;base64,iVBORw==", "group": "g1", "gameName": "Sea of Thieves"}))),
                 change("gifts", "c2", Some(serde_json::json!({"title": "Pirate", "image": "javascript:alert(1)"}))),
                 change("giveaways", "old", Some(serde_json::json!({"channel": "a", "kind": "command", "detectedAt": "2026-01-01T00:00:00Z", "open": false}))),
                 change("giveaways", "p1", Some(serde_json::json!({"channel": "b", "kind": "command", "detectedAt": "2026-11-01T12:00:00Z", "open": false, "status": "paused"}))),
@@ -1397,6 +1417,18 @@ mod tests {
         assert_eq!(o1["gifts"][0]["gameName"], "Sea of Thieves");
         // Image qui n'est ni une data URL ni une adresse https : retirée
         assert!(o1["gifts"][1]["image"].is_null());
+        // Image intégrée : envoyée à part, à une adresse qui change avec elle
+        let image = o1["gifts"][0]["image"].as_str().unwrap().to_owned();
+        assert!(image.starts_with("/api/v1/app/gifts/c1/image?v="), "{image}");
+        let res = app(s.clone()).oneshot(request_auth("GET", &image, &auth, "7.7.7.2", "")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()[header::CONTENT_TYPE], "image/png");
+        assert!(res.headers()[header::CACHE_CONTROL].to_str().unwrap().contains("immutable"));
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], &[0x89, b'P', b'N', b'G'][..]);
+        // Réservée aux appareils ; cadeau sans image intégrée : introuvable
+        assert_eq!(status(&s, request("GET", &image, Some("code-secret"), "7.7.7.2", "")).await, StatusCode::BAD_REQUEST);
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/app/gifts/c2/image", &auth, "7.7.7.2", "")).await, StatusCode::NOT_FOUND);
         assert_eq!(v["giveaways"][2]["status"], "paused");
         assert_eq!(v["state"]["giveaways"]["o1"]["participated"][0], "alice");
         assert!(v["stateAt"].is_string());
@@ -1405,7 +1437,7 @@ mod tests {
 
     #[tokio::test]
     async fn device_stream_announces_its_state_and_closes_on_revoke() {
-        let s = server(&["gifts"]);
+        let s = server(&["gifts", "channels"]);
         let (token, device) = paired_device(&s, INSTANCE).await;
         let (other_token, _) = paired_device(&s, "0b6f1c1e-1111-4a2b-9c3d-000000000002").await;
         let res = app(s.clone()).oneshot(request_auth("GET", "/api/v1/events", &format!("Device {token}"), "8.8.8.1", "")).await.unwrap();
@@ -1423,10 +1455,15 @@ mod tests {
         assert_eq!(status(&s, request("PUT", &mine, Some("code-secret"), "8.8.8.2", r#"{"a":1}"#)).await, StatusCode::NO_CONTENT);
         assert!(tokio::time::timeout(Duration::from_millis(200), body.next()).await.is_err());
 
-        // Modification d'un document : annoncée aussi
+        // Chaîne modifiée : absente de la vue du téléphone, rien d'annoncé
+        let push = r#"{"changes":[{"collection":"channels","id":"lunarsea","data":{"note":"x"}}]}"#;
+        assert_eq!(status(&s, request("POST", "/api/v1/changes", Some("code-secret"), "8.8.8.2", push)).await, StatusCode::OK);
+        assert!(tokio::time::timeout(Duration::from_millis(200), body.next()).await.is_err());
+
+        // Modification d'un cadeau : annoncée
         let push = r#"{"changes":[{"collection":"gifts","id":"a","data":{"title":"Voiles"}}]}"#;
         assert_eq!(status(&s, request("POST", "/api/v1/changes", Some("code-secret"), "8.8.8.2", push)).await, StatusCode::OK);
-        assert_eq!(next_event(&mut body).await, "event: seq\ndata: {\"seq\":1}\n\n");
+        assert_eq!(next_event(&mut body).await, "event: seq\ndata: {\"seq\":2}\n\n");
 
         // Appareils de l'application, puis révocation : jeton refusé, flux fermé
         let (st, list) = json_of(&s, request("GET", &format!("/api/v1/instances/{INSTANCE}/devices"), Some("code-secret"), "8.8.8.2", "")).await;

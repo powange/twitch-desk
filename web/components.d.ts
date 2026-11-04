@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AccountPicker: typeof import('./src/components/AccountPicker.vue')['default']
     DropsView: typeof import('./src/components/DropsView.vue')['default']
+    GiftImage: typeof import('./src/components/GiftImage.vue')['default']
     GiveawayCard: typeof import('./src/components/GiveawayCard.vue')['default']
     GiveawayCarousel: typeof import('./src/components/GiveawayCarousel.vue')['default']
     MentionList: typeof import('./src/components/MentionList.vue')['default']
