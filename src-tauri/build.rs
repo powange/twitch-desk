@@ -15,6 +15,7 @@ const COMMANDS: &[&str] = &[
     "remove_channel",
     "reorder_channels",
     "set_se_auto_buy",
+    "set_drop_campaign_ignored",
     "set_channel_options",
     "set_paused",
     "get_settings",

@@ -580,6 +580,8 @@ pub struct DropsView {
     pub enabled: bool,
     pub games: Vec<DropGameView>,
     pub campaigns: Vec<Campaign>,
+    /// Campagnes ignorées (affichées seulement sur demande)
+    pub ignored_campaigns: Vec<String>,
     pub target: Option<DropTargetView>,
     pub inventory_at: Option<String>,
     pub error: Option<String>,
@@ -630,9 +632,21 @@ pub struct DropsEngine {
     /// disparaît) : détail brut et date de lecture, gardés d'une relecture de l'inventaire à
     /// l'autre (sinon une campagne déjà obtenue serait de nouveau inconnue, donc regardée)
     channel_campaigns: HashMap<String, (Value, Instant)>,
+    /// Campagnes ignorées : comptées comme terminées (ni regardées ni réclamées)
+    ignored: HashSet<String>,
 }
 
 impl DropsEngine {
+    pub fn set_ignored(&mut self, ignored: HashSet<String>) {
+        if let Some(t) = &self.target {
+            // Campagne regardée ignorée : on la quitte au prochain passage
+            if self.campaign_for(&t.game_id).is_some_and(|c| ignored.contains(&c.id)) {
+                self.target = None;
+            }
+        }
+        self.ignored = ignored;
+    }
+
     pub fn set_games(&mut self, games: Vec<DropGame>) {
         // Jeu ajouté : ses campagnes n'ont pas encore été détaillées, relire l'inventaire
         let before: HashSet<String> = self.wanted_games();
@@ -761,8 +775,17 @@ impl DropsEngine {
         self.campaigns.sort_by(|a, b| a.ends_at.cmp(&b.ends_at));
     }
 
+    /// Campagne active du jeu : la première avec des drops à obtenir (non ignorée), sinon la
+    /// première active (jeu terminé)
     fn campaign_for(&self, game_id: &str) -> Option<&Campaign> {
-        self.campaigns.iter().find(|c| c.game.id == game_id && c.active())
+        let mut active = self.campaigns.iter().filter(|c| c.game.id == game_id && c.active());
+        let first = active.clone().next();
+        active.find(|c| c.unfinished() && !self.ignored.contains(&c.id)).or(first)
+    }
+
+    /// Reste-t-il quelque chose à faire pour cette campagne ? (ignorée : non)
+    fn wanted(&self, c: &Campaign) -> bool {
+        c.unfinished() && !self.ignored.contains(&c.id)
     }
 
     pub async fn step(&mut self, app: &App, account: &Account, gql: &Gql, active: bool) -> Result<()> {
@@ -815,7 +838,7 @@ impl DropsEngine {
                 continue;
             }
             if let Some(c) = self.campaign_for(&g.game_id) {
-                if !c.unfinished() {
+                if !self.wanted(c) {
                     self.rt.entry(g.game_id.clone()).or_default().status = Some(GameStatus::Done);
                     continue;
                 }
@@ -874,7 +897,7 @@ impl DropsEngine {
                                 if found.is_empty() {
                                     tracing::info!("drops : {} sur {} : détail de la campagne illisible, pas de visionnage", g.name, candidate.login);
                                 }
-                                found.iter().any(|c| c.active() && c.unfinished())
+                                found.iter().any(|c| c.active() && self.wanted(c))
                             }
                         }
                         Ok(None) => {
@@ -1009,6 +1032,7 @@ impl DropsEngine {
         let ready: Vec<(String, String, String)> = self
             .campaigns
             .iter()
+            .filter(|c| !self.ignored.contains(&c.id))
             .flat_map(|c| {
                 c.drops
                     .iter()
@@ -1093,6 +1117,7 @@ impl DropsEngine {
                 })
                 .collect(),
             campaigns: self.campaigns.clone(),
+            ignored_campaigns: self.ignored.iter().cloned().collect(),
             target: self.target.as_ref().map(|t| DropTargetView {
                 game_name: t.game_name.clone(),
                 login: t.stream.login.clone(),
@@ -1128,6 +1153,40 @@ mod tests {
                   "preconditionDrops": [{ "id": "d1" }] }
             ]
         })
+    }
+
+    #[test]
+    fn campaign_choice_skips_finished_and_ignored() {
+        let campaign = |id: &str, done: bool| Campaign {
+            id: id.into(),
+            name: id.into(),
+            game: Game { id: "g".into(), name: "Jeu".into(), slug: None, box_art: None },
+            status: "ACTIVE".into(),
+            starts_at: String::new(),
+            ends_at: id.into(),
+            account_linked: true,
+            link_url: None,
+            allowed_channels: vec![],
+            drops: vec![TimedDrop {
+                id: format!("{id}-d"),
+                name: "Drop".into(),
+                required_minutes: 60,
+                current_minutes: if done { 60 } else { 0 },
+                claimed: done,
+                instance_id: None,
+                starts_at: String::new(),
+                ends_at: String::new(),
+                rewards: vec![],
+                preconditions: vec![],
+            }],
+        };
+        let mut e = DropsEngine { campaigns: vec![campaign("a", true), campaign("b", false)], ..Default::default() };
+        // Première campagne obtenue, une autre reste à faire : c'est elle qui compte
+        assert_eq!(e.campaign_for("g").unwrap().id, "b");
+        assert!(e.wanted(e.campaign_for("g").unwrap()));
+        // Ignorée : plus rien à faire pour ce jeu
+        e.set_ignored(["b".to_owned()].into());
+        assert!(!e.wanted(e.campaign_for("g").unwrap()));
     }
 
     #[test]

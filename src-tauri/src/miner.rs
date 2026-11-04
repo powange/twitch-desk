@@ -62,6 +62,20 @@ const SE_LOYALTY_EVERY: Duration = Duration::from_secs(6 * 3600);
 const SE_AUTO_BUY_GAP: Duration = Duration::from_secs(20);
 const SE_AUTO_BUY_RETRY: Duration = Duration::from_secs(5 * 60);
 
+/// Tickets à acheter d'un coup : tout ce que le solde permet, sans dépasser le maximum par
+/// personne (nos tickets doivent alors être connus) ; 0 : rien à acheter
+fn auto_buy_count(cost: i64, points: Option<i64>, max: Option<i64>, mine: Option<i64>) -> i64 {
+    let Some(points) = points.filter(|_| cost > 0) else { return 0 };
+    let affordable = points / cost;
+    match max {
+        None => affordable,
+        Some(max) => match mine {
+            Some(mine) => affordable.min(max - mine).max(0),
+            None => 0,
+        },
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum MinerCommand {
     /// Les chaînes ou les réglages du compte ont changé
@@ -496,6 +510,7 @@ impl Miner {
 
     fn reload_drop_games(&mut self) {
         self.drops.set_games(self.app.db.drop_games(self.account.id).unwrap_or_default());
+        self.drops.set_ignored(self.app.db.ignored_drop_campaigns(self.account.id).unwrap_or_default());
     }
 
     fn reload_channels(&mut self) {
@@ -758,14 +773,20 @@ impl Miner {
                 );
             }
         }
-        // Nos tickets exacts, si le compte StreamElements est connecté
-        if let (Some(g), Some(token)) = (&giveaway, self.se_token.clone()) {
+        // Nos tickets exacts, si le compte StreamElements est connecté ; déjà au maximum par
+        // personne sur ce giveaway : plus rien ne peut changer, pas de relecture
+        let at_max = previous == current
+            && giveaway.as_ref().and_then(|g| g.max_tickets).is_some_and(|max| self.channels[i].se_my_tickets.is_some_and(|t| t >= max));
+        if let (Some(g), Some(token), false) = (&giveaway, self.se_token.clone(), at_max) {
             if !self.se_token_refused {
                 match streamelements::my_entry(&self.app.http, &token, &se_id, &g.id).await {
                     Ok(tickets) => {
-                        self.channels[i].se_my_tickets = Some(tickets);
-                        let _ = self.app.db.set_se_tickets(self.account.id, &g.id, tickets);
-                        crate::giveaways::refresh_view(&self.app);
+                        // Inchangés : ni écriture ni reconstruction de la vue
+                        if self.channels[i].se_my_tickets != Some(tickets) {
+                            self.channels[i].se_my_tickets = Some(tickets);
+                            let _ = self.app.db.set_se_tickets(self.account.id, &g.id, tickets);
+                            crate::giveaways::refresh_view(&self.app);
+                        }
                     }
                     Err(SeError::Unauthorized) => {
                         self.se_token_refused = true;
@@ -783,27 +804,24 @@ impl Miner {
         true
     }
 
-    /// Achat automatique (option de la chaîne) : un ticket du giveaway StreamElements en cours dès
-    /// que le solde le permet, jusqu'au maximum par personne
+    /// Achat automatique (option de la chaîne) : en une fois, autant de tickets du giveaway
+    /// StreamElements en cours que le solde le permet, jusqu'au maximum par personne
     async fn auto_buy_se(&mut self, now: Instant) {
         let Some(token) = self.se_token.clone().filter(|_| !self.se_token_refused) else { return };
         let Some(i) = self.channels.iter().position(|c| {
             c.ch.se_auto_buy
                 && Self::se_ready(c).is_some()
                 && c.se_auto_buy_at.is_none_or(|t| now >= t)
-                && c.se_giveaway.as_ref().is_some_and(|g| {
-                    g.cost > 0
-                        && c.ch.se_points.is_some_and(|p| p >= g.cost)
-                        && g.max_tickets.is_none_or(|max| c.se_my_tickets.unwrap_or(0) < max)
-                })
+                && c.se_giveaway.as_ref().is_some_and(|g| auto_buy_count(g.cost, c.ch.se_points, g.max_tickets, c.se_my_tickets) > 0)
         }) else {
             return;
         };
         let se_id = Self::se_ready(&self.channels[i]).unwrap_or_default();
         let Some(g) = self.channels[i].se_giveaway.clone() else { return };
         let login = self.channels[i].ch.login.clone();
+        let count = auto_buy_count(g.cost, self.channels[i].ch.se_points, g.max_tickets, self.channels[i].se_my_tickets);
         self.channels[i].se_auto_buy_at = Some(now + SE_AUTO_BUY_GAP);
-        let bought = match streamelements::enter(&self.app.http, &token, &se_id, &g.id, 1).await {
+        let bought = match streamelements::enter(&self.app.http, &token, &se_id, &g.id, count).await {
             Ok(()) => streamelements::my_entry(&self.app.http, &token, &se_id, &g.id).await,
             Err(e) => Err(e),
         };
@@ -811,15 +829,16 @@ impl Miner {
             Ok(total) => {
                 let ch = &mut self.channels[i];
                 ch.se_my_tickets = Some(total);
-                // Solde baissé d'un ticket en attendant sa relecture (pas compté comme un gain)
+                // Solde baissé des tickets achetés en attendant sa relecture (pas compté comme un gain)
                 if let Some(p) = ch.ch.se_points {
-                    ch.ch.se_points = Some((p - g.cost).max(0));
-                    let _ = self.app.db.set_se_points(ch.ch.id, (p - g.cost).max(0));
+                    let left = (p - g.cost * count).max(0);
+                    ch.ch.se_points = Some(left);
+                    let _ = self.app.db.set_se_points(ch.ch.id, left);
                 }
                 let _ = self.app.db.set_se_tickets(self.account.id, &g.id, total);
                 crate::giveaways::refresh_view(&self.app);
                 let max = g.max_tickets.map(|m| format!("/{m}")).unwrap_or_default();
-                self.app.log(&self.account.login, EventKind::Info, format!("Achat automatique : 1 ticket sur {login} ({total}{max})"));
+                self.app.log(&self.account.login, EventKind::Info, format!("Achat automatique : {count} ticket(s) sur {login} ({total}{max})"));
                 self.publish();
             }
             Err(SeError::Unauthorized) => {
@@ -1310,6 +1329,21 @@ fn reason_label(reason: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn auto_buy_counts() {
+        // 100 points, ticket à 30, 5 au plus, 1 déjà : 3 achetés d'un coup
+        assert_eq!(super::auto_buy_count(30, Some(100), Some(5), Some(1)), 3);
+        // Limité par le maximum
+        assert_eq!(super::auto_buy_count(10, Some(1000), Some(5), Some(3)), 2);
+        // Au maximum, solde insuffisant, tickets inconnus ou gratuit : rien
+        assert_eq!(super::auto_buy_count(10, Some(1000), Some(5), Some(5)), 0);
+        assert_eq!(super::auto_buy_count(30, Some(20), Some(5), Some(0)), 0);
+        assert_eq!(super::auto_buy_count(30, Some(100), Some(5), None), 0);
+        assert_eq!(super::auto_buy_count(0, Some(100), None, None), 0);
+        // Sans maximum : tout ce que le solde permet
+        assert_eq!(super::auto_buy_count(30, Some(100), None, None), 3);
+    }
+
     use super::*;
 
     #[test]

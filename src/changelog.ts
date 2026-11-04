@@ -14,6 +14,17 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.5',
+    date: '2026-11-04',
+    title: 'Campagnes de drops ignorées et achat auto en une fois',
+    changes: [
+      { kind: 'new', text: 'Page Drops : bouton « Ignorer » sur chaque campagne. Une campagne ignorée n\'est plus regardée ni réclamée, ne déclenche plus de notification et disparaît de la liste et du téléphone. La case « Afficher les ignorées » les fait réapparaître, avec un bouton « Rétablir ».' },
+      { kind: 'improved', text: 'StreamElements, « Achat auto » : tous les tickets que ton solde permet sont achetés en une fois, sans dépasser le maximum par personne. Une fois ce maximum atteint, plus aucune requête n\'est faite pour ce giveaway. Sans maximum fixé par le streamer, tout le solde possible est utilisé.' },
+      { kind: 'improved', text: 'Drops : un jeu n\'est plus marqué « Terminé » quand une autre de ses campagnes a encore des drops à obtenir.' },
+      { kind: 'improved', text: 'Page Alertes : quand la commande d\'un giveaway est connue, une petite icône à côté ouvre aussi le lien du giveaway.' }
+    ]
+  },
+  {
     version: '0.48.4',
     date: '2026-11-04',
     changes: [

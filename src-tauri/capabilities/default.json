@@ -25,6 +25,7 @@
     "allow-remove-channel",
     "allow-reorder-channels",
     "allow-set-se-auto-buy",
+    "allow-set-drop-campaign-ignored",
     "allow-set-channel-options",
     "allow-set-paused",
     "allow-get-settings",

@@ -190,6 +190,18 @@ pub fn remove_channel(app: AppState, id: i64, list: ChannelList) -> CmdResult<()
     Ok(())
 }
 
+/// Campagne de drops ignorée (ou rétablie) pour un compte : ni regardée, ni réclamée, ni annoncée
+#[tauri::command]
+pub fn set_drop_campaign_ignored(app: AppState, account_id: i64, campaign_id: String, ignored: bool) -> CmdResult<()> {
+    let campaign_id = campaign_id.trim();
+    if campaign_id.is_empty() || campaign_id.len() > 100 {
+        return Err("Campagne invalide".into());
+    }
+    app.db.set_drop_campaign_ignored(account_id, campaign_id, ignored).map_err(db_err)?;
+    app.send(account_id, MinerCommand::Reload);
+    Ok(())
+}
+
 /// Achat automatique des tickets StreamElements d'une chaîne (un ticket dès que le solde le permet)
 #[tauri::command]
 pub fn set_se_auto_buy(app: AppState, id: i64, enabled: bool) -> CmdResult<()> {

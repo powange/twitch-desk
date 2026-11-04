@@ -518,9 +518,15 @@ function share(g: GiveawayView) {
                   <UTooltip v-if="g.command" text="Copier la commande">
                     <button type="button" class="font-mono hover:text-primary" @click="copyCommand(g.command)">{{ g.command }}</button>
                   </UTooltip>
-                  <button v-else-if="g.url" class="text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
-                  <span v-else-if="g.rewardName">{{ g.rewardName }}<template v-if="g.rewardCost !== null"> ({{ g.rewardCost }} pts)</template></span>
-                  <span v-else class="text-muted">—</span>
+                  <!-- Commande connue : le lien du giveaway reste à côté -->
+                  <UTooltip v-if="g.command && g.url" text="Ouvrir le giveaway">
+                    <button type="button" class="text-primary inline-flex" :aria-label="`Ouvrir le giveaway de ${g.channel}`" @click="openExternal(g.url)">
+                      <UIcon name="i-lucide-external-link" class="size-3.5" />
+                    </button>
+                  </UTooltip>
+                  <button v-else-if="!g.command && g.url" class="text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
+                  <span v-else-if="!g.command && g.rewardName">{{ g.rewardName }}<template v-if="g.rewardCost !== null"> ({{ g.rewardCost }} pts)</template></span>
+                  <span v-else-if="!g.command" class="text-muted">—</span>
                   <UPopover :open="editingCommand === g.id" @update:open="(v: boolean) => { if (!v) editingCommand = null }">
                     <UButton
                       icon="i-lucide-pencil"

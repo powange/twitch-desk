@@ -68,9 +68,18 @@ const { grabbed, dragging, ordered: orderedGames, onDragStart, onDragOver, onDro
 )
 
 // --- Campagnes ---
+// Campagnes ignorées : cachées, sauf si on demande à les voir (pour les rétablir)
+const ignoredIds = computed(() => new Set(drops.value?.ignoredCampaigns ?? []))
+const ignoredCount = computed(() => (drops.value?.campaigns ?? []).filter(c => ignoredIds.value.has(c.id)).length)
+const showIgnored = ref(false)
+function setIgnored(c: DropCampaign, ignored: boolean) {
+  const a = account.value
+  if (!a) return
+  void run(`ignore-${c.id}`, ignored ? 'Campagne non ignorée' : 'Campagne non rétablie', () => invoke('set_drop_campaign_ignored', { accountId: a.id, campaignId: c.id, ignored }))
+}
 // Campagne regardée en premier, puis les autres
 const campaigns = computed(() => {
-  const list = drops.value?.campaigns ?? []
+  const list = (drops.value?.campaigns ?? []).filter(c => showIgnored.value || !ignoredIds.value.has(c.id))
   const id = drops.value?.target?.campaignId
   return id ? [...list].sort((a, b) => Number(b.id === id) - Number(a.id === id)) : list
 })
@@ -263,13 +272,17 @@ function refreshDrops() {
           <UTooltip text="La progression avance en direct ; l'inventaire complet est relu toutes les 10 minutes">
             <span v-if="drops.inventoryAt" class="text-xs text-muted">Inventaire relu à {{ new Date(drops.inventoryAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) }}</span>
           </UTooltip>
+          <UCheckbox v-if="ignoredCount" v-model="showIgnored" :label="`Afficher les ignorées (${ignoredCount})`" size="sm" />
           <UButton label="Relire maintenant" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="busy('refresh')" @click="refreshDrops" />
         </div>
-        <p v-if="campaigns.length === 0" class="text-sm text-muted">
+        <p v-if="campaigns.length === 0 && ignoredCount" class="text-sm text-muted">
+          Toutes les campagnes connues sont ignorées.
+        </p>
+        <p v-else-if="campaigns.length === 0" class="text-sm text-muted">
           Aucune campagne connue pour l'instant. Elles apparaissent à la lecture de l'inventaire Twitch.
         </p>
 
-        <div v-for="campaign in campaigns" :key="campaign.id" class="border rounded-lg overflow-hidden" :class="campaign.id === targetCampaign?.id ? 'border-success/60 ring-1 ring-success/40' : 'border-default'">
+        <div v-for="campaign in campaigns" :key="campaign.id" class="border rounded-lg overflow-hidden" :class="[campaign.id === targetCampaign?.id ? 'border-success/60 ring-1 ring-success/40' : 'border-default', ignoredIds.has(campaign.id) ? 'opacity-60' : '']">
           <div class="flex items-center gap-3 px-4 py-3 bg-elevated/40 border-b border-default flex-wrap">
             <img :src="boxArt(campaign.game.boxArt, campaign.game.id)" alt="" class="w-8 h-11 rounded object-cover bg-elevated">
             <div class="flex-1 min-w-0">
@@ -291,6 +304,28 @@ function refreshDrops() {
               icon="i-lucide-plus"
               :loading="adding"
               @click="addGame(categoryUrl(campaign.game.slug) ?? '')"
+            />
+            <UButton
+              v-if="ignoredIds.has(campaign.id)"
+              label="Rétablir"
+              size="xs"
+              color="neutral"
+              variant="soft"
+              icon="i-lucide-eye"
+              title="Campagne de nouveau suivie : regardée et réclamée si elle a des drops à obtenir"
+              :loading="busy(`ignore-${campaign.id}`)"
+              @click="setIgnored(campaign, false)"
+            />
+            <UButton
+              v-else
+              label="Ignorer"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              icon="i-lucide-eye-off"
+              title="Ni regardée, ni réclamée, ni annoncée ; cachée de cette liste et du téléphone"
+              :loading="busy(`ignore-${campaign.id}`)"
+              @click="setIgnored(campaign, true)"
             />
           </div>
           <table class="w-full text-sm">

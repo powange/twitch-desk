@@ -1761,7 +1761,7 @@ fn phone_drops(views: &[crate::app::AccountView]) -> Value {
         .map(|a| {
             let d = &a.drops;
             let watched = d.target.as_ref().and_then(|t| t.campaign_id.as_deref());
-            let mut campaigns: Vec<&crate::drops::Campaign> = d.campaigns.iter().filter(|c| c.active()).collect();
+            let mut campaigns: Vec<&crate::drops::Campaign> = d.campaigns.iter().filter(|c| c.active() && !d.ignored_campaigns.contains(&c.id)).collect();
             campaigns.sort_by_key(|c| (Some(c.id.as_str()) != watched, !c.unfinished()));
             let campaigns: Vec<Value> = campaigns
                 .into_iter()

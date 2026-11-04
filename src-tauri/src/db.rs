@@ -425,6 +425,13 @@ const MIGRATIONS: &[&str] = &[r#"
     UPDATE giveaways SET follow_min_secs = follow_min_secs * 86400 WHERE follow_min_secs IS NOT NULL;
     ALTER TABLE streamers RENAME COLUMN follow_min_days TO follow_min_secs;
     UPDATE streamers SET follow_min_secs = follow_min_secs * 86400 WHERE follow_min_secs IS NOT NULL;
+"#, r#"
+    -- Campagnes de drops ignorées par compte : ni regardées, ni réclamées, ni affichées
+    CREATE TABLE ignored_drop_campaigns (
+        account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        campaign_id TEXT NOT NULL,
+        PRIMARY KEY (account_id, campaign_id)
+    );
 "#];
 
 /// Types de giveaway
@@ -1130,6 +1137,23 @@ impl Db {
             conn.query_row("SELECT account_id FROM drop_games WHERE id = ?1", [id], |r| r.get(0)).optional()?;
         conn.execute("DELETE FROM drop_games WHERE id = ?1", [id])?;
         Ok(account)
+    }
+
+    pub fn ignored_drop_campaigns(&self, account_id: i64) -> DbResult<std::collections::HashSet<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT campaign_id FROM ignored_drop_campaigns WHERE account_id = ?1")?;
+        let rows = stmt.query_map([account_id], |r| r.get(0))?;
+        rows.collect()
+    }
+
+    pub fn set_drop_campaign_ignored(&self, account_id: i64, campaign_id: &str, ignored: bool) -> DbResult<()> {
+        let conn = self.conn();
+        if ignored {
+            conn.execute("INSERT OR IGNORE INTO ignored_drop_campaigns (account_id, campaign_id) VALUES (?1, ?2)", params![account_id, campaign_id])?;
+        } else {
+            conn.execute("DELETE FROM ignored_drop_campaigns WHERE account_id = ?1 AND campaign_id = ?2", params![account_id, campaign_id])?;
+        }
+        Ok(())
     }
 
     pub fn set_drop_game_enabled(&self, id: i64, enabled: bool) -> DbResult<Option<i64>> {
