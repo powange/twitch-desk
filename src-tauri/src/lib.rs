@@ -272,6 +272,7 @@ pub fn run() {
             commands::remove_channel,
             commands::reorder_channels,
             commands::set_se_auto_buy,
+            commands::set_se_auto_buy_max,
             commands::set_drop_campaign_ignored,
             commands::set_channel_options,
             commands::set_paused,

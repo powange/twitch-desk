@@ -62,6 +62,16 @@ const SE_LOYALTY_EVERY: Duration = Duration::from_secs(6 * 3600);
 const SE_AUTO_BUY_GAP: Duration = Duration::from_secs(20);
 const SE_AUTO_BUY_RETRY: Duration = Duration::from_secs(5 * 60);
 
+/// Maximum de tickets visé : le plus petit entre celui du giveaway (par personne) et le plafond
+/// choisi pour la chaîne (0 : sans plafond)
+fn auto_buy_max(per_person: Option<i64>, ours: i64) -> Option<i64> {
+    let ours = (ours > 0).then_some(ours);
+    match (per_person, ours) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// Tickets à acheter d'un coup : tout ce que le solde permet, sans dépasser le maximum par
 /// personne (nos tickets doivent alors être connus) ; 0 : rien à acheter
 fn auto_buy_count(cost: i64, points: Option<i64>, max: Option<i64>, mine: Option<i64>) -> i64 {
@@ -812,14 +822,15 @@ impl Miner {
             c.ch.se_auto_buy
                 && Self::se_ready(c).is_some()
                 && c.se_auto_buy_at.is_none_or(|t| now >= t)
-                && c.se_giveaway.as_ref().is_some_and(|g| auto_buy_count(g.cost, c.ch.se_points, g.max_tickets, c.se_my_tickets) > 0)
+                && c.se_giveaway.as_ref().is_some_and(|g| auto_buy_count(g.cost, c.ch.se_points, auto_buy_max(g.max_tickets, c.ch.se_auto_buy_max), c.se_my_tickets) > 0)
         }) else {
             return;
         };
         let se_id = Self::se_ready(&self.channels[i]).unwrap_or_default();
         let Some(g) = self.channels[i].se_giveaway.clone() else { return };
         let login = self.channels[i].ch.login.clone();
-        let count = auto_buy_count(g.cost, self.channels[i].ch.se_points, g.max_tickets, self.channels[i].se_my_tickets);
+        let cap = auto_buy_max(g.max_tickets, self.channels[i].ch.se_auto_buy_max);
+        let count = auto_buy_count(g.cost, self.channels[i].ch.se_points, cap, self.channels[i].se_my_tickets);
         self.channels[i].se_auto_buy_at = Some(now + SE_AUTO_BUY_GAP);
         let bought = match streamelements::enter(&self.app.http, &token, &se_id, &g.id, count).await {
             Ok(()) => streamelements::my_entry(&self.app.http, &token, &se_id, &g.id).await,
@@ -1294,6 +1305,7 @@ impl Miner {
                 profile_image: self.app.lives.avatar(&c.ch.login),
                 se_page: crate::streamelements::page_name(&c.ch.login),
                 se_auto_buy: c.ch.se_auto_buy,
+                se_auto_buy_max: c.ch.se_auto_buy_max,
             })
             .collect();
         self.app.set_view(AccountView {
@@ -1342,6 +1354,12 @@ mod tests {
         assert_eq!(super::auto_buy_count(0, Some(100), None, None), 0);
         // Sans maximum : tout ce que le solde permet
         assert_eq!(super::auto_buy_count(30, Some(100), None, None), 3);
+        // Plafond de la chaîne : le plus petit des deux, 0 sans plafond
+        assert_eq!(super::auto_buy_max(Some(10), 3), Some(3));
+        assert_eq!(super::auto_buy_max(Some(2), 3), Some(2));
+        assert_eq!(super::auto_buy_max(None, 4), Some(4));
+        assert_eq!(super::auto_buy_max(Some(10), 0), Some(10));
+        assert_eq!(super::auto_buy_max(None, 0), None);
     }
 
     use super::*;

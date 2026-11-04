@@ -84,6 +84,8 @@ pub struct ChannelView {
     pub se_page: String,
     /// Achat automatique d'un ticket du giveaway StreamElements dès que le solde le permet
     pub se_auto_buy: bool,
+    /// Tickets voulus au plus par l'achat automatique (0 : sans limite)
+    pub se_auto_buy_max: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

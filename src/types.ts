@@ -50,6 +50,8 @@ export interface ChannelView {
   sePage: string
   // Achat automatique d'un ticket du giveaway StreamElements dès que le solde le permet
   seAutoBuy: boolean
+  // Tickets voulus au plus par l'achat automatique (0 : sans limite)
+  seAutoBuyMax: number
 }
 
 export interface AccountView {

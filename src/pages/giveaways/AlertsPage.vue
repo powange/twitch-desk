@@ -228,6 +228,14 @@ async function openSeParticipation(g: GiveawayView, accountId: number) {
   }
   void router.push({ path: '/streamelements', query: { channels: g.channel } })
 }
+// Chaîne ajoutée à la page StreamElements d'un compte (ses points relevés), sans quitter la page
+function addToSe(g: GiveawayView, accountId: number) {
+  const login = accounts.value.find(a => a.id === accountId)?.login ?? ''
+  void run(`se-add-${g.id}-${accountId}`, 'Chaîne non ajoutée', async () => {
+    await invoke('add_channel', { accountId, login: g.channel, list: 'se' })
+    toast.add({ title: `${g.channel} ajoutée à la page StreamElements`, description: `Points relevés avec ${login}`, color: 'success', icon: 'i-lucide-check' })
+  })
+}
 // Giveaway StreamElements terminé : adresse de sa page sur StreamElements
 const seClosedUrl = (g: GiveawayView) => g.kind === 'streamelements' && g.status === 'closed' && g.url?.toLowerCase().startsWith('https://streamelements.com/') ? g.url : null
 
@@ -518,15 +526,9 @@ function share(g: GiveawayView) {
                   <UTooltip v-if="g.command" text="Copier la commande">
                     <button type="button" class="font-mono hover:text-primary" @click="copyCommand(g.command)">{{ g.command }}</button>
                   </UTooltip>
-                  <!-- Commande connue : le lien du giveaway reste à côté -->
-                  <UTooltip v-if="g.command && g.url" text="Ouvrir le giveaway">
-                    <button type="button" class="text-primary inline-flex" :aria-label="`Ouvrir le giveaway de ${g.channel}`" @click="openExternal(g.url)">
-                      <UIcon name="i-lucide-external-link" class="size-3.5" />
-                    </button>
-                  </UTooltip>
-                  <button v-else-if="!g.command && g.url" class="text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
-                  <span v-else-if="!g.command && g.rewardName">{{ g.rewardName }}<template v-if="g.rewardCost !== null"> ({{ g.rewardCost }} pts)</template></span>
-                  <span v-else-if="!g.command" class="text-muted">—</span>
+                  <button v-else-if="g.url" class="text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
+                  <span v-else-if="g.rewardName">{{ g.rewardName }}<template v-if="g.rewardCost !== null"> ({{ g.rewardCost }} pts)</template></span>
+                  <span v-else class="text-muted">—</span>
                   <UPopover :open="editingCommand === g.id" @update:open="(v: boolean) => { if (!v) editingCommand = null }">
                     <UButton
                       icon="i-lucide-pencil"
@@ -547,6 +549,8 @@ function share(g: GiveawayView) {
                     </template>
                   </UPopover>
                 </span>
+                <!-- Commande connue : le lien du giveaway en dessous (les deux informations) -->
+                <button v-if="g.command && g.url" type="button" class="block text-xs text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
               </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
@@ -566,10 +570,24 @@ function share(g: GiveawayView) {
                   <!-- StreamElements : giveaway clos → sa page sur StreamElements (navigateur) ; en cours
                        ou en pause → page StreamElements de l'application, filtrée sur la chaîne (la
                        chaîne y est d'abord ajoutée pour ce compte si elle n'y est pas) -->
+                  <template v-for="e in participationsOf(g)" :key="e.accountId">
+                  <!-- Giveaway StreamElements en cours, compte qui ne relève pas les points de la
+                       chaîne : l'ajouter à sa page StreamElements -->
+                  <UButton
+                    v-if="g.kind === 'streamelements' && !seClosedUrl(g) && !inSeList(e.accountId, g.channel)"
+                    :label="`${e.login} · ajouter à StreamElements`"
+                    icon="i-lucide-plus"
+                    size="xs"
+                    color="neutral"
+                    variant="outline"
+                    class="whitespace-nowrap"
+                    :loading="busy(`se-add-${g.id}-${e.accountId}`)"
+                    :title="`Relever les points StreamElements de ${g.channel} avec ${e.login} (page StreamElements), pour acheter des tickets`"
+                    @click="addToSe(g, e.accountId)"
+                  />
                   <component
                     :is="g.kind === 'streamelements' ? 'button' : 'span'"
-                    v-for="e in participationsOf(g)"
-                    :key="e.accountId"
+                    v-else
                     v-bind="g.kind === 'streamelements' ? { type: 'button' } : {}"
                     :title="seClosedUrl(g) ? 'Voir ce giveaway sur StreamElements (navigateur)' : g.kind === 'streamelements' ? (inSeList(e.accountId, g.channel) ? 'Voir sur la page StreamElements' : 'Ajouter la chaîne à la page StreamElements de ce compte') : undefined"
                     @click="g.kind === 'streamelements' && openSeParticipation(g, e.accountId)"
@@ -586,6 +604,7 @@ function share(g: GiveawayView) {
                       :title="e.tickets === 0 ? 'Aucun ticket pour ce compte' : e.tickets !== null ? 'Tickets StreamElements relevés sur StreamElements' : e.auto ? 'Participation automatique' : 'Participation envoyée par l\'application'"
                     />
                   </component>
+                  </template>
                   <span v-if="participationsOf(g).length === 0" class="text-muted">—</span>
                 </div>
               </td>

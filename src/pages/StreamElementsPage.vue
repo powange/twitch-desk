@@ -88,10 +88,24 @@ function status(channel: ChannelView): { label: string, color: 'success' | 'warn
   return { label: 'En live', color: 'success' }
 }
 
+// Plafond de l'achat automatique, enregistré après la saisie (pas à chaque chiffre)
+const autoBuyMaxTimers = new Map<number, ReturnType<typeof setTimeout>>()
+function setAutoBuyMax(channel: ChannelView, value: number | null) {
+  const max = Math.max(0, Math.round(value ?? 0))
+  clearTimeout(autoBuyMaxTimers.get(channel.id))
+  autoBuyMaxTimers.set(channel.id, setTimeout(async () => {
+    autoBuyMaxTimers.delete(channel.id)
+    try {
+      await invoke('set_se_auto_buy_max', { id: channel.id, max })
+    } catch (e) {
+      toast.add({ title: 'Plafond non enregistré', description: String(e), color: 'error' })
+    }
+  }, 600))
+}
 async function setAutoBuy(channel: ChannelView, enabled: boolean) {
   try {
     await invoke('set_se_auto_buy', { id: channel.id, enabled })
-    if (enabled) toast.add({ title: `Achat automatique activé sur ${channel.login}`, description: 'Un ticket dès que le solde le permet, jusqu\'au maximum par personne.', color: 'success', icon: 'i-lucide-ticket' })
+    if (enabled) toast.add({ title: `Achat automatique activé sur ${channel.login}`, description: 'Tous les tickets que le solde permet, en une fois, jusqu\'au maximum par personne ou au plafond choisi (0 : sans limite).', color: 'success', icon: 'i-lucide-ticket' })
   } catch (e) {
     toast.add({ title: 'Réglage non enregistré', description: String(e), color: 'error' })
   }
@@ -409,7 +423,7 @@ function affordable(channel: ChannelView): number | null {
               </td>
               <!-- Achat automatique : réglage de la chaîne, gardé d'un giveaway à l'autre -->
               <td class="px-1.5 py-2">
-                <div class="flex justify-center">
+                <div class="flex flex-col items-center gap-1">
                   <USwitch
                     v-if="account.seAccount === 'connected'"
                     :model-value="channel.seAutoBuy"
@@ -417,6 +431,18 @@ function affordable(channel: ChannelView): number | null {
                     @update:model-value="v => setAutoBuy(channel, v)"
                   />
                   <span v-else class="text-muted">—</span>
+                  <!-- Plafond : tickets voulus au plus sur un giveaway (0 : sans limite) -->
+                  <UInputNumber
+                    v-if="account.seAccount === 'connected' && channel.seAutoBuy"
+                    :model-value="channel.seAutoBuyMax"
+                    :min="0"
+                    :max="100000"
+                    size="xs"
+                    class="w-24"
+                    :aria-label="`Tickets au plus sur ${channel.login} (0 : sans limite)`"
+                    :title="channel.seAutoBuyMax ? `${channel.seAutoBuyMax} tickets au plus par giveaway (et jamais plus que le maximum par personne)` : 'Sans limite : jusqu\'au maximum par personne, ou tout le solde si le giveaway n\'en a pas. 0 : sans limite'"
+                    @update:model-value="v => setAutoBuyMax(channel, v)"
+                  />
                 </div>
               </td>
               <td class="px-1.5 py-2">

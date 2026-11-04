@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.6',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'new', text: 'StreamElements, « Achat auto » : sous l\'interrupteur, un plafond de tickets à ne pas dépasser sur un giveaway (0 : sans limite). Il s\'ajoute au maximum par personne fixé par le streamer : c\'est le plus petit des deux qui compte.' },
+      { kind: 'improved', text: 'Page Alertes : la commande d\'un giveaway s\'affiche avec, juste en dessous, le lien du giveaway.' },
+      { kind: 'new', text: 'Page Alertes, colonne Participations d\'un giveaway StreamElements en cours : pour un compte qui ne relève pas encore les points StreamElements de la chaîne, un bouton l\'ajoute à sa page StreamElements. Sinon, ses tickets sont affichés (0 s\'il n\'en a pas encore acheté).' }
+    ]
+  },
+  {
     version: '0.48.5',
     date: '2026-11-04',
     title: 'Campagnes de drops ignorées et achat auto en une fois',

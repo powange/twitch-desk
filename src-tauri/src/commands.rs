@@ -202,6 +202,19 @@ pub fn set_drop_campaign_ignored(app: AppState, account_id: i64, campaign_id: St
     Ok(())
 }
 
+/// Plafond de l'achat automatique StreamElements d'une chaîne (tickets voulus au plus, 0 : sans limite)
+#[tauri::command]
+pub fn set_se_auto_buy_max(app: AppState, id: i64, max: i64) -> CmdResult<()> {
+    if !(0..=100_000).contains(&max) {
+        return Err("Plafond invalide (0 à 100 000 tickets)".into());
+    }
+    app.db.set_se_auto_buy_max(id, max).map_err(db_err)?;
+    if let Some(account) = app.db.channel_account(id).map_err(db_err)? {
+        app.send(account, MinerCommand::Reload);
+    }
+    Ok(())
+}
+
 /// Achat automatique des tickets StreamElements d'une chaîne (un ticket dès que le solde le permet)
 #[tauri::command]
 pub fn set_se_auto_buy(app: AppState, id: i64, enabled: bool) -> CmdResult<()> {
