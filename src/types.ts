@@ -343,6 +343,9 @@ export interface GiveawayView extends GiveawayDetails {
   // Lot d'un giveaway gagné
   prizeReceived: boolean
   prizeNote: string | null
+  // Masqué sur ce PC : ni affiché (sauf « Afficher les masqués »), ni alerte, ni participation
+  // ou achat automatique
+  hidden: boolean
   command: string | null
   url: string | null
   detectedAt: string

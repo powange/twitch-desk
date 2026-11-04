@@ -330,6 +330,7 @@ pub fn run() {
             commands::set_giveaway_command,
             commands::get_chat_log_meta,
             commands::chat_pinned_message,
+            commands::set_giveaway_hidden,
             commands::get_chat_log_sections,
             commands::set_manual_winner,
             commands::clear_giveaway_winner,

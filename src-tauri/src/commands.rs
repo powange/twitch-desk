@@ -632,6 +632,21 @@ pub fn get_chat_log_meta(app: AppState, channel: String) -> CmdResult<ChatLogMet
     })
 }
 
+/// Masque (ou ré-affiche) un giveaway sur ce PC : ni affiché, ni alerte, ni participation ou
+/// achat automatique ; le streamer reste suivi
+#[tauri::command]
+pub fn set_giveaway_hidden(app: AppState, id: i64, hidden: bool) -> CmdResult<()> {
+    if !app.db.set_giveaway_hidden(id, hidden).map_err(db_err)? {
+        return Err("Ce giveaway n'existe plus".into());
+    }
+    // Masqué : sort aussi de la file d'alertes
+    if hidden {
+        let _ = app.db.set_giveaway_handled(id);
+    }
+    app.giveaways.send(MonitorCmd::Republish);
+    Ok(())
+}
+
 /// Message épinglé du chat d'une chaîne, relu sur Twitch (journal du chat)
 #[tauri::command]
 pub async fn chat_pinned_message(app: AppState<'_>, channel: String) -> CmdResult<Option<crate::db::PinnedMessageRow>> {

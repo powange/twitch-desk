@@ -24,6 +24,7 @@ import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
 import ConditionCells from '../../components/conditions/ConditionCells.vue'
 import { useConditionActions } from '../../composables/useConditionActions'
 import { useAction } from '../../composables/useAction'
+import { usePersisted } from '../../composables/usePersisted'
 
 const { snapshot, accounts } = useSnapshot()
 const toast = useToast()
@@ -33,13 +34,19 @@ const watchStream = useWatchStream()
 
 const view = computed(() => snapshot.value?.giveaways)
 const giveaways = computed(() => view.value?.giveaways ?? [])
+// Giveaways en cours masqués : affichés seulement avec « Afficher les masqués » (retenu sur ce poste)
+const showHidden = usePersisted('alerts.showHidden', false)
+const current = computed(() => [...giveaways.value.filter(g => g.status === 'open'), ...giveaways.value.filter(g => g.status === 'paused')])
+const hiddenCount = computed(() => current.value.filter(g => g.hidden).length)
 // Deux tableaux : en cours (ouverts, puis en pause) et passés (terminés)
 const tables = computed(() => [
   {
     key: 'current',
     title: 'Giveaways en cours',
-    list: [...giveaways.value.filter(g => g.status === 'open'), ...giveaways.value.filter(g => g.status === 'paused')],
-    empty: 'Aucun giveaway en cours. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».'
+    list: showHidden.value ? current.value : current.value.filter(g => !g.hidden),
+    empty: hiddenCount.value
+      ? `Aucun giveaway en cours affiché (${hiddenCount.value} masqué${hiddenCount.value > 1 ? 's' : ''}).`
+      : 'Aucun giveaway en cours. Ils apparaissent à la détection, ou avec « Nouveau giveaway ».'
   },
   {
     key: 'past',
@@ -143,6 +150,9 @@ const cond = useConditionActions(() => [
 const { run, busy } = useAction()
 const dismiss = (g: GiveawayView) => run(`dismiss-${g.id}`, 'Alerte non ignorée', () => invoke('dismiss_giveaway', { id: g.id }))
 const dismissMention = (id: number) => run(`mention-${id}`, 'Mention non marquée comme vue', () => invoke('dismiss_mention', { id }))
+// Masqué : ce giveaway seulement (le streamer reste suivi), plus d'alerte ni d'automatisme
+const setHidden = (g: GiveawayView, hidden: boolean) =>
+  run(`hide-${g.id}`, hidden ? 'Giveaway non masqué' : 'Giveaway toujours masqué', () => invoke('set_giveaway_hidden', { id: g.id, hidden }))
 const closeGiveaway = (g: GiveawayView) => run(`close-${g.id}`, 'Giveaway non clos', () => invoke('close_giveaway', { id: g.id }))
 const toDelete = ref<GiveawayView | null>(null)
 async function confirmDelete() {
@@ -190,7 +200,7 @@ async function saveCommand(g: GiveawayView) {
 
 const mentions = computed(() => view.value?.mentions ?? [])
 // File d'alertes : giveaways ouverts (pas en pause) pas encore traités, et mentions
-const alerts = computed(() => giveaways.value.filter(g => g.open && !g.handled))
+const alerts = computed(() => giveaways.value.filter(g => g.open && !g.handled && !g.hidden))
 
 // Rafraîchit les « il y a … »
 const now = ref(Date.now())
@@ -533,6 +543,12 @@ function share(g: GiveawayView) {
         <span class="flex-1" />
         <!-- Giveaways en cours : statut live et giveaways StreamElements relus ; passés : relus -->
         <RefreshButton :action="() => group.key === 'past' ? loadPast() : invoke('refresh_giveaways')" />
+        <UCheckbox
+          v-if="group.key === 'current' && (hiddenCount || showHidden)"
+          v-model="showHidden"
+          :label="`Afficher les masqués (${hiddenCount})`"
+          size="sm"
+        />
         <template v-if="group.key === 'past'">
           <UButton v-if="pastFilterCount" label="Effacer les filtres" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" @click="pastFilter = emptyPastFilter()" />
           <UButton
@@ -568,7 +584,7 @@ function share(g: GiveawayView) {
               v-for="g in group.list"
               :key="g.id"
               class="border-t border-default"
-              :class="[g.winnerOurs ? 'bg-success/10' : hasFavorite(g) ? 'bg-primary/5' : '', hasFavorite(g) ? 'shadow-[inset_3px_0_0_var(--ui-primary)]' : '']"
+              :class="[g.winnerOurs ? 'bg-success/10' : hasFavorite(g) ? 'bg-primary/5' : '', hasFavorite(g) ? 'shadow-[inset_3px_0_0_var(--ui-primary)]' : '', g.hidden && g.status !== 'closed' ? 'opacity-50' : '']"
             >
               <td class="px-3 py-2 whitespace-nowrap text-muted">{{ timeAgo(g.detectedAt, now) }}</td>
               <td class="px-2 py-2">
@@ -712,6 +728,17 @@ function share(g: GiveawayView) {
                   />
                   <UButton icon="i-lucide-scroll-text" size="xs" color="neutral" variant="ghost" :aria-label="`Journal du chat de ${g.channel}`" title="Journal du chat (pendant ce giveaway)" @click="openLog(g.channel, g.id)" />
                   <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
+                  <UButton
+                    v-if="g.status !== 'closed'"
+                    :icon="g.hidden ? 'i-lucide-eye' : 'i-lucide-eye-off'"
+                    size="xs"
+                    color="neutral"
+                    variant="ghost"
+                    :aria-label="g.hidden ? 'Ne plus masquer' : 'Masquer'"
+                    :title="g.hidden ? 'Ne plus masquer ce giveaway' : 'Masquer ce giveaway : plus d\'alerte ni de participation automatique (le streamer reste suivi)'"
+                    :loading="busy(`hide-${g.id}`)"
+                    @click="setHidden(g, !g.hidden)"
+                  />
                   <UButton v-if="g.status !== 'closed'" label="Clore" size="xs" color="neutral" variant="ghost" :loading="busy(`close-${g.id}`)" @click="closeGiveaway(g)" />
                   <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" aria-label="Supprimer" @click="toDelete = g" />
                 </div>

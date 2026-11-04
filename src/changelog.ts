@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.26',
+    date: '2026-11-04',
+    title: 'Masquer un giveaway en cours',
+    changes: [
+      { kind: 'new', text: 'Giveaways en cours : bouton « Masquer » (œil barré) sur chaque giveaway. Masqué, il disparaît de la liste, ne donne plus d\'alerte (carte, notification du PC et du téléphone), et ni la participation automatique ni l\'achat automatique de tickets StreamElements ne s\'en occupent. Seul ce giveaway est concerné : le streamer reste suivi.' },
+      { kind: 'new', text: 'Case « Afficher les masqués » au-dessus des giveaways en cours, pour les revoir (grisés) et les remettre avec « Ne plus masquer ». Le masquage reste propre à ce PC.' }
+    ]
+  },
+  {
     version: '0.48.25',
     date: '2026-11-04',
     title: 'Message épinglé gardé, cadeaux sur la page StreamElements',

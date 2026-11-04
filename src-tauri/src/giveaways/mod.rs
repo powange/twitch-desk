@@ -479,7 +479,7 @@ impl Monitor {
         let due: Vec<(GiveawayRow, i64)> = self
             .open
             .iter()
-            .filter(|g| g.open && !g.reminded && g.details.require_presence == Some(true))
+            .filter(|g| g.open && !g.reminded && !g.hidden && g.details.require_presence == Some(true))
             .cloned()
             .filter_map(|g| {
                 let at = chrono::DateTime::parse_from_rfc3339(g.details.draw_at.as_deref()?).ok()?.with_timezone(&chrono::Utc);
@@ -1236,7 +1236,9 @@ impl Monitor {
         if let Some(g) = waiting {
             if self.app.db.set_giveaway_command_if_unknown(g.id, &command).unwrap_or(false) {
                 self.app.log("giveaways", EventKind::Giveaway, format!("Commande trouvée pour le giveaway de {channel} : {command}"));
-                self.app.notify(Alert::Giveaway, &format!("Commande trouvée sur {channel}"), &format!("Le giveaway attend {command}"));
+                if !g.hidden {
+                    self.app.notify(Alert::Giveaway, &format!("Commande trouvée sur {channel}"), &format!("Le giveaway attend {command}"));
+                }
                 self.publish();
                 schedule_auto_participation(self.app.clone(), g.id);
             }
@@ -1251,7 +1253,9 @@ impl Monitor {
                 return;
             }
             self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway de {channel} repris : {command} de nouveau dans le chat"));
-            self.app.notify(Alert::Giveaway, &format!("Giveaway repris sur {channel}"), &format!("Commande {command} de nouveau reprise par le chat"));
+            if !g.hidden {
+                self.app.notify(Alert::Giveaway, &format!("Giveaway repris sur {channel}"), &format!("Commande {command} de nouveau reprise par le chat"));
+            }
             self.publish();
             // Comptes déjà inscrits : pas de nouvel envoi
             schedule_auto_participation(self.app.clone(), g.id);
@@ -1797,6 +1801,10 @@ pub async fn participate(app: &Arc<App>, giveaway_id: i64, account_ids: &[i64], 
     if giveaway.status == "closed" {
         return Err("Ce giveaway est terminé".into());
     }
+    // Masqué : plus de participation automatique (à la main, toujours permise)
+    if auto && giveaway.hidden {
+        return Err("Giveaway masqué : pas de participation automatique".into());
+    }
     let command = match (giveaway.kind.as_str(), giveaway.command.clone()) {
         ("streamelements", _) => return Err("Giveaway StreamElements : les tickets s'achètent depuis la page StreamElements".into()),
         // Des points sont dépensés : jamais d'achat automatique
@@ -2000,7 +2008,7 @@ fn schedule_auto_participation(app: Arc<App>, giveaway_id: i64) {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_secs(delay)).await;
             // Mis en pause ou désactivé entre-temps : on n'envoie rien
-            if app.is_paused() || !app.db.settings().auto_participate {
+            if app.is_paused() || !app.db.settings().auto_participate || app.db.giveaway_hidden(giveaway_id) {
                 return;
             }
             if let Err(e) = participate(&app, giveaway_id, &[id], true).await {

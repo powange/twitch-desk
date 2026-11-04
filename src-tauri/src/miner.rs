@@ -825,6 +825,8 @@ impl Miner {
                 && Self::se_ready(c).is_some()
                 && c.se_auto_buy_at.is_none_or(|t| now >= t)
                 && c.se_giveaway.as_ref().is_some_and(|g| auto_buy_count(g.cost, c.ch.se_points, auto_buy_max(g.max_tickets, c.ch.se_auto_buy_max), c.se_my_tickets) > 0)
+                // Giveaway masqué sur ce PC : pas d'achat automatique
+                && !c.se_giveaway.as_ref().is_some_and(|g| self.app.db.se_giveaway_hidden(&g.id))
         }) else {
             return;
         };

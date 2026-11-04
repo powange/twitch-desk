@@ -448,6 +448,10 @@ const MIGRATIONS: &[&str] = &[r#"
         updated_at TEXT NOT NULL,
         seen_at TEXT NOT NULL
     );
+"#, r#"
+    -- Giveaway masqué sur ce PC (jamais synchronisé) : ni affiché, ni alerte, ni participation
+    -- ou achat automatique
+    ALTER TABLE giveaways ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
 "#];
 
 /// Message épinglé gardé ; `current` : relu sur Twitch à l'instant (sinon dernière version vue)
@@ -781,6 +785,9 @@ pub struct GiveawayRow {
     /// Rappel « présence au tirage » déjà envoyé
     #[serde(skip)]
     pub reminded: bool,
+    /// Masqué sur ce PC : ni affiché (sauf « Afficher les masqués »), ni alerte, ni
+    /// participation ou achat automatique
+    pub hidden: bool,
 }
 
 /// Informations d'un giveaway au-delà de sa détection (renseignées à la main ou par les bots)
@@ -1655,7 +1662,7 @@ impl Db {
                     ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                     require_follow, require_presence, require_discord, notes, manual, reminded,
                     prize_received, prize_note, require_greeting, min_chat_minutes, follow_min_secs, winners,
-                    winner_chances
+                    winner_chances, hidden
              FROM giveaways {filter}"
         ))?;
         let mut rows: Vec<GiveawayRow> = stmt
@@ -1697,6 +1704,7 @@ impl Db {
                     gift_ids: vec![],
                     prize_received: r.get(23)?,
                     prize_note: r.get(24)?,
+                    hidden: r.get(30)?,
                 })
             })?
             .collect::<DbResult<_>>()?;
@@ -2088,6 +2096,26 @@ impl Db {
         )?;
         conn.execute("UPDATE giveaways SET handled = 1 WHERE id = ?1", [giveaway_id])?;
         Ok(())
+    }
+
+    pub fn set_giveaway_hidden(&self, id: i64, hidden: bool) -> DbResult<bool> {
+        Ok(self.conn().execute("UPDATE giveaways SET hidden = ?2 WHERE id = ?1", params![id, hidden])? > 0)
+    }
+
+    pub fn giveaway_hidden(&self, id: i64) -> bool {
+        self.conn().query_row("SELECT hidden FROM giveaways WHERE id = ?1", [id], |r| r.get(0)).unwrap_or(false)
+    }
+
+    /// Giveaway StreamElements (identifiant de son lien) masqué sur ce PC
+    pub fn se_giveaway_hidden(&self, se_id: &str) -> bool {
+        self.conn()
+            .query_row(
+                "SELECT 1 FROM giveaways WHERE hidden = 1 AND kind = 'streamelements'
+                     AND (url LIKE '%/giveaway/' || ?1 OR url LIKE '%/giveaway/' || ?1 || '/%' OR url LIKE '%/giveaway/' || ?1 || '?%')",
+                [se_id],
+                |_| Ok(()),
+            )
+            .is_ok()
     }
 
     pub fn set_giveaway_handled(&self, id: i64) -> DbResult<()> {
@@ -2864,6 +2892,28 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!((all[&(a, "g1".to_owned())], all[&(b, "g2".to_owned())]), (8, 2));
         assert!(db.se_tickets_of(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn hidden_giveaway_stays_local() {
+        let db = Db::memory().unwrap();
+        let g = db
+            .insert_giveaway(&NewGiveaway {
+                channel: "caynai".into(),
+                kind: "streamelements".into(),
+                command: None,
+                url: Some("https://streamelements.com/caynai/giveaway/abc123".into()),
+                evidence: None,
+                detected_at: "2026-11-04T10:00:00Z".into(),
+            })
+            .unwrap();
+        assert!(!db.giveaway_hidden(g) && !db.se_giveaway_hidden("abc123"));
+        assert!(db.set_giveaway_hidden(g, true).unwrap());
+        assert!(db.giveaway(g).unwrap().unwrap().hidden);
+        assert!(db.se_giveaway_hidden("abc123") && !db.se_giveaway_hidden("abc"));
+        assert!(db.set_giveaway_hidden(g, false).unwrap());
+        assert!(!db.giveaway_hidden(g));
+        assert!(!db.set_giveaway_hidden(999, true).unwrap());
     }
 
     #[test]
