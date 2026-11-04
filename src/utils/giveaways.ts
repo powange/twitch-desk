@@ -11,6 +11,9 @@ export const GIVEAWAY_KIND: Record<GiveawayKind, { label: string, color: BadgeCo
   channelpoints: { label: 'Points de chaîne', color: 'secondary' }
 }
 
+// Giveaway Lingo Echo : par commande dans le chat, page sur lingo-echo.eu
+export const isLingoEcho = (url: string | null | undefined) => !!url && /^https:\/\/lingo-echo\.eu\//i.test(url)
+
 export const GIVEAWAY_KIND_ITEMS = (Object.keys(GIVEAWAY_KIND) as GiveawayKind[]).map(value => ({ label: GIVEAWAY_KIND[value].label, value }))
 
 export interface ParticipationCondition {

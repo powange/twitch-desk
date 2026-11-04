@@ -17,7 +17,7 @@ import ImportPastModal from '../../components/ImportPastModal.vue'
 import StreamerSelect from '../../components/StreamerSelect.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
-import { GIVEAWAY_KIND, GIVEAWAY_KIND_ITEMS, formatDrawAt } from '../../utils/giveaways'
+import { GIVEAWAY_KIND, GIVEAWAY_KIND_ITEMS, formatDrawAt, isLingoEcho } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
 import { useGiftPreview } from '../../composables/useGiftPreview'
 import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
@@ -363,6 +363,7 @@ function share(g: GiveawayView) {
             <span class="inline-flex items-center gap-0.5 text-error"><UIcon name="i-lucide-eye" class="size-3.5" />{{ formatNumber(liveOf(g.channel)?.viewers ?? 0) }}</span>
           </span>
           <UBadge :label="GIVEAWAY_KIND[g.kind].label" :color="GIVEAWAY_KIND[g.kind].color" variant="subtle" size="sm" />
+          <UBadge v-if="isLingoEcho(g.url)" label="Lingo Echo" color="success" variant="subtle" size="sm" />
           <UTooltip v-if="g.command" text="Copier la commande">
             <button type="button" class="font-mono bg-elevated px-1.5 py-0.5 rounded hover:text-primary" @click="copyCommand(g.command)">{{ g.command }}</button>
           </UTooltip>
@@ -567,6 +568,7 @@ function share(g: GiveawayView) {
               <td class="px-3 py-2">
                 <div class="flex items-center gap-1.5">
                   <UBadge :label="GIVEAWAY_KIND[g.kind].label" :color="GIVEAWAY_KIND[g.kind].color" variant="subtle" class="whitespace-nowrap" />
+                  <UBadge v-if="isLingoEcho(g.url)" label="Lingo Echo" color="success" variant="subtle" class="whitespace-nowrap" />
                   <!-- Ticket : usage unique ou multi-tickets -->
                   <GiveawayConditions v-if="g.kind === 'ticket' && g.ticketUnique !== null" :details="{ ...g, requireFollow: null, requirePresence: null, requireDiscord: null }" :kind="g.kind" />
                 </div>

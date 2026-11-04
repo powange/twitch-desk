@@ -1147,8 +1147,12 @@ impl Monitor {
         if !bots::is_bot_like(user_l) {
             return false;
         }
-        for event in bots::bot_events(user_l, text, privileged) {
+        let events = bots::bot_events(user_l, text, privileged);
+        let announces_winner = events.iter().any(|e| matches!(e, BotEvent::Winner { .. }));
+        for event in events {
             match event {
+                BotEvent::LingoEchoUrl(url) if monitored => self.on_lingo_echo_url(channel, &url, announces_winner),
+                BotEvent::LingoEchoUrl(_) => {}
                 BotEvent::Winner { bot, winner, chance } => self.on_winner(channel, &bot, &winner, chance.as_deref()),
                 BotEvent::StreamElementsUrl(url) if monitored => self.on_streamelements_url(channel, &url),
                 BotEvent::StreamElementsUrl(_) => {}
@@ -1234,6 +1238,49 @@ impl Monitor {
         self.gifts_from_known_replies(channel);
         self.publish();
         schedule_auto_participation(self.app.clone(), id);
+    }
+
+    /// Lien Lingo Echo posté par son bot (participation par commande dans le chat) : noté sur le
+    /// giveaway par commande en cours de la chaîne, sinon nouveau giveaway par commande qui
+    /// attend sa commande (remplie par la détection). Jamais créé depuis l'annonce du gagnant
+    /// ni juste après un tirage (le lien y est repris)
+    fn on_lingo_echo_url(&mut self, channel: &str, url: &str, announces_winner: bool) {
+        let open: Vec<GiveawayRow> = self.open_giveaways(channel).into_iter().filter(|g| matches!(g.kind.as_str(), "command" | "ticket")).collect();
+        if open.iter().any(|g| g.url.as_deref().is_some_and(|u| u.eq_ignore_ascii_case(url))) {
+            return;
+        }
+        if let Some(g) = open.iter().find(|g| g.url.as_deref().unwrap_or("").is_empty()) {
+            if self.app.db.set_giveaway_url_if_unknown(g.id, url).unwrap_or(false) {
+                self.publish();
+            }
+            return;
+        }
+        if announces_winner || !open.is_empty() {
+            return;
+        }
+        let since = (chrono::Utc::now() - MORE_WINNERS_WITHIN).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        if self.app.db.recent_drawn_giveaway(channel, &since).ok().flatten().is_some() {
+            return;
+        }
+        let id = match self.app.db.insert_giveaway(&NewGiveaway {
+            channel: channel.to_owned(),
+            kind: "command".into(),
+            command: None,
+            url: Some(url.to_owned()),
+            evidence: None,
+            detected_at: now_rfc3339(),
+        }) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("giveaway Lingo Echo non enregistré : {e}");
+                return;
+            }
+        };
+        let _ = self.app.db.apply_streamer_conditions(id);
+        self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway Lingo Echo sur {channel}"));
+        self.app.notify(Alert::Giveaway, &format!("Giveaway Lingo Echo sur {channel}"), "Commande à taper dans le chat : elle sera remplie dès que la détection la repère");
+        self.gifts_from_known_replies(channel);
+        self.publish();
     }
 
     fn on_streamelements_url(&mut self, channel: &str, url: &str) {

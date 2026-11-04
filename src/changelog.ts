@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.18',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'new', text: 'Giveaways Lingo Echo : quand le bot Lingo_Echo poste le lien de son giveaway (lingo-echo.eu) sur une chaîne surveillée, un giveaway par commande est créé, ou le lien est ajouté à celui en cours. La commande est remplie dès que la détection la repère dans le chat. Un badge « Lingo Echo » le signale dans la file d\'alertes et les tableaux.' }
+    ]
+  },
+  {
     version: '0.48.17',
     date: '2026-11-04',
     changes: [

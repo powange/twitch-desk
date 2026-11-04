@@ -1980,6 +1980,12 @@ impl Db {
     }
 
     /// Commande d'un giveaway saisi sans commande, trouvée ensuite par la détection
+    /// Lien du giveaway (Lingo Echo…) noté s'il n'en a pas encore
+    pub fn set_giveaway_url_if_unknown(&self, id: i64, url: &str) -> DbResult<bool> {
+        let n = self.conn().execute("UPDATE giveaways SET url = ?2 WHERE id = ?1 AND (url IS NULL OR url = '')", params![id, url])?;
+        Ok(n > 0)
+    }
+
     pub fn set_giveaway_command_if_unknown(&self, id: i64, command: &str) -> DbResult<bool> {
         let n = self.conn().execute(
             // Remis dans la file d'alertes : il est maintenant possible d'y participer

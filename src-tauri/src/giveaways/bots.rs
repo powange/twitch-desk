@@ -17,6 +17,8 @@ pub enum BotEvent {
     TicketPurchase { pseudo: String, count: i64 },
     /// Lien du giveaway StreamElements posté par le bot
     StreamElementsUrl(String),
+    /// Lien de la page du giveaway Lingo Echo (https://lingo-echo.eu/giveaway/<chaîne>)
+    LingoEchoUrl(String),
 }
 
 pub const CHAT_BOTS: &[&str] = &["streamelements", "wizebot", "nightbot", "phuzzybot", "lingo_echo"];
@@ -43,6 +45,7 @@ static NIGHTBOT_WIN: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)congratulations
 // Lingo Echo : « La personne gagnante est : @taz2_0 [✅ Suit la chaîne] 🎉 Participations : 8 ;
 // chance de gagner : 12.50% »
 static LINGO_WIN: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)personne\s+gagnante\s+est\s*:?\s*@?([A-Za-z0-9_]{3,25})\b"));
+static LINGO_URL: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)https://lingo-echo\.eu/giveaway/[A-Za-z0-9_]+"));
 static LINGO_CHANCE: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)chance\s+de\s+gagner\s*:?\s*([\d.,]+\s?%)"));
 static PURCHASE: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+),?\s+(?:you\s+)?successfully bought\s+(\d+)\s+ticket"));
@@ -224,10 +227,13 @@ pub fn parse_bot_message(user: &str, message: &str, privileged: bool) -> Vec<Bot
         "wizebot" => vec![WIZEBOT_WIN.captures(message).and_then(|c| winner("wizebot", c.get(1).map(|m| m.as_str()), None))],
         "nightbot" => vec![NIGHTBOT_WIN.captures(message).and_then(|c| winner("nightbot", c.get(1).map(|m| m.as_str()), None))],
         "phuzzybot" => vec![ticket_purchase(message)],
-        "lingo_echo" => vec![LINGO_WIN.captures(message).and_then(|c| {
-            let chance = LINGO_CHANCE.captures(message).and_then(|m| m.get(1)).map(|m| m.as_str().to_owned());
-            winner("lingo_echo", c.get(1).map(|m| m.as_str()), chance.as_deref())
-        })],
+        "lingo_echo" => vec![
+            LINGO_WIN.captures(message).and_then(|c| {
+                let chance = LINGO_CHANCE.captures(message).and_then(|m| m.get(1)).map(|m| m.as_str().to_owned());
+                winner("lingo_echo", c.get(1).map(|m| m.as_str()), chance.as_deref())
+            }),
+            LINGO_URL.find(message).map(|m| BotEvent::LingoEchoUrl(m.as_str().to_lowercase())),
+        ],
         _ => vec![],
     };
     let mut events: Vec<BotEvent> = events.into_iter().flatten().collect();
@@ -267,7 +273,10 @@ mod tests {
     #[test]
     fn lingo_echo_winner() {
         let msg = "⠛⠛⠛⠛ 🟥 FBtouchdown La personne gagnante est : @taz2_0 [✅ Suit la chaîne] 🎉 Participations : 8 ; chance de gagner : 12.50% 🟥 Vous avez 90 secondes pour écrire dans le chat ! CoolCat HSWP Détails : https://lingo-echo.eu/giveaway/vulvyqueen ⣤⣤⣤";
-        assert_eq!(parse_bot_message("Lingo_Echo", msg, false), vec![win("lingo_echo", "taz2_0", Some("12.50%"))]);
+        assert_eq!(
+            parse_bot_message("Lingo_Echo", msg, false),
+            vec![win("lingo_echo", "taz2_0", Some("12.50%")), BotEvent::LingoEchoUrl("https://lingo-echo.eu/giveaway/vulvyqueen".into())]
+        );
         // Même phrase écrite par un autre bot modérateur : formulation générale
         assert_eq!(bot_events("autrebot", "La personne gagnante est : @taz2_0", true), vec![win("autrebot", "taz2_0", None)]);
         // Un spectateur qui imite le message n'est pas lu
