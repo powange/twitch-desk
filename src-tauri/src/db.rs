@@ -1557,11 +1557,17 @@ impl Db {
     }
 
     /// Giveaway déjà enregistré sur la chaîne à cette date (import d'anciens giveaways)
-    pub fn giveaway_at(&self, channel: &str, at: &str) -> DbResult<bool> {
+    /// Même giveaway déjà enregistré : même chaîne, même date, et mêmes type, commande, lien et
+    /// premier gagnant (deux giveaways du même jour, datés midi faute d'heure, restent distincts)
+    pub fn giveaway_at(&self, channel: &str, at: &str, kind: &str, command: Option<&str>, url: Option<&str>, winner: Option<&str>) -> DbResult<bool> {
         self.conn()
-            .query_row("SELECT COUNT(*) FROM giveaways WHERE channel = ?1 AND julianday(detected_at) = julianday(?2)", [channel, at], |r| {
-                r.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM giveaways WHERE channel = ?1 AND julianday(detected_at) = julianday(?2) AND kind = ?3
+                   AND lower(COALESCE(command, '')) = lower(COALESCE(?4, '')) AND lower(COALESCE(url, '')) = lower(COALESCE(?5, ''))
+                   AND lower(COALESCE(winner, '')) = lower(COALESCE(?6, ''))",
+                params![channel, at, kind, command, url, winner],
+                |r| r.get::<_, i64>(0),
+            )
             .map(|n| n > 0)
     }
 

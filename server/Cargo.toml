@@ -1,6 +1,6 @@
 [package]
 name = "twitch-desk-sync"
-version = "0.8.3"
+version = "0.8.4"
 description = "Serveur de synchronisation de Twitch Desk : cadeaux, groupes, giveaways, chaînes et fiches de streamers mis en commun, web app mobile, ses notifications push et ses actions à distance"
 edition = "2021"
 license = "MIT"

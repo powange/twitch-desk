@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ApiError, claim, type Device } from '../api'
 import { defaultDeviceName } from '../format'
+import { iosOutsideHomeScreen } from '../push'
 
 // Association de cet appareil : code à 6 chiffres affiché par l'application du PC
 // (Paramètres → Synchronisation → « Connecter un téléphone »), lu dans l'adresse (#pair=…)
@@ -56,6 +57,15 @@ async function submit() {
         </p>
       </div>
       <UAlert v-if="props.notice" color="warning" variant="subtle" icon="i-lucide-unplug" :description="props.notice" />
+      <!-- iOS : l'icône de l'écran d'accueil ne voit pas ce que Safari a enregistré -->
+      <UAlert
+        v-if="iosOutsideHomeScreen"
+        color="info"
+        variant="subtle"
+        icon="i-lucide-smartphone"
+        title="Sur iPhone : ajoute d'abord l'icône"
+        description="Touche Partager puis « Sur l'écran d'accueil », ouvre Twitch Desk depuis cette icône, et connecte-le de là. Une connexion faite ici, dans Safari, ne serait pas reprise par l'icône (et les notifications ne marchent que depuis l'icône)."
+      />
       <UFormField label="Code à 6 chiffres">
         <UInput
           :model-value="code"

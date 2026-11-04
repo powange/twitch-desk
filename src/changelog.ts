@@ -14,6 +14,17 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.20',
+    date: '2026-11-04',
+    title: 'Frictions du rapport (gravité moyenne)',
+    changes: [
+      { kind: 'fixed', text: 'StreamElements : une chaîne vue « sans StreamElements » est revérifiée au lancement, sur « Actualiser » et chaque jour (elle a pu s\'inscrire depuis), au lieu de ne plus jamais l\'être.' },
+      { kind: 'fixed', text: 'Import par lot : deux giveaways du même jour sur la même chaîne (sans heure) sont tous les deux importés s\'ils diffèrent (type, commande, lien ou gagnant).' },
+      { kind: 'fixed', text: 'Synchronisation : un code refusé par le serveur n\'est plus réessayé toutes les 30 secondes (nouvel essai au bout de 30 minutes, ou tout de suite avec « Synchroniser »). Le serveur ne bloque plus les téléphones de la maison à cause des erreurs de code d\'un PC.' },
+      { kind: 'improved', text: 'Web app sur iPhone : l\'écran de connexion conseille d\'ajouter d\'abord l\'icône à l\'écran d\'accueil et de se connecter depuis elle (une connexion faite dans Safari n\'y est pas reprise).' }
+    ]
+  },
+  {
     version: '0.48.19',
     date: '2026-11-04',
     title: 'Corrections des bugs mineurs du rapport',

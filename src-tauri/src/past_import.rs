@@ -224,7 +224,7 @@ fn import(app: &Arc<App>, json: &str, dry_run: bool) -> Result<ImportReport, Str
     let items = items_of(json)?;
     let gifts = app.db.gifts().map_err(|e| e.to_string())?;
     let mut lines = vec![];
-    let mut seen: Vec<(String, String)> = vec![];
+    let mut seen: Vec<String> = vec![];
     let mut imported_any = false;
     for (i, raw) in items.into_iter().enumerate() {
         let channel_hint = raw.get("channel").and_then(Value::as_str).unwrap_or("").to_owned();
@@ -238,8 +238,17 @@ fn import(app: &Arc<App>, json: &str, dry_run: bool) -> Result<ImportReport, Str
             Ok(c) => {
                 line.channel = c.input.channel.clone();
                 line.date = c.at.clone();
-                let key = (c.input.channel.clone(), c.at.clone());
-                let exists = match app.db.giveaway_at(&c.input.channel, &c.at) {
+                let winner = c.winners.first().map(|(w, _)| w.as_str());
+                let key = format!(
+                    "{}|{}|{}|{}|{}|{}",
+                    c.input.channel,
+                    c.at,
+                    c.input.kind,
+                    c.input.command.as_deref().unwrap_or("").to_lowercase(),
+                    c.input.url.as_deref().unwrap_or("").to_lowercase(),
+                    winner.unwrap_or("").to_lowercase()
+                );
+                let exists = match app.db.giveaway_at(&c.input.channel, &c.at, &c.input.kind, c.input.command.as_deref(), c.input.url.as_deref(), winner) {
                     Ok(found) => seen.contains(&key) || found,
                     Err(e) => {
                         line.message = Some(format!("lecture impossible : {e}"));
@@ -248,7 +257,7 @@ fn import(app: &Arc<App>, json: &str, dry_run: bool) -> Result<ImportReport, Str
                     }
                 };
                 if exists {
-                    line.message = Some("déjà enregistré (même chaîne, même date)".into());
+                    line.message = Some("déjà enregistré (même chaîne, même date, même giveaway)".into());
                 } else {
                     seen.push(key);
                     // Erreur d'enregistrement : ligne en erreur dans le rapport, l'import continue

@@ -42,6 +42,8 @@ const LIVE_RETRY_MIN: Duration = Duration::from_secs(2);
 const LIVE_RETRY_MAX: Duration = Duration::from_secs(60);
 /// Serveur sans flux (avant la 0.5) ou code refusé : nouvel essai bien plus tard
 const LIVE_PAUSE: Duration = Duration::from_secs(30 * 60);
+/// Code de synchronisation refusé : nouvel essai automatique avec le même code après ce délai
+const CODE_REFUSED_PAUSE: Duration = Duration::from_secs(30 * 60);
 /// Rien reçu pendant ce délai (le serveur envoie un commentaire toutes les 20 s) : connexion perdue
 const LIVE_IDLE: Duration = Duration::from_secs(60);
 /// Connexion renouvelée au plus tard après ce délai
@@ -100,6 +102,10 @@ pub struct SyncHandle {
     wake: tokio::sync::Notify,
     /// Modification annoncée par le serveur : passage tout de suite, sans DEBOUNCE
     pull: tokio::sync::Notify,
+    /// « Synchroniser » demandé : passage fait même avec un code refusé juste avant
+    forced: std::sync::atomic::AtomicBool,
+    /// Code refusé par le serveur : état, alertes et demandes du téléphone en attente aussi
+    code_refused: std::sync::atomic::AtomicBool,
     /// Réglages changés : le flux temps réel est rouvert
     reconfigure: tokio::sync::Notify,
     /// État du flux temps réel (voir `SyncView::live`), vide : « off »
@@ -1504,6 +1510,10 @@ pub fn spawn(app: Arc<App>) {
     spawn_phone_alerts(app.clone());
     spawn_phone_actions(app.clone());
     tauri::async_runtime::spawn(async move {
+        // Code refusé (ou adresse bloquée pour trop de codes refusés) : plus d'essai avec ce
+        // même code pendant CODE_REFUSED_PAUSE, sauf « Synchroniser » ; sinon le serveur
+        // bloquerait l'adresse en boucle (et les téléphones de la maison avec)
+        let mut refused: Option<(u64, std::time::Instant)> = None;
         loop {
             let Some(cfg) = config(&app) else {
                 {
@@ -1519,6 +1529,18 @@ pub fn spawn(app: Arc<App>) {
                 tokio::time::sleep(DEBOUNCE).await;
                 continue;
             };
+            let key = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (&cfg.url, &cfg.code).hash(&mut h);
+                h.finish()
+            };
+            let forced = app.sync.forced.swap(false, std::sync::atomic::Ordering::Relaxed);
+            if !forced && refused.is_some_and(|(k, at)| k == key && at.elapsed() < CODE_REFUSED_PAUSE) {
+                // Même code refusé : rien envoyé, l'erreur reste affichée
+                let _ = tokio::time::timeout(EVERY, app.sync.wake.notified()).await;
+                continue;
+            }
             {
                 let mut v = app.sync.view.lock().unwrap();
                 v.enabled = true;
@@ -1527,6 +1549,11 @@ pub fn spawn(app: Arc<App>) {
             }
             app.touch_domain(crate::app::Domain::Sync);
             let result = run(&app, &cfg).await;
+            refused = match &result {
+                Err(e) if e == "Code refusé par le serveur" || e.starts_with("Trop de codes incorrects") => Some((key, std::time::Instant::now())),
+                _ => None,
+            };
+            app.sync.code_refused.store(refused.is_some(), std::sync::atomic::Ordering::Relaxed);
             {
                 let mut v = app.sync.view.lock().unwrap();
                 match result {
@@ -1846,7 +1873,7 @@ fn spawn_state(app: Arc<App>) {
                 _ = tokio::time::sleep(STATE_REFRESH) => {}
             }
             tokio::time::sleep(STATE_DEBOUNCE).await;
-            let Some(cfg) = config(&app) else { continue };
+            let Some(cfg) = config(&app).filter(|_| !app.sync.code_refused.load(std::sync::atomic::Ordering::Relaxed)) else { continue };
             if unsupported.as_ref().is_some_and(|(url, at)| *url == cfg.url && at.elapsed() < STATE_UNSUPPORTED_PAUSE) {
                 continue;
             }
@@ -1995,7 +2022,7 @@ fn spawn_phone_actions(app: Arc<App>) {
                 _ = app.sync.phone_action.notified() => {}
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {}
             }
-            let Some(cfg) = config(&app) else { continue };
+            let Some(cfg) = config(&app).filter(|_| !app.sync.code_refused.load(std::sync::atomic::Ordering::Relaxed)) else { continue };
             if unsupported.as_ref().is_some_and(|(url, at)| *url == cfg.url && at.elapsed() < STATE_UNSUPPORTED_PAUSE) {
                 continue;
             }
@@ -2057,7 +2084,7 @@ fn spawn_phone_alerts(app: Arc<App>) {
             if alerts.is_empty() {
                 continue;
             }
-            let Some(cfg) = config(&app) else { continue };
+            let Some(cfg) = config(&app).filter(|_| !app.sync.code_refused.load(std::sync::atomic::Ordering::Relaxed)) else { continue };
             if unsupported.as_ref().is_some_and(|(url, at)| *url == cfg.url && at.elapsed() < STATE_UNSUPPORTED_PAUSE) {
                 continue;
             }
@@ -2265,6 +2292,7 @@ pub fn sync_now(app: State<'_, Arc<App>>) {
     if matches!(app.sync.live_state(), "reconnecting" | "unavailable" | "refused") {
         app.sync.reconfigure.notify_one();
     }
+    app.sync.forced.store(true, std::sync::atomic::Ordering::Relaxed);
     app.sync.poke();
 }
 

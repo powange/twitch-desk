@@ -406,19 +406,22 @@ async fn require_access(State(server): State<Shared>, mut request: Request, next
     let peer = request.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
     let ip = client_ip(request.headers(), peer, server.proxy_hops);
     let now = Instant::now();
+    // Jeton d'appareil valide : accepté même si l'adresse est bloquée (un PC au code périmé sur
+    // le même Wi-Fi ne bloque pas les téléphones), et sans remettre à zéro les échecs du code
+    if let Some(token) = device_token(request.headers()) {
+        match with_db(&server, move |conn| Ok(mobile::device_for_token(conn, &token)?)).await {
+            Ok(Some((id, instance))) => {
+                request.extensions_mut().insert(Access::Device { id, instance });
+                return next.run(request).await;
+            }
+            Ok(None) => {}
+            Err(e) => return e.into_response(),
+        }
+    }
     if let Some(wait) = server.guard.blocked(ip, now) {
         return ApiError::TooManyAttempts(wait).into_response();
     }
-    let access = if code_given(&server, request.headers()) {
-        Some(Access::Full)
-    } else if let Some(token) = device_token(request.headers()) {
-        match with_db(&server, move |conn| Ok(mobile::device_for_token(conn, &token)?)).await {
-            Ok(found) => found.map(|(id, instance)| Access::Device { id, instance }),
-            Err(e) => return e.into_response(),
-        }
-    } else {
-        None
-    };
+    let access = code_given(&server, request.headers()).then_some(Access::Full);
     let Some(access) = access else {
         server.guard.failed(ip, now);
         tracing::warn!("code ou jeton refusé pour {ip}");
@@ -1467,6 +1470,21 @@ mod tests {
         // Désabonnement
         assert_eq!(status(&s, request_auth("DELETE", "/api/v1/app/push", &auth2, "7.7.7.1", "")).await, StatusCode::NO_CONTENT);
         assert_eq!(targets("win"), 0);
+    }
+
+    #[tokio::test]
+    async fn blocked_address_keeps_valid_phones() {
+        let s = server(&["giveaways"]);
+        let (token, _) = paired_device(&s, INSTANCE).await;
+        // Un PC au code périmé derrière la même adresse : elle est bloquée pour le code
+        for _ in 0..MAX_FAILURES {
+            assert_eq!(status(&s, request("GET", "/api/v1/changes", Some("ancien"), "6.6.6.6", "")).await, StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(status(&s, request("GET", "/api/v1/changes", Some("code-secret"), "6.6.6.6", "")).await, StatusCode::TOO_MANY_REQUESTS);
+        // Le téléphone de la maison, jeton valide : servi quand même
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/app/overview", &format!("Device {token}"), "6.6.6.6", "")).await, StatusCode::OK);
+        // Jeton inventé : toujours bloqué
+        assert_eq!(status(&s, request_auth("GET", "/api/v1/app/overview", "Device invente", "6.6.6.6", "")).await, StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

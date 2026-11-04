@@ -20,6 +20,10 @@ export type PushSupport = 'ok' | 'unsupported' | 'install' | 'denied'
 const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
 const standalone = window.matchMedia('(display-mode: standalone)').matches || (navigator as { standalone?: boolean }).standalone === true
 
+// iPhone ou iPad dans Safari (pas depuis l'icône de l'écran d'accueil) : l'icône aura son propre
+// stockage, une association faite ici n'y sera pas
+export const iosOutsideHomeScreen = isIos && !standalone
+
 export function support(): PushSupport {
   const api = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
   if (!api) return isIos && !standalone ? 'install' : 'unsupported'

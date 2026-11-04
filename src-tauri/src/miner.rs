@@ -53,6 +53,8 @@ const STREAM_UP_DELAY: Duration = Duration::from_secs(15);
 const SE_POLL_MIN: u64 = 2;
 const SE_POLL_MAX: u64 = 10;
 const SE_RETRY_AFTER: Duration = Duration::from_secs(15 * 60);
+/// Chaîne vue sans StreamElements : nouvelle recherche à ce rythme
+const SE_NONE_RECHECK: Duration = Duration::from_secs(24 * 3600);
 // Giveaway StreamElements en cours : relu souvent en live (nombre de participants)
 const SE_GIVEAWAY_LIVE_EVERY: Duration = Duration::from_secs(2 * 60);
 const SE_GIVEAWAY_OFFLINE_EVERY: Duration = Duration::from_secs(15 * 60);
@@ -869,7 +871,9 @@ impl Miner {
         let Some(i) = self.channels.iter().position(|c| {
             c.ch.wants_chat()
                 && match c.ch.se_channel_id.as_deref() {
-                    Some("") => false,
+                    // Vue sans StreamElements : revérifiée au lancement, sur « Actualiser » et toutes
+                    // les SE_NONE_RECHECK (chaîne inscrite depuis, ou réponse d'un incident)
+                    Some("") => c.se_polled.is_none_or(|t| now.duration_since(t) >= SE_NONE_RECHECK),
                     None => c.se_polled.is_none_or(|t| now.duration_since(t) >= SE_RETRY_AFTER),
                     Some(_) => match c.se_polled {
                         None => true,
@@ -883,8 +887,8 @@ impl Miner {
         let http = self.app.http.clone();
         let login = self.channels[i].ch.login.clone();
         let se_id = match self.channels[i].ch.se_channel_id.clone() {
-            Some(id) => id,
-            None => match streamelements::channel_id(&http, &login).await {
+            Some(id) if !id.is_empty() => id,
+            _ => match streamelements::channel_id(&http, &login).await {
                 Ok(found) => {
                     let id = found.unwrap_or_default();
                     let _ = self.app.db.set_se_channel(self.channels[i].ch.id, &id);
