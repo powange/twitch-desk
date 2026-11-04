@@ -14,6 +14,19 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.19',
+    date: '2026-11-04',
+    title: 'Corrections des bugs mineurs du rapport',
+    changes: [
+      { kind: 'fixed', text: 'Maximum de tickets annoncé par StreamElements (« got N tickets (N/MAX) ») : noté sur le giveaway StreamElements (ou par tickets) de la chaîne, plus jamais sur un giveaway par commande.' },
+      { kind: 'fixed', text: 'Giveaway StreamElements dont le lien vient d\'une autre page StreamElements (partenaire, autre nom) : il est suivi avec la page du lien, et se clôt bien tout seul.' },
+      { kind: 'fixed', text: 'Synchronisation : les corrections faites sur un giveaway détecté il y a plus de 60 jours (gagnants…) partent aussi vers les autres PC.' },
+      { kind: 'fixed', text: 'Ancien giveaway : créé directement terminé, jamais à moitié enregistré. Import par lot : une erreur sur un giveaway apparaît dans le rapport sans arrêter l\'import des autres.' },
+      { kind: 'fixed', text: 'Journal du chat et filtre « Gagnant » : les majuscules accentuées sont trouvées (« été » trouve « ÉTÉ »).' },
+      { kind: 'fixed', text: 'Web app : une réponse lente du serveur n\'écrase plus une plus récente (un giveaway fermé ne réapparaît plus).' }
+    ]
+  },
+  {
     version: '0.48.18',
     date: '2026-11-04',
     changes: [

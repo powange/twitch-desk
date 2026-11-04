@@ -239,18 +239,28 @@ fn import(app: &Arc<App>, json: &str, dry_run: bool) -> Result<ImportReport, Str
                 line.channel = c.input.channel.clone();
                 line.date = c.at.clone();
                 let key = (c.input.channel.clone(), c.at.clone());
-                let exists = seen.contains(&key) || app.db.giveaway_at(&c.input.channel, &c.at).map_err(|e| e.to_string())?;
+                let exists = match app.db.giveaway_at(&c.input.channel, &c.at) {
+                    Ok(found) => seen.contains(&key) || found,
+                    Err(e) => {
+                        line.message = Some(format!("lecture impossible : {e}"));
+                        lines.push(line);
+                        continue;
+                    }
+                };
                 if exists {
                     line.message = Some("déjà enregistré (même chaîne, même date)".into());
                 } else {
                     seen.push(key);
-                    line.ok = true;
-                    if !dry_run {
-                        crate::commands::insert_past_giveaway(app, &c.input, &c.at, &c.winners)?;
-                        imported_any = true;
-                    }
-                    if !c.notes.is_empty() {
-                        line.message = Some(c.notes.join(" ; "));
+                    // Erreur d'enregistrement : ligne en erreur dans le rapport, l'import continue
+                    match if dry_run { Ok(0) } else { crate::commands::insert_past_giveaway(app, &c.input, &c.at, &c.winners) } {
+                        Ok(_) => {
+                            line.ok = true;
+                            imported_any |= !dry_run;
+                            if !c.notes.is_empty() {
+                                line.message = Some(c.notes.join(" ; "));
+                            }
+                        }
+                        Err(e) => line.message = Some(format!("non enregistré : {e}")),
                     }
                 }
             }

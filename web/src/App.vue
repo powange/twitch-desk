@@ -98,22 +98,32 @@ function forget(message: string | null) {
   notice.value = message
 }
 
+// Lectures numérotées : une réponse lente arrivée après une plus récente est ignorée (elle
+// réafficherait un giveaway déjà fermé)
+let loadSeq = 0
+let stateSeq = 0
 async function load() {
   const d = device.value
   if (!d) return
+  const seq = ++loadSeq
+  // L'état complet relu remplace aussi un état seul en cours de lecture
+  stateSeq++
   loading.value = true
   try {
-    data.value = await overview<Overview>(d.token)
+    const fresh = await overview<Overview>(d.token)
+    if (seq !== loadSeq) return
+    data.value = fresh
     error.value = null
     if (data.value.instance.name && data.value.instance.name !== d.instanceName) {
       d.instanceName = data.value.instance.name
       saveDevice(d)
     }
   } catch (e) {
+    if (seq !== loadSeq) return
     if (e instanceof ApiError && e.status === 401) forget('Ce téléphone a été déconnecté depuis le PC. Demande un nouveau code pour le reconnecter.')
     else error.value = e instanceof Error ? e.message : String(e)
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -131,8 +141,10 @@ function refreshStateSoon() {
     stateTimer = null
     const d = device.value
     if (!d || !data.value) return refreshSoon()
+    const seq = ++stateSeq
     try {
       const r = await loadStateOnly<InstanceState>(d.token)
+      if (seq !== stateSeq) return
       if (data.value) {
         data.value.state = r.state
         data.value.stateAt = r.stateAt

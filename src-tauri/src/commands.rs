@@ -1279,11 +1279,14 @@ pub async fn create_past_giveaway(app: AppState<'_>, input: crate::db::GiveawayI
 /// Ancien giveaway enregistré terminé à `at`, avec ses gagnants (tirés à l'heure du tirage
 /// indiquée, sinon à `at`) ; fiche déjà validée
 pub fn insert_past_giveaway(app: &App, input: &crate::db::GiveawayInput, at: &str, winners: &[(String, Option<String>)]) -> CmdResult<i64> {
-    let id = app.db.insert_manual_giveaway(input, at).map_err(db_err)?;
-    app.db.close_giveaway(id).map_err(db_err)?;
+    // Créé déjà terminé ; gagnants refusés : retiré (pas de giveaway à moitié enregistré)
+    let id = app.db.insert_manual_giveaway_as(input, at, "closed").map_err(db_err)?;
     let drawn = input.details.draw_at.clone().unwrap_or_else(|| at.to_owned());
     if !winners.is_empty() {
-        app.db.set_giveaway_winners(id, winners, &drawn).map_err(db_err)?;
+        if let Err(e) = app.db.set_giveaway_winners(id, winners, &drawn) {
+            let _ = app.db.delete_giveaway(id);
+            return Err(db_err(e));
+        }
     }
     Ok(id)
 }

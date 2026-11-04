@@ -327,7 +327,11 @@ pub fn page_name(login: &str) -> String {
 
 /// Identifiant StreamElements d'une chaîne Twitch (None : la chaîne n'utilise pas StreamElements)
 pub async fn channel_id(http: &reqwest::Client, login: &str) -> Result<Option<String>, reqwest::Error> {
-    let name = page_name(login);
+    channel_id_of_page(http, &page_name(login)).await
+}
+
+/// Identifiant StreamElements d'une page (streamelements.com/<page>), sans passer par la fiche
+pub async fn channel_id_of_page(http: &reqwest::Client, name: &str) -> Result<Option<String>, reqwest::Error> {
     let res = http.get(format!("{API}/kappa/v2/channels/{name}")).send().await?;
     if res.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);

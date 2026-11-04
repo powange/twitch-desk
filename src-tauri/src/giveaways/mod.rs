@@ -571,7 +571,17 @@ impl Monitor {
                     || self.se_announced.contains_key(&g.channel)
                     || self.se_checked.get(&g.id).is_none_or(|t| now.duration_since(*t) >= SE_CHECK_EVERY)
             })
-            .filter_map(|g| Some((g.id, g.channel.clone(), se_giveaway_id(g.url.as_deref()?)?.to_owned())))
+            // Page StreamElements du lien (partenaire, autre nom) quand ce n'est pas celle de la
+            // chaîne : son identifiant est cherché par la page (clé « page:<nom> »)
+            .filter_map(|g| {
+                let url = g.url.as_deref()?;
+                let se_id = se_giveaway_id(url)?.to_owned();
+                let key = match crate::streamelements::parse_giveaway_url(url) {
+                    Some((page, _)) if page != crate::streamelements::page_name(&g.channel) => format!("page:{page}"),
+                    _ => g.channel.clone(),
+                };
+                Some((g.id, key, se_id))
+            })
             .take(20)
             .collect();
         if due.is_empty() {
@@ -590,7 +600,10 @@ impl Monitor {
             for (id, channel, se_id) in due {
                 let se_channel = match known.get(&channel).or_else(|| channel_ids.get(&channel)) {
                     Some(c) => c.clone(),
-                    None => match crate::streamelements::channel_id(&http, &channel).await {
+                    None => match match channel.strip_prefix("page:") {
+                        Some(page) => crate::streamelements::channel_id_of_page(&http, page).await,
+                        None => crate::streamelements::channel_id(&http, &channel).await,
+                    } {
                         Ok(c) => {
                             channel_ids.insert(channel.clone(), c.clone());
                             c
@@ -1158,7 +1171,11 @@ impl Monitor {
                 BotEvent::StreamElementsUrl(_) => {}
                 // « @pseudo got N tickets! (N/MAX) » : le maximum par personne du giveaway en cours
                 BotEvent::TicketInfo { max, .. } => {
-                    if let Some(g) = self.open_giveaways(channel).first() {
+                    // Seulement un giveaway StreamElements (sinon par tickets) : un giveaway par
+                    // commande ne reçoit pas de réglage de tickets
+                    let open = self.open_giveaways(channel);
+                    let target = open.iter().find(|g| g.kind == "streamelements").or_else(|| open.iter().find(|g| g.kind == "ticket"));
+                    if let Some(g) = target {
                         if self.app.db.set_ticket_max_if_unknown(g.id, max).unwrap_or(false) {
                             self.publish();
                         }

@@ -633,7 +633,14 @@ struct Pending<'a> {
 /// ou suppression d'un document que le serveur connaît
 fn diff_one<'a>(conn: &Connection, collection: &'a str, id: &str, enabled: &[&str]) -> rusqlite::Result<Option<(OutgoingChange<'a>, Option<String>)>> {
     let known = state_of(conn, collection, id)?;
-    Ok(match export_sent(conn, collection, id, enabled)? {
+    // Hors de la fenêtre d'envoi (giveaway ancien) mais connu du serveur : sa modification part
+    // quand même (gagnants corrigés), sinon les autres PC garderaient l'ancienne version
+    let data = match export_sent(conn, collection, id, enabled)? {
+        Some(d) => Some(d),
+        None if known.is_some() => export_one(conn, collection, id, enabled)?,
+        None => None,
+    };
+    Ok(match data {
         Some(data) => {
             let h = hash(&data);
             (known.as_ref() != Some(&h)).then(|| (OutgoingChange { collection, id: id.to_owned(), data: Some(data), deleted: false }, Some(h)))
@@ -660,15 +667,25 @@ fn outgoing<'a>(db: &Db, enabled: &[&'a str]) -> rusqlite::Result<(Vec<Pending<'
         if let Some(seq) = ids.iter().filter(|(id, _)| id == WHOLE).map(|(_, s)| *s).next() {
             let conn = db.conn();
             let known = state(&conn, c)?;
+            let mut exported = HashSet::new();
             for (id, data) in export(&conn, c, enabled)? {
                 let h = hash(&data);
+                exported.insert(id.clone());
                 if known.get(&id) != Some(&h) {
                     out.push(Pending { change: OutgoingChange { collection: c, id, data: Some(data), deleted: false }, hash: Some(h), seq: None });
                 }
             }
-            for id in known.keys() {
+            for (id, h) in &known {
                 if !exists(&conn, c, id)? {
                     out.push(Pending { change: OutgoingChange { collection: c, id: id.clone(), data: None, deleted: true }, hash: None, seq: None });
+                } else if !exported.contains(id) {
+                    // Hors de la fenêtre d'envoi mais connu du serveur : modifié, il part (diff_one)
+                    if let Some(data) = export_one(&conn, c, id, enabled)? {
+                        let new = hash(&data);
+                        if &new != h {
+                            out.push(Pending { change: OutgoingChange { collection: c, id: id.clone(), data: Some(data), deleted: false }, hash: Some(new), seq: None });
+                        }
+                    }
                 }
             }
             // Tout ce qui est noté pour la collection jusqu'ici est couvert
@@ -2479,14 +2496,18 @@ mod tests {
         let mut out = Sent::new();
         for c in enabled {
             let known = state(&conn, c).unwrap();
+            let mut exported = HashSet::new();
             for (id, data) in export(&conn, c, enabled).unwrap() {
+                exported.insert(id.clone());
                 if known.get(&id) != Some(&hash(&data)) {
                     out.insert((c.to_string(), id, false));
                 }
             }
-            for id in known.keys() {
+            for (id, h) in &known {
                 if !exists(&conn, c, id).unwrap() {
                     out.insert((c.to_string(), id.clone(), true));
+                } else if !exported.contains(id) && export_one(&conn, c, id, enabled).unwrap().is_some_and(|d| &hash(&d) != h) {
+                    out.insert((c.to_string(), id.clone(), false));
                 }
             }
         }
@@ -2625,6 +2646,23 @@ mod tests {
     }
 
     #[test]
+    fn old_giveaway_known_to_the_server_still_sends_its_changes() {
+        let db = Db::memory().unwrap();
+        let (_, _, giveaway_id) = populate(&db);
+        push_checked(&db, &COLLECTIONS);
+        // Giveaway détecté automatiquement il y a 100 jours, terminé : hors de la fenêtre d'envoi
+        db.conn()
+            .execute("UPDATE giveaways SET manual = 0, status = 'closed', detected_at = '2020-01-01T00:00:00Z' WHERE id = ?1", [giveaway_id])
+            .unwrap();
+        start(&db);
+        // Gagnants corrigés : la modification part (le serveur le connaît)
+        db.set_giveaway_winners(giveaway_id, &[("bob".to_owned(), None)], "2020-01-02T00:00:00Z").unwrap();
+        start(&db);
+        let changes = push(&db, &COLLECTIONS);
+        assert!(changes.iter().any(|c| c.collection == "giveaways" && c.data.as_ref().is_some_and(|d| d["winner"] == json!("bob"))));
+    }
+
+    #[test]
     fn received_changes_are_not_sent_back() {
         let a = Db::memory().unwrap();
         let b = Db::memory().unwrap();
@@ -2694,7 +2732,8 @@ mod tests {
         for enabled in [&COLLECTIONS[..], &["gifts", "giveaways", "streamers"][..]] {
             let db = Db::memory().unwrap();
             let (_, gift_id, giveaway_id) = populate(&db);
-            // Ancien giveaway clos (pas envoyé), ancien ouvert (envoyé)
+            // Anciens giveaways (hors fenêtre) déjà connus du serveur : l'un clos, l'autre ouvert
+            // puis clos ; leur état diffère de celui connu, ils partent
             for (status, sid) in [("closed", "old-closed"), ("open", "old-open")] {
                 db.conn()
                     .execute(

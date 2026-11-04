@@ -1013,6 +1013,11 @@ impl Db {
 
     fn init(mut conn: Connection) -> DbResult<Self> {
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
+        // lower() de SQLite ne passe en minuscules que les lettres sans accent (« ÉTÉ » reste
+        // « ÉTé ») : celle de Rust, complète, pour les recherches
+        conn.create_scalar_function("lower_full", 1, rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
+            Ok(ctx.get::<Option<String>>(0)?.map(|t| t.to_lowercase()))
+        })?;
         let version: usize = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(version) {
             // Chaque migration et son numéro dans une transaction : tout ou rien. PRAGMA
@@ -1670,14 +1675,23 @@ impl Db {
 
     /// Giveaway créé à la main ; renvoie son identifiant
     pub fn insert_manual_giveaway(&self, g: &GiveawayInput, at: &str) -> DbResult<i64> {
+        self.insert_manual_giveaway_as(g, at, "open")
+    }
+
+    /// Giveaway saisi à la main, `status` dès sa création (ancien giveaway : « closed », jamais
+    /// ouvert un instant) ; fiche incomplète (erreur en cours de route) : retiré
+    pub fn insert_manual_giveaway_as(&self, g: &GiveawayInput, at: &str, status: &str) -> DbResult<i64> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO giveaways (channel, kind, command, url, detected_at, manual, handled) VALUES (?1, ?2, ?3, ?4, ?5, 1, 1)",
-            params![g.channel, g.kind, g.command, g.url, at],
+            "INSERT INTO giveaways (channel, kind, command, url, detected_at, manual, handled, status) VALUES (?1, ?2, ?3, ?4, ?5, 1, 1, ?6)",
+            params![g.channel, g.kind, g.command, g.url, at, status],
         )?;
         let id = conn.last_insert_rowid();
         drop(conn);
-        self.update_giveaway(id, g)?;
+        if let Err(e) = self.update_giveaway(id, g) {
+            let _ = self.delete_giveaway(id);
+            return Err(e);
+        }
         Ok(id)
     }
 
@@ -1748,7 +1762,7 @@ impl Db {
             AND (:to IS NULL OR julianday(COALESCE(drawn_at, detected_at)) <= julianday(:to))
             AND (:channel IS NULL OR instr(channel, :channel) > 0)
             AND (:kinds = '[]' OR kind IN (SELECT value FROM json_each(:kinds)))
-            AND (:winner IS NULL OR EXISTS (SELECT 1 FROM json_each(giveaways.winners) w WHERE instr(lower(w.value), :winner) > 0))
+            AND (:winner IS NULL OR EXISTS (SELECT 1 FROM json_each(giveaways.winners) w WHERE instr(lower_full(w.value), :winner) > 0))
             AND (:gifts = '[]' OR EXISTS (SELECT 1 FROM giveaway_gifts gg WHERE gg.giveaway_id = giveaways.id
                                           AND gg.gift_id IN (SELECT value FROM json_each(:gifts))))";
         let text = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_lowercase);
@@ -2266,7 +2280,7 @@ impl Db {
                AND (?3 = '[]' OR command IN (SELECT value FROM json_each(?3)))
                AND (?4 IS NULL OR id < ?4)
                AND (?6 IS NULL OR instr(author, ?6) > 0)
-               AND NOT EXISTS (SELECT 1 FROM json_each(?7) w WHERE instr(lower(message), w.value) = 0)
+               AND NOT EXISTS (SELECT 1 FROM json_each(?7) w WHERE instr(lower_full(message), w.value) = 0)
                AND (?8 IS NULL OR at <= ?8)
              ORDER BY id DESC LIMIT ?5",
         )?;
@@ -2860,6 +2874,10 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(db.chat_log("lunarsea", &[], &[], None, None, None, None, 10).unwrap().len(), 4);
+        // Majuscules accentuées trouvées (« été » dans « ÉTÉ »)
+        db.add_chat_log(&[e("own", "powange", None, "Bel ÉTÉ à tous", "2026-11-01T10:00:04Z")]).unwrap();
+        assert_eq!(db.chat_log("lunarsea", &[], &[], None, Some("été"), None, None, 10).unwrap().len(), 1);
+        db.conn().execute("DELETE FROM chat_log WHERE message = 'Bel ÉTÉ à tous'", []).unwrap();
         assert_eq!(db.chat_log("lunarsea", &["own".into(), "winner".into()], &[], None, None, None, None, 10).unwrap().len(), 2);
         let joins = db.chat_log("lunarsea", &[], &["!join".into()], None, None, None, None, 10).unwrap();
         assert_eq!(joins.iter().map(|x| x.author.as_str()).collect::<Vec<_>>(), vec!["eve", "bob"]);
