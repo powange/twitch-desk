@@ -166,7 +166,8 @@ const suggestionText = computed(() => {
     suggestion.value?.streamelements?.description
   ].filter(Boolean).join('\n')
 })
-const suggested = computed(() => new Set(suggestGifts(gifts.value, suggestionText.value).map(g => g.id)))
+// Ancien giveaway : rien d'après le live actuel de la chaîne
+const suggested = computed(() => new Set(pastMode.value ? [] : suggestGifts(gifts.value, suggestionText.value).map(g => g.id)))
 // Jeu streamé en ce moment par la chaîne : ses cadeaux passent en tête
 const liveGameId = computed(() => {
   const login = form.value.channel.trim().toLowerCase()
@@ -425,7 +426,8 @@ async function inspect(login: string) {
       }
     }
     // En modification (ou fiche du streamer), la fiche de la chaîne suffit : on ne remplace pas ce qui a été saisi
-    if (props.giveaway || props.streamerOnly) return
+    // Ancien giveaway : ni le giveaway StreamElements du jour ni la commande vue dans le chat
+    if (props.giveaway || props.streamerOnly || pastMode.value) return
     if (found.streamelements) {
       f.kind = 'streamelements'
       f.url = found.streamelements.url
@@ -687,7 +689,7 @@ async function save() {
             <p v-else-if="suggestion && !inspecting && form.channel.trim()" class="text-sm text-error">Chaîne introuvable sur Twitch.</p>
 
             <UAlert
-              v-if="suggestion?.streamelements && !giveaway && !streamerOnly"
+              v-if="suggestion?.streamelements && !giveaway && !streamerOnly && !pastMode"
               icon="i-lucide-sparkles"
               color="success"
               variant="subtle"
@@ -695,13 +697,13 @@ async function save() {
               :description="`${suggestion.streamelements.cost} points le ticket${suggestion.streamelements.maxTickets ? `, ${suggestion.streamelements.maxTickets} au plus par personne` : ''}. Type, lien et commande remplis.`"
             />
             <UAlert
-              v-else-if="suggestion?.detectedCommand && !giveaway && !streamerOnly"
+              v-else-if="suggestion?.detectedCommand && !giveaway && !streamerOnly && !pastMode"
               icon="i-lucide-sparkles"
               color="info"
               variant="subtle"
               :title="`Commande détectée dans le chat : ${suggestion.detectedCommand}`"
             />
-            <div v-if="botReplies.length" class="flex flex-col gap-1.5">
+            <div v-if="botReplies.length && !pastMode" class="flex flex-col gap-1.5">
               <div class="text-sm font-medium">Réponses des bots</div>
               <div v-for="r in botReplies" :key="r.command" class="border border-default rounded-md px-3 py-2 text-sm flex flex-col gap-0.5">
                 <div class="text-xs text-muted"><span class="font-mono text-default">{{ r.command }}</span> → {{ r.bot }}</div>

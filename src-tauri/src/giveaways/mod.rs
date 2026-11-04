@@ -192,9 +192,10 @@ struct LiveState {
 }
 
 /// Statut live relu hors de la boucle du moniteur
-/// Relecture des giveaways StreamElements suivis : (giveaway, état ; None : illisible ou inconnu)
+/// Relecture des giveaways StreamElements suivis : (giveaway, état ; Ok(None) : inconnu ou chaîne
+/// sans StreamElements ; Err : lecture échouée, à refaire)
 struct SeReport {
-    results: Vec<(i64, Option<crate::streamelements::GiveawayOutcome>)>,
+    results: Vec<(i64, Result<Option<crate::streamelements::GiveawayOutcome>, ()>)>,
     channel_ids: Vec<(String, Option<String>)>,
 }
 
@@ -223,8 +224,10 @@ struct Monitor {
     se_checked: HashMap<i64, Instant>,
     /// Chaîne → identifiant StreamElements (None : chaîne sans StreamElements)
     se_channels: HashMap<String, Option<String>>,
-    /// Gagnant annoncé par le bot StreamElements, en attente de la vérification de son giveaway
-    se_announced: HashMap<String, String>,
+    /// Gagnants annoncés par le bot StreamElements (dans l'ordre, avec l'heure de la première
+    /// annonce), en attente de la vérification du giveaway StreamElements de la chaîne
+    se_announced: HashMap<String, Vec<String>>,
+    se_announced_at: HashMap<String, Instant>,
     /// Relecture du statut live en cours depuis (oubliée après LIVE_CHECK_EVERY : tâche perdue)
     live_busy: Option<Instant>,
     /// Giveaways ouverts (toutes chaînes), relus à chaque publication : lus à chaque message
@@ -292,6 +295,7 @@ impl Monitor {
             se_checked: HashMap::new(),
             se_channels: HashMap::new(),
             se_announced: HashMap::new(),
+            se_announced_at: HashMap::new(),
             live_busy: None,
             open: vec![],
             view,
@@ -525,9 +529,24 @@ impl Monitor {
         }
         let now = Instant::now();
         let rows = self.app.db.se_giveaways_to_check().unwrap_or_default();
+        // Annonces en attente dont le giveaway StreamElements n'est plus suivi (clos entre-temps) :
+        // rangées avec les replis habituels, sans attendre
+        let orphans: Vec<String> = self.se_announced.keys().filter(|c| !rows.iter().any(|g| &g.channel == *c)).cloned().collect();
+        for channel in orphans {
+            self.se_announced_at.remove(&channel);
+            for winner in self.se_announced.remove(&channel).unwrap_or_default() {
+                let target = self.fallback_target(&channel, "streamelements", true);
+                self.record_winner(&channel, target, &winner, None, true);
+            }
+        }
         let due: Vec<(i64, String, String)> = rows
             .into_iter()
-            .filter(|g| channel.is_some_and(|c| c == g.channel) || self.se_checked.get(&g.id).is_none_or(|t| now.duration_since(*t) >= SE_CHECK_EVERY))
+            // Annonce du bot en attente (lecture précédente échouée) : relu à chaque passage
+            .filter(|g| {
+                channel.is_some_and(|c| c == g.channel)
+                    || self.se_announced.contains_key(&g.channel)
+                    || self.se_checked.get(&g.id).is_none_or(|t| now.duration_since(*t) >= SE_CHECK_EVERY)
+            })
             .filter_map(|g| Some((g.id, g.channel.clone(), se_giveaway_id(g.url.as_deref()?)?.to_owned())))
             .take(20)
             .collect();
@@ -554,17 +573,16 @@ impl Monitor {
                         }
                         Err(e) => {
                             tracing::debug!("StreamElements : chaîne {channel} : {e}");
-                            results.push((id, None));
+                            results.push((id, Err(())));
                             continue;
                         }
                     },
                 };
                 let outcome = match se_channel {
-                    Some(c) => crate::streamelements::giveaway_outcome(&http, &c, &se_id).await.unwrap_or_else(|e| {
+                    Some(c) => crate::streamelements::giveaway_outcome(&http, &c, &se_id).await.map_err(|e| {
                         tracing::debug!("StreamElements : giveaway {se_id} de {channel} : {e}");
-                        None
                     }),
-                    None => None,
+                    None => Ok(None),
                 };
                 results.push((id, outcome));
             }
@@ -581,8 +599,16 @@ impl Monitor {
         self.se_channels.extend(report.channel_ids);
         let mut drawn_channels: HashSet<String> = HashSet::new();
         let mut checked_channels: HashSet<String> = HashSet::new();
+        let mut failed_channels: HashSet<String> = HashSet::new();
         for (id, outcome) in report.results {
             let Ok(Some(g)) = self.app.db.giveaway(id) else { continue };
+            let outcome = match outcome {
+                Ok(o) => o,
+                Err(()) => {
+                    failed_channels.insert(g.channel.clone());
+                    continue;
+                }
+            };
             checked_channels.insert(g.channel.clone());
             let Some(outcome) = outcome else { continue };
             if g.status == "closed" {
@@ -608,16 +634,53 @@ impl Monitor {
                 self.publish();
             }
         }
-        // Annonce du bot StreamElements : son giveaway n'est pas tiré, c'était un autre tirage
-        for channel in checked_channels {
-            if let Some(winner) = self.se_announced.remove(&channel) {
-                if !drawn_channels.contains(&channel) {
-                    let open: Vec<GiveawayRow> = self.open_giveaways(&channel).into_iter().filter(|g| g.kind != "streamelements").collect();
-                    let target = winner_target(&open, "streamelements").cloned();
-                    self.record_winner(&channel, target, &winner, None, true);
-                }
+        // Annonces du bot StreamElements : giveaway StreamElements tiré, ses gagnants viennent d'être
+        // notés ; pas tiré, c'était un autre tirage (chaque gagnant, avec les replis habituels).
+        // Lecture échouée : annonces gardées pour la relecture suivante, sauf après SE_ANNOUNCE_WAIT
+        let gave_up: Vec<String> = failed_channels
+            .iter()
+            .filter(|c| !checked_channels.contains(*c) && self.se_announced_at.get(*c).is_some_and(|t| t.elapsed() >= SE_ANNOUNCE_WAIT))
+            .cloned()
+            .collect();
+        for channel in &gave_up {
+            tracing::warn!("StreamElements illisible pour {channel} : gagnants annoncés rangés sans vérification");
+        }
+        let resolved = checked_channels.iter().filter(|c| !failed_channels.contains(*c)).cloned().chain(gave_up);
+        for channel in resolved.collect::<Vec<_>>() {
+            self.se_announced_at.remove(&channel);
+            let Some(winners) = self.se_announced.remove(&channel) else { continue };
+            if drawn_channels.contains(&channel) {
+                continue;
+            }
+            for winner in winners {
+                let target = self.fallback_target(&channel, "streamelements", true);
+                self.record_winner(&channel, target, &winner, None, true);
             }
         }
+    }
+
+    /// Giveaway d'un gagnant annoncé par `bot` : ouvert, sinon en pause (même giveaway, tirage d'un
+    /// live suivant), sinon tiré il y a moins de MORE_WINNERS_WITHIN sans nouveau giveaway depuis
+    /// (plusieurs gagnants), sinon clos récemment sans gagnant (fin du live juste avant le tirage).
+    /// `skip_se` : le giveaway StreamElements de la chaîne n'est pas tiré, il est écarté
+    fn fallback_target(&self, channel: &str, bot: &str, skip_se: bool) -> Option<GiveawayRow> {
+        let keep = |rows: Vec<GiveawayRow>| -> Vec<GiveawayRow> { rows.into_iter().filter(|g| !skip_se || g.kind != "streamelements").collect() };
+        let open = keep(self.open_giveaways(channel));
+        winner_target(&open, bot)
+            .cloned()
+            .or_else(|| {
+                let paused = keep(self.app.db.paused_giveaways(Some(channel)).unwrap_or_default());
+                winner_target(&paused, bot).cloned()
+            })
+            .or_else(|| {
+                let since = (chrono::Utc::now() - MORE_WINNERS_WITHIN).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                self.app.db.recent_drawn_giveaway(channel, &since).ok().flatten()
+            })
+            .or_else(|| {
+                let since = (chrono::Utc::now() - chrono::Duration::hours(RECENT_UNDRAWN_HOURS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                let recent = keep(self.app.db.recent_undrawn_giveaways(channel, &since).unwrap_or_default());
+                winner_target(&recent, bot).cloned()
+            })
     }
 
     fn on_live_report(&mut self, report: LiveReport) {
@@ -1103,7 +1166,6 @@ impl Monitor {
     }
 
     fn on_winner(&mut self, channel: &str, bot: &str, winner: &str, chance: Option<&str>) {
-        let open = self.open_giveaways(channel);
         // Annonce de StreamElements alors qu'un giveaway StreamElements suivi par son identifiant
         // est ouvert ou en pause : StreamElements dit lequel est tiré (vérifié tout de suite)
         if bot == "streamelements" {
@@ -1115,26 +1177,19 @@ impl Monitor {
                 .into_iter()
                 .any(|g| g.channel == channel && g.url.as_deref().and_then(se_giveaway_id).is_some());
             if followed {
-                self.se_announced.insert(channel.to_owned(), winner.to_lowercase());
+                // Plusieurs gagnants annoncés d'affilée : tous gardés, dans l'ordre
+                let winner = winner.to_lowercase();
+                let pending = self.se_announced.entry(channel.to_owned()).or_default();
+                if !pending.contains(&winner) {
+                    pending.push(winner);
+                }
+                self.se_announced_at.entry(channel.to_owned()).or_insert_with(Instant::now);
                 self.se_busy = None;
                 self.check_se_giveaways(Some(channel));
                 return;
             }
         }
-        // Aucun ouvert : giveaway en pause (même giveaway, tirage d'un live suivant), sinon tiré il y
-        // a moins de MORE_WINNERS_WITHIN sans nouveau giveaway depuis (plusieurs gagnants), sinon
-        // clos récemment sans gagnant (fin du live juste avant le tirage)
-        let target = winner_target(&open, bot).cloned().or_else(|| {
-            let paused = self.app.db.paused_giveaways(Some(channel)).unwrap_or_default();
-            winner_target(&paused, bot).cloned()
-        }).or_else(|| {
-            let since = (chrono::Utc::now() - MORE_WINNERS_WITHIN).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-            self.app.db.recent_drawn_giveaway(channel, &since).ok().flatten()
-        }).or_else(|| {
-            let since = (chrono::Utc::now() - chrono::Duration::hours(RECENT_UNDRAWN_HOURS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-            let recent = self.app.db.recent_undrawn_giveaways(channel, &since).unwrap_or_default();
-            winner_target(&recent, bot).cloned()
-        });
+        let target = self.fallback_target(channel, bot, false);
         self.record_winner(channel, target, winner, chance, true);
     }
 
@@ -1593,6 +1648,9 @@ const RECENT_UNDRAWN_HOURS: i64 = 6;
 /// Annonce d'un autre gagnant peu après un tirage : ajoutée au giveaway tiré (plusieurs gagnants),
 /// sauf si un nouveau giveaway de la chaîne est arrivé entre-temps
 const MORE_WINNERS_WITHIN: chrono::Duration = chrono::Duration::minutes(15);
+/// Annonce du bot StreamElements gardée tant que son giveaway StreamElements est illisible, au
+/// plus ce temps (avant MORE_WINNERS_WITHIN : les gagnants suivants retrouvent le même giveaway)
+const SE_ANNOUNCE_WAIT: Duration = Duration::from_secs(8 * 60);
 
 fn winner_target<'a>(open: &'a [GiveawayRow], bot: &str) -> Option<&'a GiveawayRow> {
     // StreamElements tire aussi ses giveaways par commande dans le chat (même annonce) : son

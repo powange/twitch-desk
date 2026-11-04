@@ -14,6 +14,17 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.1',
+    date: '2026-11-04',
+    title: 'Gagnants StreamElements et giveaways passés',
+    changes: [
+      { kind: 'fixed', text: 'Quand le bot StreamElements annonce plusieurs gagnants d\'affilée pendant qu\'un giveaway StreamElements est suivi, tous les gagnants sont maintenant gardés, et plus seulement le dernier.' },
+      { kind: 'fixed', text: 'Si StreamElements ne répond pas, un gagnant annoncé n\'est plus rangé sur le mauvais giveaway (et tu n\'as plus deux « Tu as gagné »). L\'annonce attend que StreamElements réponde, pendant 8 minutes au plus.' },
+      { kind: 'fixed', text: 'Le tableau des giveaways passés se met à jour après l\'ajout d\'un ancien giveaway, un import par lot ou une suppression.' },
+      { kind: 'fixed', text: '« Ancien giveaway » n\'est plus pré-rempli avec le giveaway du jour de la chaîne (type, lien, commande et cadeaux suggérés).' }
+    ]
+  },
+  {
     version: '0.48.0',
     date: '2026-11-03',
     title: 'Achat automatique des tickets StreamElements',

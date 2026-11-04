@@ -98,10 +98,14 @@ async function loadPast() {
   }
 }
 watch(pastPage, () => { void loadPast() })
-watch(giveaways, () => {
+function reloadPastSoon() {
   if (pastTimer) clearTimeout(pastTimer)
   pastTimer = setTimeout(() => { void loadPast() }, 300)
-}, { immediate: true })
+}
+// Relu quand un giveaway récent change d'état ou qu'un giveaway clos change (pas à chaque
+// participation ou preuve du chat des giveaways en cours)
+const pastKey = computed(() => JSON.stringify(giveaways.value.map(g => g.status === 'closed' ? g : [g.id, g.status])))
+watch(pastKey, reloadPastSoon, { immediate: true })
 onBeforeUnmount(() => {
   if (pastTimer) clearTimeout(pastTimer)
   if (pastFilterTimer) clearTimeout(pastFilterTimer)
@@ -124,7 +128,10 @@ const toDelete = ref<GiveawayView | null>(null)
 async function confirmDelete() {
   const g = toDelete.value
   if (!g) return
-  if (await run('delete', 'Giveaway non supprimé', () => invoke('delete_giveaway', { id: g.id }))) toDelete.value = null
+  if (await run('delete', 'Giveaway non supprimé', () => invoke('delete_giveaway', { id: g.id }))) {
+    toDelete.value = null
+    reloadPastSoon()
+  }
 }
 
 // Journal du chat d'une chaîne, ouvert sur la section du giveaway
@@ -269,6 +276,11 @@ const editing = ref<GiveawayView | null>(null)
 // Ancien giveaway ajouté après coup (sous les giveaways passés), un à un ou par lot (JSON)
 const formPast = ref(false)
 const importOpen = ref(false)
+// Ajout, modification ou import fermé : giveaways passés relus (un ancien giveaway n'est pas
+// forcément parmi les plus récents)
+watch([formOpen, importOpen], ([form, imp], [wasForm, wasImp]) => {
+  if ((wasForm && !form) || (wasImp && !imp)) reloadPastSoon()
+})
 function openPastForm() {
   editing.value = null
   formPast.value = true
