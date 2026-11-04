@@ -713,14 +713,15 @@ async function save() {
 <template>
   <UModal v-model:open="open" :title="streamerOnly ? `Fiche de ${channel}` : giveaway ? `Giveaway de ${giveaway.channel}` : pastMode ? 'Ancien giveaway' : 'Nouveau giveaway'" :ui="{ content: 'max-w-4xl' }">
     <template #body>
-      <form id="giveaway-form" class="grid grid-cols-[200px_1fr] gap-6 min-h-[440px]" @submit.prevent="save">
+      <!-- Fenêtre étroite : sections en onglets au-dessus, au lieu d'un menu à gauche -->
+      <form id="giveaway-form" class="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 md:gap-6 min-h-[440px]" @submit.prevent="save">
         <!-- Menu des sections -->
-        <nav class="flex flex-col gap-1 border-r border-default pr-4" aria-label="Sections du giveaway">
+        <nav class="flex flex-row md:flex-col gap-1 overflow-x-auto border-b md:border-b-0 md:border-r border-default pb-2 md:pb-0 md:pr-4" aria-label="Sections du giveaway">
           <button
             v-for="item in sections"
             :key="item.key"
             type="button"
-            class="flex items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors"
+            class="flex items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors shrink-0 md:shrink"
             :class="section === item.key ? 'bg-primary/10 text-primary' : 'hover:bg-elevated'"
             :aria-current="section === item.key ? 'step' : undefined"
             @click="section = item.key"
@@ -808,7 +809,7 @@ async function save() {
               <UInput id="gw-past-at" v-model="pastAt" type="datetime-local" :max="toLocalInput(new Date().toISOString())" class="w-full max-w-xs" />
             </UFormField>
             <UFormField label="Type de giveaway">
-              <div class="grid grid-cols-4 gap-2">
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <button
                   v-for="k in GIVEAWAY_KIND_ITEMS"
                   :key="k.value"

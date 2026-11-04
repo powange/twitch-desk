@@ -21,6 +21,8 @@ watch(open, (o) => {
   report.value = null
   checkedJson.value = null
 })
+// Texte modifié après la vérification : rapport à refaire (l'import attend une nouvelle vérification)
+const stale = computed(() => !!report.value && !report.value.imported && checkedJson.value !== json.value)
 
 const canImport = computed(() => !!report.value && !report.value.imported && report.value.ok > 0 && checkedJson.value === json.value)
 
@@ -32,6 +34,9 @@ async function run(dryRun: boolean) {
     report.value = r
     checkedJson.value = json.value
     if (!dryRun) {
+      // Importé : texte vidé, une réouverture repart de zéro (sinon tout serait « déjà présent »)
+      json.value = ''
+      checkedJson.value = null
       toast.add({ title: `${r.ok} ancien(s) giveaway(s) importé(s)`, description: r.errors ? `${r.errors} non importé(s) : voir le détail` : undefined, color: r.errors ? 'warning' : 'success', icon: 'i-lucide-check' })
     }
   } catch (e) {
@@ -47,9 +52,14 @@ const fileInput = ref<HTMLInputElement | null>(null)
 async function onFile(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
   if (!file) return
-  json.value = await file.text()
-  report.value = null
-  ;(e.target as HTMLInputElement).value = ''
+  try {
+    json.value = await file.text()
+    report.value = null
+  } catch (err) {
+    toast.add({ title: 'Fichier illisible', description: String(err), color: 'error' })
+  } finally {
+    ;(e.target as HTMLInputElement).value = ''
+  }
 }
 
 const EXAMPLE = `[
@@ -128,7 +138,8 @@ const formatDate = (iso: string) => {
         <UTextarea v-model="json" :rows="10" autoresize :maxrows="18" placeholder="[ { &quot;channel&quot;: &quot;…&quot;, &quot;date&quot;: &quot;2026-10-20&quot; } ]" class="w-full font-mono text-xs" />
 
         <!-- Résultat de la vérification (ou de l'import), giveaway par giveaway -->
-        <div v-if="report" class="flex flex-col gap-2">
+        <UAlert v-if="stale" color="warning" variant="subtle" icon="i-lucide-refresh-cw" title="Texte modifié depuis la vérification" description="Clique « Vérifier » de nouveau avant d'importer : le rapport ci-dessous correspond à l'ancien texte." />
+        <div v-if="report" class="flex flex-col gap-2" :class="stale ? 'opacity-50' : ''">
           <UAlert
             :color="report.errors ? 'warning' : 'success'"
             variant="subtle"

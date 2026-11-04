@@ -68,7 +68,8 @@ function sortValue(m: ScanMatch, key: SortKey): string | number {
   }
 }
 const matches = computed(() => {
-  const list = (scanner.value?.matches ?? []).filter(m => showIgnored.value || !m.ignored)
+  // Stream ignoré mis en avant par une notification : montré cette fois, sans changer le réglage
+  const list = (scanner.value?.matches ?? []).filter(m => showIgnored.value || !m.ignored || m.login === pinned.value)
   const dir = sortDesc.value ? -1 : 1
   return [...list].sort((a, b) => {
     const x = sortValue(a, sortKey.value)
@@ -84,11 +85,13 @@ const ignoredCount = computed(() => (scanner.value?.matches ?? []).filter(m => m
 const route = useRoute()
 const router = useRouter()
 const highlighted = ref<string | null>(null)
+// Stream ignoré affiché le temps de cette visite (notification touchée)
+const pinned = ref<string | null>(null)
 let highlightTimer: ReturnType<typeof setTimeout> | null = null
 async function highlight(login: string) {
   const m = (scanner.value?.matches ?? []).find(x => x.login === login)
   if (!m) return false
-  if (m.ignored) showIgnored.value = true
+  if (m.ignored) pinned.value = login
   highlighted.value = login
   await nextTick()
   document.getElementById(`scan-${login}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })

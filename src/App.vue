@@ -104,7 +104,18 @@ void listen<{ id: number, login: string, channel: string, text: string, delay: n
     icon: 'i-lucide-message-circle-reply',
     color: 'primary',
     duration: (r.delay + 1) * 1000,
-    actions: [{ label: 'Annuler la réponse', color: 'neutral', variant: 'outline', onClick: () => { void invoke('cancel_win_reply', { id: r.id }) } }]
+    // Pas de croix pendant le délai : « Annuler » est le seul moyen d'arrêter la réponse
+    close: false,
+    actions: [{
+      label: 'Annuler la réponse',
+      color: 'neutral',
+      variant: 'outline',
+      onClick: () => {
+        void invoke<boolean>('cancel_win_reply', { id: r.id }).then((cancelled) => {
+          if (!cancelled) winToast.add({ title: 'Trop tard', description: `La réponse sur ${r.channel} est déjà partie`, color: 'warning', icon: 'i-lucide-clock' })
+        })
+      }
+    }]
   })
 })
 void listen<{ id: number, login: string, channel: string, outcome: 'sent' | 'failed' | 'cancelled', message: string | null }>('win-reply-done', (e) => {

@@ -60,6 +60,8 @@ let pastSeq = 0
 const pastFilterOpen = ref(false)
 const emptyPastFilter = () => ({ from: '', to: '', channel: '', kinds: [] as GiveawayKind[], winner: '', giftIds: [] as number[] })
 const pastFilter = ref(emptyPastFilter())
+// Période inversée (« Du » après « Au ») : signalée sous « Au »
+const pastDatesCrossed = computed(() => !!pastFilter.value.from && !!pastFilter.value.to && pastFilter.value.from > pastFilter.value.to)
 const pastFilterCount = computed(() => {
   const f = pastFilter.value
   return [f.from || f.to, f.channel.trim(), f.kinds.length, f.winner.trim(), f.giftIds.length].filter(Boolean).length
@@ -274,11 +276,14 @@ async function participate(g: GiveawayView, ids = chosenFor(g)) {
 
 // Points de chaîne : achat de la récompense, confirmé d'abord (des points sont dépensés)
 const toBuy = ref<{ giveaway: GiveawayView, ids: number[] } | null>(null)
+// Dernière demande, gardée pendant l'animation de fermeture (texte jamais vide)
+const shownBuy = ref<{ giveaway: GiveawayView, ids: number[] } | null>(null)
+watch(toBuy, (v) => { if (v) shownBuy.value = v })
 function askBuy(g: GiveawayView, ids = chosenFor(g)) {
   const todo = ids.filter(id => !entered(g, id))
   if (todo.length) toBuy.value = { giveaway: g, ids: todo }
 }
-const buyLogins = computed(() => (toBuy.value?.ids ?? []).map(id => accounts.value.find(a => a.id === id)?.login ?? '?').join(', '))
+const buyLogins = computed(() => (shownBuy.value?.ids ?? []).map(id => accounts.value.find(a => a.id === id)?.login ?? '?').join(', '))
 async function confirmBuy() {
   const b = toBuy.value
   if (!b) return
@@ -726,10 +731,10 @@ function share(g: GiveawayView) {
         <div class="flex flex-col gap-4">
           <div class="grid grid-cols-2 gap-4">
             <UFormField label="Du" help="Date du tirage, sinon de la détection">
-              <UInput id="past-from" v-model="pastFilter.from" type="date" class="w-full" />
+              <UInput id="past-from" v-model="pastFilter.from" type="date" :max="pastFilter.to || undefined" class="w-full" />
             </UFormField>
-            <UFormField label="Au">
-              <UInput id="past-to" v-model="pastFilter.to" type="date" class="w-full" />
+            <UFormField label="Au" :error="pastDatesCrossed ? '« Au » est avant « Du » : inverse les dates' : undefined">
+              <UInput id="past-to" v-model="pastFilter.to" type="date" :min="pastFilter.from || undefined" class="w-full" />
             </UFormField>
           </div>
           <UFormField label="Streamer">
@@ -765,7 +770,7 @@ function share(g: GiveawayView) {
     <UModal :open="toBuy !== null" title="Acheter la récompense ?" @update:open="v => { if (!v) toBuy = null }">
       <template #body>
         <p class="text-sm">
-          « {{ toBuy?.giveaway.rewardName }} » sera achetée sur {{ toBuy?.giveaway.channel }}<template v-if="toBuy?.giveaway.rewardCost !== null"> pour {{ formatNumber(toBuy?.giveaway.rewardCost ?? 0) }} points par compte</template>, avec : {{ buyLogins }}.
+          « {{ shownBuy?.giveaway.rewardName }} » sera achetée sur {{ shownBuy?.giveaway.channel }}<template v-if="shownBuy?.giveaway.rewardCost !== null"> pour {{ formatNumber(shownBuy?.giveaway.rewardCost ?? 0) }} points par compte</template>, avec : {{ buyLogins }}.
         </p>
         <p class="text-sm text-muted mt-2">Les points sont dépensés aussitôt. Si la récompense a changé de prix sur la chaîne, l'achat est refusé.</p>
       </template>

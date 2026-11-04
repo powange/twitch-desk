@@ -14,6 +14,21 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.21',
+    date: '2026-11-04',
+    title: 'Frictions du rapport (gravité basse)',
+    changes: [
+      { kind: 'improved', text: 'Scanner : une notification d\'un stream ignoré l\'affiche le temps de la visite, sans cocher « Afficher les ignorés » pour la suite.' },
+      { kind: 'improved', text: 'Réponse automatique : l\'annonce ne se ferme plus par erreur pendant le délai, et « Annuler » prévient si la réponse est déjà partie (« Trop tard »).' },
+      { kind: 'improved', text: 'Import par lot : texte vidé après un import, avertissement si le texte a changé depuis la vérification, message si le fichier ne peut pas être lu.' },
+      { kind: 'improved', text: 'Filtres des giveaways passés : « Du » et « Au » ne peuvent plus être inversés, et un message le signale.' },
+      { kind: 'fixed', text: 'Fenêtre « Acheter la récompense ? » : plus de texte vide pendant sa fermeture.' },
+      { kind: 'improved', text: 'Formulaire de giveaway dans une fenêtre étroite : sections en onglets au-dessus, types sur deux lignes.' },
+      { kind: 'improved', text: 'Web app : les notifications continuent quand le navigateur renouvelle son abonnement, la web app s\'affiche (avec sa dernière vue datée) quand le serveur redémarre ou ne répond pas.' },
+      { kind: 'improved', text: 'Serveur : un code d\'association n\'est plus perdu quand la limite de 20 téléphones est atteinte ; avertissements et documentation pour le contact des notifications et le réglage derrière Cloudflare.' }
+    ]
+  },
+  {
     version: '0.48.20',
     date: '2026-11-04',
     title: 'Frictions du rapport (gravité moyenne)',

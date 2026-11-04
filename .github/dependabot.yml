@@ -63,3 +63,7 @@ updates:
     groups:
       server-images:
         patterns: ['*']
+    # Versions majeures (node 24 → 26…) écartées comme pour les autres écosystèmes : changées à la main
+    ignore:
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]

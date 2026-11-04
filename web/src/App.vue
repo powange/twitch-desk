@@ -20,6 +20,20 @@ const device = ref<Device | null>(/pair=\d{6}/.test(location.hash) ? null : load
 const notice = ref<string | null>(null)
 const data = ref<Overview | null>(null)
 const error = ref<string | null>(null)
+// Serveur injoignable au lancement : dernière vue gardée sur ce téléphone, avec sa date
+const LAST_VIEW = 'twitch-desk:last-view'
+const staleAt = ref<string | null>(null)
+function keepView(v: Overview) {
+  try { localStorage.setItem(LAST_VIEW, JSON.stringify({ at: new Date().toISOString(), data: v })) } catch { /* trop gros ou stockage indisponible */ }
+}
+function lastView(): { at: string, data: Overview } | null {
+  try {
+    const raw = localStorage.getItem(LAST_VIEW)
+    return raw ? JSON.parse(raw) as { at: string, data: Overview } : null
+  } catch {
+    return null
+  }
+}
 const loading = ref(false)
 const status = ref<LiveStatus>('connecting')
 let events: ReturnType<typeof openEvents> | null = null
@@ -95,6 +109,8 @@ function forget(message: string | null) {
   saveDevice(null)
   device.value = null
   data.value = null
+  staleAt.value = null
+  try { localStorage.removeItem(LAST_VIEW) } catch { /* rien */ }
   notice.value = message
 }
 
@@ -113,6 +129,8 @@ async function load() {
     const fresh = await overview<Overview>(d.token)
     if (seq !== loadSeq) return
     data.value = fresh
+    staleAt.value = null
+    keepView(fresh)
     error.value = null
     if (data.value.instance.name && data.value.instance.name !== d.instanceName) {
       d.instanceName = data.value.instance.name
@@ -121,7 +139,15 @@ async function load() {
   } catch (e) {
     if (seq !== loadSeq) return
     if (e instanceof ApiError && e.status === 401) forget('Ce téléphone a été déconnecté depuis le PC. Demande un nouveau code pour le reconnecter.')
-    else error.value = e instanceof Error ? e.message : String(e)
+    else {
+      error.value = e instanceof Error ? e.message : String(e)
+      // Rien d'affiché : la dernière vue connue, signalée comme ancienne
+      const last = data.value ? null : lastView()
+      if (last) {
+        data.value = last.data
+        staleAt.value = last.at
+      }
+    }
   } finally {
     if (seq === loadSeq) loading.value = false
   }
@@ -270,6 +296,13 @@ const menu = computed<DropdownMenuItem[][]>(() => [
 
       <main class="flex-1 w-full max-w-2xl mx-auto px-4 py-4 flex flex-col gap-4 pb-[calc(5rem+env(safe-area-inset-bottom))]">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :description="error" />
+        <UAlert
+          v-if="staleAt"
+          color="warning"
+          variant="subtle"
+          icon="i-lucide-history"
+          :description="`Serveur injoignable : dernière vue du ${new Date(staleAt).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}, mise à jour dès qu'il répond.`"
+        />
         <UAlert
           v-if="showHint"
           color="primary"

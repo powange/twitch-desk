@@ -13,6 +13,20 @@ export const ALERTS: { key: string, label: string, description: string }[] = [
 ]
 const DEFAULT_EVENTS = ['giveaway', 'win', 'reminder', 'mention', 'drop']
 
+// Jeton, alertes et clé gardés pour le service worker : abonnement renouvelé par le navigateur
+// (pushsubscriptionchange), il se réabonne et prévient le serveur sans attendre la web app
+const SW_CACHE = 'twitch-desk-push'
+const SW_KEY = '/app/__push'
+async function rememberForWorker(token: string, events: string[], publicKey: string) {
+  try {
+    const cache = await caches.open(SW_CACHE)
+    await cache.put(SW_KEY, new Response(JSON.stringify({ token, events, publicKey }), { headers: { 'Content-Type': 'application/json' } }))
+  } catch { /* sans Cache Storage : renouvelé à la prochaine ouverture */ }
+}
+async function forgetForWorker() {
+  try { await (await caches.open(SW_CACHE)).delete(SW_KEY) } catch { /* rien à oublier */ }
+}
+
 // « unsupported » : navigateur sans Web Push ; « install » : iPhone ou iPad, la page doit
 // d'abord être ajoutée à l'écran d'accueil ; « denied » : notifications refusées dans le navigateur
 export type PushSupport = 'ok' | 'unsupported' | 'install' | 'denied'
@@ -83,6 +97,7 @@ export async function refresh(token: string) {
     info.value = await savePush(token, sub.toJSON(), events).catch(() => info.value)
   }
   active.value = info.value?.endpoint === sub.endpoint
+  if (active.value && info.value) void rememberForWorker(token, info.value.events.length ? info.value.events : DEFAULT_EVENTS, info.value.publicKey)
 }
 
 // Active les notifications (demande d'autorisation : à appeler depuis un clic)
@@ -109,6 +124,7 @@ export async function enable(token: string, events?: string[]) {
   const chosen = events ?? (server.events.length ? server.events : DEFAULT_EVENTS)
   info.value = await savePush(token, sub.toJSON(), chosen)
   active.value = true
+  void rememberForWorker(token, chosen, server.publicKey)
 }
 
 // Alertes choisies changées (notifications déjà actives)
@@ -116,6 +132,7 @@ export async function choose(token: string, events: string[]) {
   const sub = await currentSubscription()
   if (!sub) throw new Error('Notifications inactives sur ce téléphone')
   info.value = await savePush(token, sub.toJSON(), events)
+  if (info.value) void rememberForWorker(token, events, info.value.publicKey)
 }
 
 // Plus de notifications sur ce téléphone ; `token` absent : appareil déjà oublié par le serveur
@@ -123,6 +140,7 @@ export async function disable(token: string | null) {
   const sub = await currentSubscription().catch(() => null)
   await sub?.unsubscribe().catch(() => {})
   active.value = false
+  void forgetForWorker()
   if (token) {
     await deletePush(token)
     if (info.value) info.value = { ...info.value, endpoint: null }

@@ -282,10 +282,10 @@ pub async fn pair_claim(State(server): State<Shared>, request: Request) -> Resul
     let instance = {
         let mut pairings = server.pairings.lock().unwrap_or_else(|e| e.into_inner());
         pairings.retain(|_, p| p.expires > now);
-        // Usage unique : retiré dès qu'il sert
-        pairings.remove(&code).map(|p| p.instance)
+        // Usage unique : retiré dès qu'il sert (remis si l'association est refusée)
+        pairings.remove(&code)
     };
-    let Some(instance) = instance else {
+    let Some(pairing) = instance else {
         server.pair_guard.failed(ip, now);
         tracing::warn!("code d'association refusé pour {ip}");
         return Err(ApiError::BadPairingCode);
@@ -294,7 +294,8 @@ pub async fn pair_claim(State(server): State<Shared>, request: Request) -> Resul
     let token = random_hex(32);
     let device_id = random_hex(12);
     let (hash, id) = (token_hash(&token), device_id.clone());
-    let instance = with_db(&server, move |conn| {
+    let instance = pairing.instance.clone();
+    let result = with_db(&server, move |conn| {
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM devices WHERE instance = ?1", [&instance], |r| r.get(0))?;
         if count >= MAX_DEVICES {
             return Err(ApiError::BadRequest(format!("{MAX_DEVICES} appareils sont déjà associés : révoques-en un depuis l'application")));
@@ -307,7 +308,16 @@ pub async fn pair_claim(State(server): State<Shared>, request: Request) -> Resul
         let name: String = conn.query_row("SELECT name FROM instances WHERE id = ?1", [&instance], |r| r.get(0))?;
         Ok(InstanceInfo { id: instance, name })
     })
-    .await?;
+    .await;
+    // Limite d'appareils atteinte (ou erreur) : le code reste valable, utilisable une fois un
+    // appareil révoqué
+    let instance = match result {
+        Ok(i) => i,
+        Err(e) => {
+            server.pairings.lock().unwrap_or_else(|e| e.into_inner()).insert(code, pairing);
+            return Err(e);
+        }
+    };
     tracing::info!("appareil {device_id} associé à {}", instance.id);
     Ok(Json(Paired { token, device_id, instance }))
 }

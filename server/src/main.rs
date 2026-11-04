@@ -108,6 +108,11 @@ impl Server {
     fn new(code: String, collections: BTreeSet<String>, conn: Connection, proxy_hops: usize) -> rusqlite::Result<Self> {
         let seq = last_seq(&conn)?;
         let contact = std::env::var("SYNC_PUSH_CONTACT").ok().map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+        if contact.as_deref().is_none_or(|c| c == push::DEFAULT_CONTACT) {
+            // Google, Apple ou Mozilla contacteraient l'auteur du projet, pas l'hébergeur de ce
+            // serveur (Apple peut aussi refuser un contact trop générique)
+            tracing::warn!("SYNC_PUSH_CONTACT non défini : indique un contact de l'hébergeur (mailto:toi@exemple.fr) pour les notifications push");
+        }
         let push = push::Push::load(&conn, contact.unwrap_or_else(|| push::DEFAULT_CONTACT.to_owned()))?;
         Ok(Server {
             code,
@@ -375,6 +380,15 @@ fn client_ip(headers: &HeaderMap, peer: Option<IpAddr>, hops: usize) -> IpAddr {
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .collect();
+    // Une fois : combien d'adresses le ou les proxys ajoutent, pour vérifier SYNC_PROXY_HOPS
+    // (Cloudflare devant le proxy : 2 ; mal réglé, un nœud Cloudflare serait pris pour le client)
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| {
+        tracing::info!(
+            "X-Forwarded-For : {} adresse(s) reçue(s), SYNC_PROXY_HOPS = {hops} (Cloudflare devant le proxy : mettre 2)",
+            forwarded.len()
+        );
+    });
     if forwarded.is_empty() {
         return peer;
     }

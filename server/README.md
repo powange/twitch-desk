@@ -105,11 +105,11 @@ Depuis le menu ⋮, un téléphone peut aussi demander au PC de vérifier ses mi
 | `SYNC_CODE` | (obligatoire) | Code à donner aux utilisateurs, 8 caractères au moins |
 | `SYNC_COLLECTIONS` | toutes | Données partagées, séparées par des virgules : `groups`, `gifts`, `giveaways`, `channels`, `streamers`, `detection` (formulations de gagnant et bots ajoutés) |
 | `SYNC_HISTORY_DAYS` | `90` | Conservation de l'historique des modifications (qui a modifié quel document et quand ; le contenu n'y est plus gardé depuis la 0.4) |
-| `SYNC_PROXY_HOPS` | `1` | Proxys devant le serveur, pour lire l'adresse du client dans `X-Forwarded-For` ; `0` si le serveur est joint directement |
+| `SYNC_PROXY_HOPS` | `1` | Proxys devant le serveur, pour lire l'adresse du client dans `X-Forwarded-For` ; `0` si le serveur est joint directement, `2` avec Cloudflare devant le proxy (sinon l'adresse d'un nœud Cloudflare serait prise pour celle du client, et un seul fautif bloquerait tous ceux qui passent par lui). Le nombre d'adresses reçues est écrit une fois dans le journal au démarrage |
 | `SYNC_DB` | `/data/sync.db` | Fichier SQLite (volume `/data`) |
 | `SYNC_PORT` | `8787` | Port d'écoute |
 | `SYNC_WEB_PORT` | (aucun) | Port supplémentaire qui ne sert que la web app (`/app`) ; sans lui, elle est servie sur `SYNC_PORT` seulement |
-| `SYNC_PUSH_CONTACT` | `https://github.com/powange/twitch-desk` | Contact donné aux services de push dans la signature VAPID (`mailto:…` ou `https://…`) |
+| `SYNC_PUSH_CONTACT` | `https://github.com/powange/twitch-desk` | Contact donné aux services de push dans la signature VAPID (`mailto:…` ou `https://…`). À remplacer par un contact de l'hébergeur (`mailto:toi@exemple.fr`) : par défaut, Google, Apple ou Mozilla contacteraient l'auteur du projet en cas de problème, et un avertissement est écrit au démarrage |
 | `SYNC_WEB_DIR` | `/usr/share/twitch-desk-sync/web` | Fichiers de la web app (remplis dans l'image) |
 | `SYNC_HOST_BIND` | `127.0.0.1` | (compose) Interface de l'hôte où le port est publié |
 | `SYNC_HOST_PORT` | `8787` | (compose) Port publié sur l'hôte |
