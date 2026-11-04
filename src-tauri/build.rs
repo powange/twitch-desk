@@ -32,6 +32,7 @@ const COMMANDS: &[&str] = &[
     "import_sound",
     "read_sound",
     "list_logs",
+    "take_previous_version",
     "read_log",
     "export_log",
     "set_drops_enabled",

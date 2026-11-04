@@ -382,6 +382,40 @@ fn log_path(app: &App, name: &str) -> CmdResult<std::path::PathBuf> {
     Ok(path)
 }
 
+/// Version d'avant pour la fenêtre des nouveautés : la dernière vue (en base), sinon la plus
+/// haute version plus ancienne lancée d'après les journaux (7 jours) ; la version installée est
+/// retenue à la place. None : rien de connu (première installation)
+#[tauri::command]
+pub fn take_previous_version(app: AppState) -> Option<String> {
+    const KEY: &str = "last_seen_version";
+    let current = app.handle().package_info().version.to_string();
+    let previous = app.db.get_state(KEY).or_else(|| version_in_logs(&app.data_dir.join("logs"), &current));
+    let _ = app.db.set_state(KEY, &current);
+    previous
+}
+
+/// Plus haute version lancée avant `current` d'après les journaux (« Twitch Desk 0.48.9 — données… »)
+fn version_in_logs(dir: &std::path::Path, current: &str) -> Option<String> {
+    let parse = |v: &str| -> Option<Vec<u64>> { v.split('.').map(|n| n.parse().ok()).collect() };
+    let now = parse(current)?;
+    let mut best: Option<(Vec<u64>, String)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.filter_map(Result::ok) {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+        for line in text.lines() {
+            let Some(rest) = line.split("Twitch Desk ").nth(1) else { continue };
+            if !rest.contains(" — données") {
+                continue;
+            }
+            let Some(version) = rest.split(" — ").next() else { continue };
+            let Some(parsed) = parse(version) else { continue };
+            if parsed < now && best.as_ref().is_none_or(|(b, _)| parsed > *b) {
+                best = Some((parsed, version.to_owned()));
+            }
+        }
+    }
+    best.map(|(_, v)| v)
+}
+
 /// Journaux des derniers jours, le plus récent d'abord
 #[tauri::command]
 pub fn list_logs(app: AppState) -> CmdResult<Vec<LogFile>> {
@@ -1820,6 +1854,17 @@ pub async fn buy_tickets(app: &Arc<App>, account_id: i64, channel_id: i64, givea
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn previous_version_from_logs() {
+        let dir = std::env::temp_dir().join(format!("td-logs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("twitch-desk.2026-11-03.log"), "x INFO Twitch Desk 0.48.9 — données dans C:\\x\ny INFO Twitch Desk 0.48.10 — données dans C:\\x\n").unwrap();
+        std::fs::write(dir.join("twitch-desk.2026-11-04.log"), "z INFO Twitch Desk 0.48.12 — données dans C:\\x\n").unwrap();
+        assert_eq!(super::version_in_logs(&dir, "0.48.12").as_deref(), Some("0.48.10"));
+        assert_eq!(super::version_in_logs(&dir, "0.48.9"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::{normalize_login, se_page_name};
 
     #[test]

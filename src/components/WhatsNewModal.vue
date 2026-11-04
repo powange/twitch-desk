@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { getVersion } from '@tauri-apps/api/app'
+import { invoke } from '@tauri-apps/api/core'
 import { CHANGELOG } from '../changelog'
 import ChangelogView from './ChangelogView.vue'
 
 // Premier lancement après une mise à jour : changelog des versions arrivées depuis la
-// dernière vue sur ce poste (plusieurs si on en a sauté), une seule fois
+// dernière vue (gardée en base ; plusieurs si on en a sauté), une seule fois
+// Ancien emplacement (v0.48.12) : relu si la base n'a encore rien
 const KEY = 'td:lastSeenVersion'
 const open = ref(false)
 const current = ref<string | null>(null)
@@ -22,28 +24,33 @@ function compare(a: string, b: string) {
   return 0
 }
 
-function remember(v: string) {
+function storedLocally(): string | null {
   try {
-    localStorage.setItem(KEY, v)
+    const v = localStorage.getItem(KEY)
+    localStorage.removeItem(KEY)
+    return v
   } catch {
-    // Stockage indisponible : la fenêtre pourra revenir au prochain lancement
+    return null
   }
 }
 
 onMounted(async () => {
   const now = await getVersion()
   current.value = now
+  // Version d'avant : en base (sinon d'après les journaux des 7 derniers jours) ; la version
+  // installée y est retenue à la place
   let seen: string | null = null
   try {
-    seen = localStorage.getItem(KEY)
+    seen = await invoke<string | null>('take_previous_version')
   } catch {
     return
   }
-  // Rien de retenu (avant la v0.48.12 ou première installation) : seulement la version installée
+  const local = storedLocally()
+  if (!seen) seen = local
+  // Rien de connu (première installation) : seulement la version installée
   const fresh = CHANGELOG
     .map(r => r.version)
     .filter(v => compare(v, now) <= 0 && (seen ? compare(v, seen) > 0 : v === now))
-  remember(now)
   if (!seen || compare(now, seen) > 0) {
     versions.value = fresh
     open.value = fresh.length > 0

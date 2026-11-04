@@ -42,6 +42,7 @@
     "allow-import-sound",
     "allow-read-sound",
     "allow-list-logs",
+    "allow-take-previous-version",
     "allow-read-log",
     "allow-export-log",
     "allow-set-drops-enabled",

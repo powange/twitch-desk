@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.13',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'improved', text: 'Fenêtre des nouveautés après une mise à jour : la dernière version vue est gardée dans la base de l\'application (elle ne se perd plus), et retrouvée dans les journaux si besoin. Toutes les versions sautées sont affichées.' }
+    ]
+  },
+  {
     version: '0.48.12',
     date: '2026-11-04',
     title: 'Corrections du rapport et nouveautés affichées après une mise à jour',

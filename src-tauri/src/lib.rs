@@ -295,6 +295,7 @@ pub fn run() {
             commands::import_sound,
             commands::read_sound,
             commands::list_logs,
+            commands::take_previous_version,
             commands::read_log,
             commands::export_log,
             commands::set_drops_enabled,
