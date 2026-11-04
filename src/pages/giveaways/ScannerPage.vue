@@ -13,6 +13,7 @@ import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import type { Gift, ScanMatch } from '../../types'
 import SolidIcon from '../../components/SolidIcon.vue'
+import GiftThumb from '../../components/GiftThumb.vue'
 import { useSettings } from '../../composables/useSettings'
 import { isBoolean, oneOf, usePersisted } from '../../composables/usePersisted'
 
@@ -379,8 +380,7 @@ const { openGift } = useGiftPreview()
                 <div class="flex flex-wrap items-center gap-1 min-w-36 max-w-80">
                   <UTooltip v-for="g in giftsOf(m)" :key="g.id" :text="g.favorite ? `${g.title} (favori)` : g.title">
                     <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${g.title} en grand`" @click="openGift(g.id)">
-                      <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
-                      <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                      <GiftThumb :src="g.image" class="size-8" />
                       <SolidIcon v-if="g.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
                     </button>
                   </UTooltip>

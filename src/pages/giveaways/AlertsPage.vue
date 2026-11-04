@@ -19,6 +19,7 @@ import ChatLogModal from '../../components/ChatLogModal.vue'
 import { useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, GIVEAWAY_KIND_ITEMS, formatDrawAt, isLingoEcho } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
+import GiftThumb from '../../components/GiftThumb.vue'
 import { useGiftPreview } from '../../composables/useGiftPreview'
 import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
 import ConditionCells from '../../components/conditions/ConditionCells.vue'
@@ -636,8 +637,7 @@ function share(g: GiveawayView) {
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
                   <UTooltip v-for="id in g.giftIds" :key="id" :text="`${giftById.get(id)?.title ?? ''}${giftById.get(id)?.favorite ? ' (favori)' : ''}`">
                     <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${giftById.get(id)?.title ?? 'le cadeau'} en grand`" @click="openGift(id)">
-                      <img v-if="giftById.get(id)?.image" :src="giftById.get(id)?.image ?? ''" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
-                      <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                      <GiftThumb :src="giftById.get(id)?.image" class="size-8" />
                       <SolidIcon v-if="giftById.get(id)?.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
                     </button>
                   </UTooltip>

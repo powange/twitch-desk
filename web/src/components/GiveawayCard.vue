@@ -79,10 +79,7 @@ async function copy() {
       <!-- Lots -->
       <ul v-if="g.gifts.length" class="flex flex-col gap-2">
         <li v-for="gift in g.gifts" :key="gift.id" class="flex items-center gap-3">
-          <GiftImage v-if="gift.image" :src="gift.image" />
-          <div v-else class="size-12 rounded-md bg-muted flex items-center justify-center shrink-0">
-            <UIcon name="i-lucide-gift" class="size-5 text-muted" />
-          </div>
+          <GiftImage :src="gift.image ?? null" />
           <div class="min-w-0">
             <div class="text-sm font-medium truncate">{{ gift.title ?? 'Cadeau' }}</div>
             <div v-if="gift.gameName" class="text-xs text-muted truncate">{{ gift.gameName }}</div>

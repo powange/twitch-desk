@@ -13,6 +13,7 @@ import ChatLogModal from '../../components/ChatLogModal.vue'
 import { suggestGifts, useGiftCatalog, useKnownCategories } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
+import GiftThumb from '../../components/GiftThumb.vue'
 import { useGiftPreview } from '../../composables/useGiftPreview'
 import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
 import ConditionCells from '../../components/conditions/ConditionCells.vue'
@@ -306,8 +307,7 @@ async function confirmRemove() {
         class="w-72"
       >
         <template #item-leading="{ item }">
-          <img v-if="item.image" :src="item.image" referrerpolicy="no-referrer" alt="" class="size-5 rounded object-contain bg-elevated">
-          <UIcon v-else name="i-lucide-gift" class="size-5 text-muted" />
+          <GiftThumb :src="item.image" class="size-5" icon="size-3.5" />
         </template>
       </USelectMenu>
       <UButton v-if="filtering" label="Effacer les filtres" icon="i-lucide-x" size="sm" color="neutral" variant="ghost" @click="clearFilters" />
@@ -378,8 +378,7 @@ async function confirmRemove() {
               <div class="flex flex-wrap items-center gap-1 min-w-36 max-w-80">
                 <UTooltip v-for="x in channelGifts(c)" :key="x.gift.id" :text="`${x.gift.title} (${x.attached ? 'rattaché au giveaway' : 'repéré'}${x.gift.favorite ? ', favori' : ''})`">
                   <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${x.gift.title} en grand`" @click="openGift(x.gift.id)">
-                    <img v-if="x.gift.image" :src="x.gift.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
-                    <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                    <GiftThumb :src="x.gift.image" class="size-8" />
                     <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
                     <SolidIcon v-if="x.gift.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
                   </button>

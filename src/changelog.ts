@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.27',
+    date: '2026-11-05',
+    title: 'Icône pour les cadeaux sans image',
+    changes: [
+      { kind: 'improved', text: 'Un cadeau sans image s\'affiche avec une icône de cadeau partout, y compris sur la page Gains, où rien ne s\'affichait.' },
+      { kind: 'fixed', text: 'Une image de cadeau qui ne se charge plus (adresse disparue) est remplacée par l\'icône de cadeau au lieu d\'une image cassée, sur le PC comme sur le téléphone.' }
+    ]
+  },
+  {
     version: '0.48.26',
     date: '2026-11-04',
     title: 'Masquer un giveaway en cours',

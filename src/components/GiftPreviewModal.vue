@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import GiftThumb from './GiftThumb.vue'
 import { useGiftCatalog } from '../composables/useGiftCatalog'
 import { useGiftPreview } from '../composables/useGiftPreview'
 import { boxArt } from '../utils/format'
@@ -17,8 +18,7 @@ const group = computed(() => groups.value.find(g => g.id === gift.value?.groupId
     <template #body>
       <div v-if="gift" class="flex flex-col gap-4">
         <div class="bg-elevated rounded-lg flex items-center justify-center min-h-48">
-          <img v-if="gift.image" :src="gift.image" referrerpolicy="no-referrer" :alt="gift.title" class="max-h-[60vh] w-full object-contain rounded-lg">
-          <UIcon v-else name="i-lucide-gift" class="size-16 text-muted" />
+          <GiftThumb :src="gift.image" class="max-h-[60vh] w-full min-h-48 rounded-lg" icon="size-16" />
         </div>
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm items-center">
           <dt class="text-muted">Catégorie</dt>

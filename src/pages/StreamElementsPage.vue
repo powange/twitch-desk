@@ -13,6 +13,7 @@ import type { ChannelView, Gift, GiveawayView } from '../types'
 import { suggestGifts, useGiftCatalog } from '../composables/useGiftCatalog'
 import { useGiftPreview } from '../composables/useGiftPreview'
 import SolidIcon from '../components/SolidIcon.vue'
+import GiftThumb from '../components/GiftThumb.vue'
 import AccountPicker from '../components/AccountPicker.vue'
 import { useSelectedAccount } from '../composables/useSelectedAccount'
 import { stringList, usePersisted } from '../composables/usePersisted'
@@ -424,8 +425,7 @@ function affordable(channel: ChannelView): number | null {
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
                   <UTooltip v-for="x in channelGifts(channel)" :key="x.gift.id" :text="`${x.gift.title} (${x.attached ? 'rattaché au giveaway' : 'repéré dans le titre ou la description'}${x.gift.favorite ? ', favori' : ''})`">
                     <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${x.gift.title} en grand`" @click="openGift(x.gift.id)">
-                      <img v-if="x.gift.image" :src="x.gift.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated" loading="lazy">
-                      <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                      <GiftThumb :src="x.gift.image" class="size-8" lazy />
                       <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
                       <SolidIcon v-if="x.gift.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
                     </button>

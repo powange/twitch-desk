@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../composables/useSnapshot'
 import { suggestGifts, useGiftCatalog } from '../composables/useGiftCatalog'
 import GiftFormModal from './GiftFormModal.vue'
+import GiftThumb from './GiftThumb.vue'
 import ChannelProfileCard, { type ChannelProfile } from './ChannelProfileCard.vue'
 import { cachedInspect, storeInspect } from '../composables/channelInspectCache'
 import { useOpenExternal } from '../utils/external'
@@ -1021,8 +1022,7 @@ async function save() {
                       :aria-pressed="form.giftIds.includes(g.id)"
                       @click="toggleGift(g.id)"
                     >
-                      <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="size-10 rounded object-contain bg-elevated shrink-0">
-                      <span v-else class="size-10 rounded bg-elevated shrink-0 flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                      <GiftThumb :src="g.image" class="size-10 shrink-0" />
                       <span class="flex flex-col min-w-0">
                         <span class="leading-tight line-clamp-2">{{ g.title }}</span>
                         <span v-if="g.gameName" class="text-xs text-muted truncate">{{ g.gameName }}</span>

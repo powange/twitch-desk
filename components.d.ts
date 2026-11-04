@@ -24,6 +24,7 @@ declare module 'vue' {
     GiftFormModal: typeof import('./src/components/GiftFormModal.vue')['default']
     GiftGroupsModal: typeof import('./src/components/GiftGroupsModal.vue')['default']
     GiftPreviewModal: typeof import('./src/components/GiftPreviewModal.vue')['default']
+    GiftThumb: typeof import('./src/components/GiftThumb.vue')['default']
     GiveawayConditions: typeof import('./src/components/GiveawayConditions.vue')['default']
     GiveawayFormModal: typeof import('./src/components/GiveawayFormModal.vue')['default']
     GreetingConfirmModal: typeof import('./src/components/GreetingConfirmModal.vue')['default']

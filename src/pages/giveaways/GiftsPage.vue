@@ -8,6 +8,7 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialo
 import { boxArt } from '../../utils/format'
 import type { Gift } from '../../types'
 import SolidIcon from '../../components/SolidIcon.vue'
+import GiftThumb from '../../components/GiftThumb.vue'
 import { useAction } from '../../composables/useAction'
 import { isBoolean, usePersisted } from '../../composables/usePersisted'
 
@@ -201,8 +202,7 @@ async function confirmRemove() {
           <div class="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3">
             <div v-for="g in gs.gifts" :key="g.id" class="border border-default rounded-lg overflow-hidden flex flex-col group">
               <div class="relative aspect-square bg-elevated flex items-center justify-center">
-                <img v-if="g.image" :src="g.image" referrerpolicy="no-referrer" alt="" class="w-full h-full object-contain">
-                <UIcon v-else name="i-lucide-gift" class="size-10 text-muted" />
+                <GiftThumb :src="g.image" class="w-full h-full" icon="size-10" />
                 <button
                   type="button"
                   class="absolute top-1.5 right-1.5 rounded-full bg-default/80 p-1.5 transition-colors"
