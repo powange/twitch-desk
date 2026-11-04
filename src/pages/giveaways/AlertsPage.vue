@@ -299,6 +299,8 @@ function evidenceText(g: GiveawayView) {
 }
 
 const { byId: giftById, gifts: catalogGifts } = useGiftCatalog()
+// Un cadeau favori parmi ceux du giveaway : ligne mise en avant (bordure violette), comme sur la page Chaînes
+const hasFavorite = (g: GiveawayView) => g.giftIds.some(id => giftById.value.get(id)?.favorite)
 const { openGift } = useGiftPreview()
 
 // Formulaire : null = nouveau giveaway
@@ -562,7 +564,12 @@ function share(g: GiveawayView) {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="g in group.list" :key="g.id" class="border-t border-default" :class="g.winnerOurs ? 'bg-success/10' : ''">
+            <tr
+              v-for="g in group.list"
+              :key="g.id"
+              class="border-t border-default"
+              :class="[g.winnerOurs ? 'bg-success/10' : hasFavorite(g) ? 'bg-primary/5' : '', hasFavorite(g) ? 'shadow-[inset_3px_0_0_var(--ui-primary)]' : '']"
+            >
               <td class="px-3 py-2 whitespace-nowrap text-muted">{{ timeAgo(g.detectedAt, now) }}</td>
               <td class="px-2 py-2">
                 <UButton v-if="liveOf(g.channel)" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${g.channel}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(g.channel)" />
@@ -611,10 +618,11 @@ function share(g: GiveawayView) {
               </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
-                  <UTooltip v-for="id in g.giftIds" :key="id" :text="giftById.get(id)?.title ?? ''">
+                  <UTooltip v-for="id in g.giftIds" :key="id" :text="`${giftById.get(id)?.title ?? ''}${giftById.get(id)?.favorite ? ' (favori)' : ''}`">
                     <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${giftById.get(id)?.title ?? 'le cadeau'} en grand`" @click="openGift(id)">
                       <img v-if="giftById.get(id)?.image" :src="giftById.get(id)?.image ?? ''" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated">
                       <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                      <SolidIcon v-if="giftById.get(id)?.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
                     </button>
                   </UTooltip>
                   <span v-if="g.giftIds.length === 0" class="text-muted">—</span>

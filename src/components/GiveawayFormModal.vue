@@ -154,6 +154,9 @@ watch(() => [open.value, form.value.kind, form.value.url.trim(), seGiveawayId.va
 
 // Ce que le cœur sait de la chaîne saisie (fiche Twitch, StreamElements, streamer)
 const suggestion = ref<ChannelSuggestion | null>(null)
+// Giveaway StreamElements en cours trouvé à l'instant sur la chaîne ; lien repris tout seul
+const liveSe = ref<ChannelSuggestion['streamelements']>(null)
+const seAutoFilled = ref(false)
 
 // --- Cadeaux ---
 const giftSearch = ref('')
@@ -239,6 +242,8 @@ watch(open, (isOpen) => {
   inspectSeq++
   inspecting.value = false
   suggestion.value = null
+  liveSe.value = null
+  seAutoFilled.value = false
   createdId.value = null
   giftsTouched.value = false
   streamerDiscord.value = ''
@@ -334,6 +339,8 @@ watch(() => form.value.channel, (login) => {
   if (!open.value || login === skip) return
   if (inspectTimer) clearTimeout(inspectTimer)
   suggestion.value = null
+  liveSe.value = null
+  seAutoFilled.value = false
   if (!login.trim()) return
   inspectTimer = setTimeout(() => void inspect(login), 400)
 })
@@ -438,6 +445,8 @@ async function inspect(login: string) {
 function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof formSnapshot>, fresh: boolean) {
   const f = form.value
   suggestion.value = found
+  // Giveaway StreamElements en cours d'après une fiche relue à l'instant (pas une fiche gardée)
+  if (fresh) liveSe.value = found.streamelements
   // Fiche du streamer : ce qu'on a noté, sinon le lien Discord trouvé sur sa chaîne
   streamerLoaded.value = {
     discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '', ignored: (found.streamer?.ignoredCommands ?? []).join(),
@@ -476,6 +485,19 @@ function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof for
     f.command = found.detectedCommand
   }
 }
+// Type StreamElements sans lien (choisi, ou giveaway enregistré ainsi) : lien du giveaway en
+// cours sur la page StreamElements du streamer repris tout seul ; un lien déjà saisi est gardé
+watch(() => [open.value, form.value.kind, liveSe.value] as const, ([isOpen, kind, se]) => {
+  const f = form.value
+  if (!isOpen || kind !== 'streamelements' || !se || f.url.trim() || props.streamerOnly || pastMode.value) return
+  f.url = se.url
+  if (se.command && !f.command.trim()) f.command = se.command
+  if (se.maxTickets && f.ticketMax == null) f.ticketMax = se.maxTickets
+  seAutoFilled.value = true
+})
+watch(() => form.value.url, (url) => {
+  if (url !== liveSe.value?.url) seAutoFilled.value = false
+})
 const saving = ref(false)
 
 const profile = computed(() => suggestion.value?.profile ?? null)
@@ -837,7 +859,7 @@ async function save() {
             </div>
               <UFormField
                 label="Lien du giveaway StreamElements"
-                :help="seGiveawayId ? `Giveaway StreamElements n° ${seGiveawayId} : clos dès que StreamElements annonce son gagnant` : 'Avec le lien, le giveaway est clos dès que StreamElements annonce son gagnant'"
+                :help="seAutoFilled ? 'Giveaway en cours trouvé sur la page StreamElements du streamer : lien rempli tout seul' : !form.url.trim() && inspecting ? 'Recherche d\'un giveaway en cours sur StreamElements…' : seGiveawayId ? `Giveaway StreamElements n° ${seGiveawayId} : clos dès que StreamElements annonce son gagnant` : 'Avec le lien, le giveaway est clos dès que StreamElements annonce son gagnant'"
               >
                 <UInput id="gw-url" v-model="form.url" placeholder="https://streamelements.com/…/giveaway/…" class="w-full" />
               </UFormField>

@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.23',
+    date: '2026-11-04',
+    title: 'Lien StreamElements trouvé tout seul, favoris sur la page Alertes',
+    changes: [
+      { kind: 'new', text: 'Formulaire de giveaway : avec le type StreamElements et sans lien, le giveaway en cours sur la page StreamElements du streamer est trouvé et son lien rempli tout seul (avec la commande et le maximum de tickets s\'ils sont vides). Un lien déjà saisi n\'est jamais remplacé.' },
+      { kind: 'new', text: 'Page Alertes : petite étoile sur les cadeaux favoris, et ligne mise en avant par une bordure violette quand un giveaway (en cours ou passé) a un cadeau favori, comme sur la page Chaînes.' }
+    ]
+  },
+  {
     version: '0.48.22',
     date: '2026-11-04',
     title: 'Performances',
