@@ -1452,10 +1452,19 @@ pub async fn past_giveaways(
     blocking(&app, move |app| crate::giveaways::past_views(app, &filter, page, per_page)).await
 }
 
-/// Streamers des giveaways passés (autocomplétion du filtre)
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PastChannel {
+    login: String,
+    /// Photo de profil, si son statut live a déjà été relu
+    avatar: Option<String>,
+}
+
+/// Streamers des giveaways passés (autocomplétion du filtre), avec leur photo si elle est connue
 #[tauri::command]
-pub async fn past_giveaway_channels(app: AppState<'_>) -> CmdResult<Vec<String>> {
-    blocking(&app, |app| app.db.closed_giveaway_channels().map_err(db_err)).await?
+pub async fn past_giveaway_channels(app: AppState<'_>) -> CmdResult<Vec<PastChannel>> {
+    let logins = blocking(&app, |app| app.db.closed_giveaway_channels().map_err(db_err)).await??;
+    Ok(logins.into_iter().map(|login| PastChannel { avatar: app.lives.avatar(&login), login }).collect())
 }
 
 #[tauri::command]

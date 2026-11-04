@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.15',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'fixed', text: 'Filtre « Streamer » des giveaways passés : la liste des streamers s\'affiche enfin (elle restait vide à cause de l\'entrée « Tous les streamers »), et les lettres tapées au milieu du nom les trouvent (« lf_ », « mav »).' },
+      { kind: 'improved', text: 'Filtres « Streamer » (page Chaînes et giveaways passés) : photo de profil du streamer à gauche de son nom, quand elle est connue.' },
+      { kind: 'fixed', text: 'Formulaire de giveaway : la lecture du giveaway StreamElements d\'après son lien pouvait ne pas se faire (erreur au chargement du formulaire).' }
+    ]
+  },
+  {
     version: '0.48.14',
     date: '2026-11-04',
     changes: [

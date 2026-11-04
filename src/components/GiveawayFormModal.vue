@@ -61,31 +61,6 @@ const seInfoLoading = ref(false)
 const seInfoError = ref<string | null>(null)
 let seInfoTimer: ReturnType<typeof setTimeout> | null = null
 let seInfoSeq = 0
-watch(() => [open.value, form.value.kind, form.value.url.trim(), seGiveawayId.value] as const, ([isOpen, kind, url, id]) => {
-  if (seInfoTimer) clearTimeout(seInfoTimer)
-  if (!isOpen || kind !== 'streamelements' || !id) {
-    seInfo.value = null
-    seInfoError.value = null
-    return
-  }
-  seInfoTimer = setTimeout(async () => {
-    const seq = ++seInfoSeq
-    seInfoLoading.value = true
-    try {
-      const info = await invoke<SeGiveawayInfo | null>('se_giveaway_info', { url })
-      if (seq === seInfoSeq) {
-        seInfo.value = info
-        seInfoError.value = null
-        // Maximum par personne annoncé par StreamElements, sans écraser une valeur déjà saisie
-        if (info?.maxTickets && form.value.ticketMax == null) form.value.ticketMax = info.maxTickets
-      }
-    } catch (e) {
-      if (seq === seInfoSeq) { seInfo.value = null; seInfoError.value = String(e) }
-    } finally {
-      if (seq === seInfoSeq) seInfoLoading.value = false
-    }
-  }, 400)
-}, { immediate: true })
 const seStateLabel = computed(() => {
   const i = seInfo.value
   if (i?.winners.length) return { label: 'Tiré', color: 'success' as const }
@@ -150,6 +125,32 @@ const form = ref({
   // Gagnants et leur chance de gagner (« 20.92% », vide : inconnue)
   winners: [] as { login: string, chance: string }[]
 })
+// Après `form` : la surveillance le lit dès sa création
+watch(() => [open.value, form.value.kind, form.value.url.trim(), seGiveawayId.value] as const, ([isOpen, kind, url, id]) => {
+  if (seInfoTimer) clearTimeout(seInfoTimer)
+  if (!isOpen || kind !== 'streamelements' || !id) {
+    seInfo.value = null
+    seInfoError.value = null
+    return
+  }
+  seInfoTimer = setTimeout(async () => {
+    const seq = ++seInfoSeq
+    seInfoLoading.value = true
+    try {
+      const info = await invoke<SeGiveawayInfo | null>('se_giveaway_info', { url })
+      if (seq === seInfoSeq) {
+        seInfo.value = info
+        seInfoError.value = null
+        // Maximum par personne annoncé par StreamElements, sans écraser une valeur déjà saisie
+        if (info?.maxTickets && form.value.ticketMax == null) form.value.ticketMax = info.maxTickets
+      }
+    } catch (e) {
+      if (seq === seInfoSeq) { seInfo.value = null; seInfoError.value = String(e) }
+    } finally {
+      if (seq === seInfoSeq) seInfoLoading.value = false
+    }
+  }, 400)
+}, { immediate: true })
 
 // Ce que le cœur sait de la chaîne saisie (fiche Twitch, StreamElements, streamer)
 const suggestion = ref<ChannelSuggestion | null>(null)

@@ -26,6 +26,7 @@ declare module 'vue' {
     GiftPreviewModal: typeof import('./src/components/GiftPreviewModal.vue')['default']
     GiveawayConditions: typeof import('./src/components/GiveawayConditions.vue')['default']
     GiveawayFormModal: typeof import('./src/components/GiveawayFormModal.vue')['default']
+    GreetingConfirmModal: typeof import('./src/components/GreetingConfirmModal.vue')['default']
     IgnoredCommandsEditor: typeof import('./src/components/IgnoredCommandsEditor.vue')['default']
     ImportPastModal: typeof import('./src/components/ImportPastModal.vue')['default']
     LogViewer: typeof import('./src/components/LogViewer.vue')['default']
@@ -35,6 +36,7 @@ declare module 'vue' {
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SolidIcon: typeof import('./src/components/SolidIcon.vue')['default']
+    StreamerSelect: typeof import('./src/components/StreamerSelect.vue')['default']
     SyncSettings: typeof import('./src/components/SyncSettings.vue')['default']
     UAlert: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Alert.vue')['default']
     UApp: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/App.vue')['default']
@@ -61,5 +63,6 @@ declare module 'vue' {
     USwitch: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Switch.vue')['default']
     UTextarea: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Textarea.vue')['default']
     UTooltip: typeof import('./node_modules/@nuxt/ui/dist/runtime/components/Tooltip.vue')['default']
+    WhatsNewModal: typeof import('./src/components/WhatsNewModal.vue')['default']
   }
 }

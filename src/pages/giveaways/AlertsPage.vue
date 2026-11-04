@@ -67,10 +67,14 @@ const pastFilterCount = computed(() => {
 const giftFilterItems = computed(() => catalogGifts.value.map(g => ({ label: g.title, value: g.id })))
 // Streamers des giveaways passés (autocomplétion du filtre), relus à l'ouverture des filtres
 const pastChannels = ref<string[]>([])
+const pastAvatars = ref<Record<string, string | null>>({})
 watch(pastFilterOpen, (isOpen) => {
   if (!isOpen) return
-  invoke<string[]>('past_giveaway_channels')
-    .then((list) => { pastChannels.value = list })
+  invoke<{ login: string, avatar: string | null }[]>('past_giveaway_channels')
+    .then((list) => {
+      pastChannels.value = list.map(c => c.login)
+      pastAvatars.value = Object.fromEntries(list.map(c => [c.login.toLowerCase(), c.avatar ?? avatarOf(c.login)]))
+    })
     .catch((e: unknown) => toast.add({ title: 'Streamers des giveaways passés non lus', description: String(e), color: 'error' }))
 })
 // Dates du formulaire (jour local) → bornes RFC 3339, journées entières comprises
@@ -727,7 +731,7 @@ function share(g: GiveawayView) {
             </UFormField>
           </div>
           <UFormField label="Streamer">
-            <StreamerSelect id="past-channel" v-model="pastFilter.channel" :items="pastChannels" class="w-full" />
+            <StreamerSelect id="past-channel" v-model="pastFilter.channel" :items="pastChannels" :avatars="pastAvatars" class="w-full" />
           </UFormField>
           <UFormField label="Type de giveaway">
             <USelect v-model="pastFilter.kinds" :items="GIVEAWAY_KIND_ITEMS" multiple placeholder="Tous les types" class="w-full" />

@@ -90,6 +90,7 @@ const giftFilter = usePersisted('channels.gifts', [] as number[], { sanitize: nu
 // Streamers (noms ou bouts de nom) : une chaîne passe si son nom en contient un
 const streamerFilter = usePersisted('channels.streamers', [] as string[], { sanitize: stringList })
 const streamerItems = computed(() => (view.value?.channels ?? []).map(c => c.login).sort((a, b) => a.localeCompare(b)))
+const streamerAvatars = computed(() => Object.fromEntries((view.value?.channels ?? []).map(c => [c.login.toLowerCase(), c.profileImage])))
 // Cadeau retenu retiré du catalogue : plus filtré (une fois le catalogue chargé)
 watch(byId, (all) => {
   if (!catalog.value) return
@@ -277,7 +278,7 @@ async function confirmRemove() {
     />
 
     <div class="flex items-center gap-2 flex-wrap">
-      <StreamerSelect v-model="streamerFilter" :items="streamerItems" multiple class="w-72" />
+      <StreamerSelect v-model="streamerFilter" :items="streamerItems" :avatars="streamerAvatars" multiple class="w-72" />
       <USelectMenu
         v-model="categoryFilter"
         :items="categoryItems"
