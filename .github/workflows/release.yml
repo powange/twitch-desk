@@ -10,6 +10,9 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Relance à la main d'une version (run pas parti, ou parti en retard) :
+  # gh workflow run release.yml --ref vX.Y.Z (le tag, pas une branche)
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,6 +27,10 @@ jobs:
           persist-credentials: false
       - name: Tag et version de l'application identiques
         run: |
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "::error::À lancer sur un tag vX.Y.Z (--ref vX.Y.Z), pas sur $GITHUB_REF_NAME"
+            exit 1
+          fi
           tag="${GITHUB_REF_NAME#v}"
           conf=$(jq -r .version src-tauri/tauri.conf.json)
           cargo=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
@@ -55,7 +62,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: stable
+          # Version figée (même partout : caches de ci.yml, cache.yml et release.yml communs) ; à
+          # changer ici et dans les deux autres fichiers en même temps
+          toolchain: 1.99.1
           components: clippy
 
       # Relu sans enregistrer (un cache enregistré sur un tag serait inutilisable) : celui de
@@ -75,9 +84,11 @@ jobs:
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
 
+  # Brouillon et compilation sans attendre les tests (déjà passés sur main par ci.yml) : ils
+  # tournent en parallèle, et la signature comme la publication attendent toujours leur réussite
   draft:
     name: Release en brouillon
-    needs: test
+    needs: version
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -126,7 +137,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: stable
+          # Version figée (même partout : caches de ci.yml, cache.yml et release.yml communs) ; à
+          # changer ici et dans les deux autres fichiers en même temps
+          toolchain: 1.99.1
 
       # Cache des dépendances compilées, préparé sur main par cache.yml (un tag ne peut relire
       # que le cache de main) ; jamais enregistré ici : il resterait attaché au tag, inutilisable
@@ -180,7 +193,7 @@ jobs:
   # qui signe
   sign:
     name: Signature et latest.json
-    needs: [draft, build]
+    needs: [draft, build, test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -305,11 +318,20 @@ jobs:
       contents: write
     steps:
       # Tous les paquets et latest.json sont en place : la release devient la dernière, les
-      # applications voient la mise à jour
+      # applications voient la mise à jour. Sauf si une version plus haute est déjà publiée
+      # (deux releases en même temps, l'ancienne finissant en dernier) : elle reste la dernière
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ID: ${{ needs.draft.outputs.id }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/releases/$ID" --jq '.assets[].name' | grep -qx latest.json \
             || { echo "::error::latest.json absent de la release"; exit 1; }
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F draft=false -f make_latest=true --jq .html_url
+          ours="${GITHUB_REF_NAME#v}"
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+          latest="${latest#v}"
+          make_latest=true
+          if [ -n "$latest" ] && [ "$latest" != "$ours" ] && [ "$(printf '%s\n%s\n' "$ours" "$latest" | sort -V | tail -1)" = "$latest" ]; then
+            echo "La v$latest, plus haute, est déjà publiée : elle reste la dernière release"
+            make_latest=false
+          fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F draft=false -f make_latest=$make_latest --jq .html_url

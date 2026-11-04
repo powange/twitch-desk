@@ -25,10 +25,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: npm
+          # Sans cache npm : sa clé (package-lock.json, qui contient la version de l'application)
+          # change à chaque version, il n'était jamais relu
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: stable
+          # Version figée (même partout : caches de ci.yml, cache.yml et release.yml communs) ; à
+          # changer ici et dans les deux autres fichiers en même temps
+          toolchain: 1.99.1
           components: clippy
       # Clé propre (distincte de server.yml et de cache.yml) ; relue aussi par les tests de
       # release.yml sous Linux

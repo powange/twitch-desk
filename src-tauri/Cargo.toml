@@ -10,7 +10,9 @@ rust-version = "1.90"
 
 [lib]
 name = "twitch_desk_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Bibliothèque Rust seule : les formats staticlib et cdylib ne servent qu'aux versions
+# mobiles (absentes), et chacun refaisait toute l'optimisation à la compilation
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
