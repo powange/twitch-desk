@@ -96,6 +96,7 @@ async fn refresh(app: &Arc<App>) {
     for login in due {
         let mut insight = ChannelInsight::default();
         if let Ok(Some(p)) = gql::channel_profile(&app.http, &login).await {
+            crate::commands::keep_pinned(app, &login, &p);
             insight.description = p.description;
             insight.pinned_message = p.pinned_message;
         }

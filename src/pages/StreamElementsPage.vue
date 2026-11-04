@@ -9,7 +9,10 @@ import { useSnapshot } from '../composables/useSnapshot'
 import { useOpenExternal } from '../utils/external'
 import { useWatchStream } from '../utils/viewer'
 import { formatNumber } from '../utils/format'
-import type { ChannelView, GiveawayView } from '../types'
+import type { ChannelView, Gift, GiveawayView } from '../types'
+import { suggestGifts, useGiftCatalog } from '../composables/useGiftCatalog'
+import { useGiftPreview } from '../composables/useGiftPreview'
+import SolidIcon from '../components/SolidIcon.vue'
 import AccountPicker from '../components/AccountPicker.vue'
 import { useSelectedAccount } from '../composables/useSelectedAccount'
 import { stringList, usePersisted } from '../composables/usePersisted'
@@ -88,6 +91,17 @@ const known = computed(() => {
 function knownGiveaway(channel: ChannelView): GiveawayView | null {
   return known.value.get(channel.login) ?? null
 }
+// Cadeaux : ceux rattachés au giveaway connu, puis ceux repérés dans le titre et la description
+// du giveaway StreamElements en cours (calculés une fois par mise à jour)
+const { byId: giftById, gifts: catalogGifts } = useGiftCatalog()
+const { openGift } = useGiftPreview()
+const giftsByLogin = computed(() => new Map(channels.value.map((c) => {
+  const attached = (known.value.get(c.login)?.giftIds ?? []).map(id => giftById.value.get(id)).filter((g): g is Gift => !!g)
+  const text = [c.seGiveaway?.title, c.seGiveaway?.description].filter(Boolean).join('\n')
+  const found = text ? suggestGifts(catalogGifts.value, text).filter(g => !attached.some(a => a.id === g.id)) : []
+  return [c.login, [...attached.map(gift => ({ gift, attached: true })), ...found.map(gift => ({ gift, attached: false }))]] as const
+})))
+const channelGifts = (c: ChannelView) => giftsByLogin.value.get(c.login) ?? []
 // État du giveaway : en cours (StreamElements le donne actif), en pause (live terminé), clos, ou rien de connu
 function giveawayState(channel: ChannelView): { label: string, color: 'primary' | 'neutral' | 'success' | 'warning' } | null {
   if (channel.seGiveaway) return { label: 'En cours', color: 'primary' }
@@ -303,6 +317,7 @@ function affordable(channel: ChannelView): number | null {
               <th class="text-right px-1.5 py-2">Participants</th>
               <th class="text-left px-1.5 py-2">Giveaway</th>
               <th class="text-left px-1.5 py-2 whitespace-nowrap">Titre + description</th>
+              <th class="text-left px-1.5 py-2">Cadeaux</th>
               <th class="text-left px-1.5 py-2">Gagnant</th>
               <th class="text-left px-1.5 py-2">Acheter</th>
               <th class="text-center px-1.5 py-2 whitespace-nowrap">
@@ -405,6 +420,19 @@ function affordable(channel: ChannelView): number | null {
                 </template>
                 <span v-else class="text-muted">—</span>
               </td>
+              <td class="px-1.5 py-2">
+                <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
+                  <UTooltip v-for="x in channelGifts(channel)" :key="x.gift.id" :text="`${x.gift.title} (${x.attached ? 'rattaché au giveaway' : 'repéré dans le titre ou la description'}${x.gift.favorite ? ', favori' : ''})`">
+                    <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${x.gift.title} en grand`" @click="openGift(x.gift.id)">
+                      <img v-if="x.gift.image" :src="x.gift.image" referrerpolicy="no-referrer" alt="" class="size-8 rounded object-contain bg-elevated" loading="lazy">
+                      <span v-else class="size-8 rounded bg-elevated flex items-center justify-center"><UIcon name="i-lucide-gift" class="size-4 text-muted" /></span>
+                      <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
+                      <SolidIcon v-if="x.gift.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
+                    </button>
+                  </UTooltip>
+                  <span v-if="channelGifts(channel).length === 0" class="text-muted">—</span>
+                </div>
+              </td>
               <td class="px-1.5 py-2 whitespace-nowrap">
                 <div v-if="knownGiveaway(channel)?.winners.length" class="flex flex-col gap-0.5">
                   <span
@@ -474,10 +502,10 @@ function affordable(channel: ChannelView): number | null {
               </td>
             </tr>
             <tr v-if="shown.length === 0 && channels.length">
-              <td colspan="18" class="px-3 py-8 text-center text-muted">Aucune chaîne ne correspond au filtre.</td>
+              <td colspan="19" class="px-3 py-8 text-center text-muted">Aucune chaîne ne correspond au filtre.</td>
             </tr>
             <tr v-if="channels.length === 0">
-              <td colspan="18" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
+              <td colspan="19" class="px-3 py-8 text-center text-muted">Aucune chaîne. Ajoute la première avec le champ ci-dessus.</td>
             </tr>
           </tbody>
         </table>

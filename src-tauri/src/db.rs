@@ -439,7 +439,27 @@ const MIGRATIONS: &[&str] = &[r#"
     -- Vue des giveaways (ouverts et en pause, puis les plus récents) lue sans trier toute la table
     CREATE INDEX giveaways_status_at ON giveaways (status, detected_at);
     CREATE INDEX giveaways_at ON giveaways (detected_at);
+"#, r#"
+    -- Dernier message épinglé vu dans le chat de chaque chaîne : retrouvé hors ligne
+    CREATE TABLE pinned_messages (
+        channel TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        sender TEXT,
+        updated_at TEXT NOT NULL,
+        seen_at TEXT NOT NULL
+    );
 "#];
+
+/// Message épinglé gardé ; `current` : relu sur Twitch à l'instant (sinon dernière version vue)
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedMessageRow {
+    pub text: String,
+    pub sender: Option<String>,
+    pub updated_at: String,
+    pub seen_at: String,
+    pub current: bool,
+}
 
 /// Types de giveaway
 pub const GIVEAWAY_KINDS: &[&str] = &["command", "ticket", "streamelements", "channelpoints"];
@@ -2224,6 +2244,27 @@ impl Db {
     }
 
     /// Réponses des bots de toutes les chaînes (affichage dans les giveaways et les alertes)
+    /// Message épinglé vu à l'instant : gardé (date de modification changée seulement s'il diffère)
+    pub fn save_pinned_message(&self, channel: &str, text: &str, sender: Option<&str>, at: &str) -> DbResult<()> {
+        self.conn().execute(
+            "INSERT INTO pinned_messages (channel, text, sender, updated_at, seen_at) VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(channel) DO UPDATE SET
+                 updated_at = CASE WHEN text IS excluded.text AND sender IS excluded.sender THEN updated_at ELSE excluded.updated_at END,
+                 text = excluded.text, sender = excluded.sender, seen_at = excluded.seen_at",
+            params![channel, text, sender, at],
+        )?;
+        Ok(())
+    }
+
+    /// Dernier message épinglé gardé d'une chaîne
+    pub fn pinned_message(&self, channel: &str) -> DbResult<Option<PinnedMessageRow>> {
+        self.conn()
+            .query_row("SELECT text, sender, updated_at, seen_at FROM pinned_messages WHERE channel = ?1", [channel], |r| {
+                Ok(PinnedMessageRow { text: r.get(0)?, sender: r.get(1)?, updated_at: r.get(2)?, seen_at: r.get(3)?, current: false })
+            })
+            .optional()
+    }
+
     pub fn all_bot_replies(&self) -> DbResult<Vec<BotReply>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -2823,6 +2864,19 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!((all[&(a, "g1".to_owned())], all[&(b, "g2".to_owned())]), (8, 2));
         assert!(db.se_tickets_of(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pinned_message_keeps_last_version() {
+        let db = Db::memory().unwrap();
+        assert_eq!(db.pinned_message("caynai").unwrap(), None);
+        db.save_pinned_message("caynai", "!gw pour participer", Some("Caynai"), "2026-11-04T10:00:00Z").unwrap();
+        db.save_pinned_message("caynai", "!gw pour participer", Some("Caynai"), "2026-11-04T11:00:00Z").unwrap();
+        let p = db.pinned_message("caynai").unwrap().unwrap();
+        assert_eq!((p.updated_at.as_str(), p.seen_at.as_str()), ("2026-11-04T10:00:00Z", "2026-11-04T11:00:00Z"));
+        db.save_pinned_message("caynai", "Tirage à 22 h", Some("Caynai"), "2026-11-04T12:00:00Z").unwrap();
+        let p = db.pinned_message("caynai").unwrap().unwrap();
+        assert_eq!((p.text.as_str(), p.updated_at.as_str()), ("Tirage à 22 h", "2026-11-04T12:00:00Z"));
     }
 
     #[test]

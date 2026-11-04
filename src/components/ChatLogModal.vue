@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from '../composables/useSnapshot'
 import { GIVEAWAY_KIND } from '../utils/giveaways'
@@ -50,8 +50,12 @@ const kindItems = [
 const entries = ref<ChatLogEntry[]>([])
 const commands = ref<[string, number][]>([])
 const replies = ref<BotReply[]>([])
-// Message épinglé du chat, relu sur Twitch à chaque ouverture
-const pinned = ref<{ text: string, sender: string | null } | null>(null)
+// Message épinglé du chat : relu sur Twitch à l'ouverture puis chaque minute ; sinon (hors
+// ligne, retiré) la dernière version gardée, avec sa date
+interface Pinned { text: string, sender: string | null, updatedAt: string, seenAt: string, current: boolean }
+const pinned = ref<Pinned | null>(null)
+let pinnedTimer: ReturnType<typeof setInterval> | null = null
+onBeforeUnmount(() => { if (pinnedTimer) clearInterval(pinnedTimer) })
 const sections = ref<ChatLogSection[]>([])
 // Ouvert sur un giveaway fini : messages jusqu'à sa fin (les plus récents sur demande)
 const beforeAt = ref<string | null>(null)
@@ -114,7 +118,7 @@ function reloadIfChanged() {
 
 async function loadPinned(channel: string) {
   try {
-    const p = await invoke<{ text: string, sender: string | null } | null>('chat_pinned_message', { channel })
+    const p = await invoke<Pinned | null>('chat_pinned_message', { channel })
     if (props.channel === channel) pinned.value = p
   } catch {
     // Meilleur effort : pas d'encart
@@ -189,7 +193,10 @@ function showRecent() {
 }
 
 watch(open, (isOpen) => {
+  if (pinnedTimer) clearInterval(pinnedTimer)
+  pinnedTimer = null
   if (!isOpen) return
+  pinnedTimer = setInterval(() => { if (props.channel) void loadPinned(props.channel) }, 60_000)
   if (authorTimer) clearTimeout(authorTimer)
   // Réponses d'une ouverture précédente ignorées
   loadSeq++
@@ -298,6 +305,8 @@ function time(iso: string) {
             <UIcon name="i-lucide-pin" class="size-3.5 text-primary" />
             <span class="font-medium text-default">Message épinglé</span>
             <span v-if="pinned.sender">· {{ pinned.sender }}</span>
+            <span>· modifié {{ time(pinned.updatedAt) }}</span>
+            <span v-if="!pinned.current" class="text-warning">· dernière version gardée, vue {{ time(pinned.seenAt) }} (plus lisible sur Twitch : chaîne hors ligne ou message retiré)</span>
           </div>
           <div class="break-words whitespace-pre-line">{{ pinned.text }}</div>
         </div>

@@ -634,9 +634,32 @@ pub fn get_chat_log_meta(app: AppState, channel: String) -> CmdResult<ChatLogMet
 
 /// Message épinglé du chat d'une chaîne, relu sur Twitch (journal du chat)
 #[tauri::command]
-pub async fn chat_pinned_message(app: AppState<'_>, channel: String) -> CmdResult<Option<crate::twitch::gql::PinnedMessage>> {
+pub async fn chat_pinned_message(app: AppState<'_>, channel: String) -> CmdResult<Option<crate::db::PinnedMessageRow>> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
-    crate::twitch::gql::pinned_message(&app.http, &channel).await.map_err(|e| format!("Message épinglé illisible : {e}"))
+    // Relu sur Twitch et gardé ; aucun (chaîne hors ligne, désépinglé) ou Twitch injoignable :
+    // dernière version gardée, avec sa date
+    let current = match crate::twitch::gql::pinned_message(&app.http, &channel).await {
+        Ok(Some(p)) => {
+            let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            app.db.save_pinned_message(&channel, &p.text, p.sender.as_deref(), &at).map_err(db_err)?;
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::debug!("message épinglé de {channel} : {e}");
+            false
+        }
+    };
+    Ok(app.db.pinned_message(&channel).map_err(db_err)?.map(|p| crate::db::PinnedMessageRow { current, ..p }))
+}
+
+/// Message épinglé lu avec la fiche d'une chaîne : gardé (dernière version, retrouvée hors ligne)
+pub fn keep_pinned(app: &App, login: &str, profile: &crate::twitch::gql::ChannelProfile) {
+    let Some(text) = profile.pinned_message.as_deref().filter(|t| !t.trim().is_empty()) else { return };
+    let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    if let Err(e) = app.db.save_pinned_message(login, text, profile.pinned_by.as_deref(), &at) {
+        tracing::warn!("message épinglé de {login} : {e}");
+    }
 }
 
 /// Teste une annonce de gagnant avec les formulations intégrées et celles données
@@ -1146,6 +1169,9 @@ pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdRe
         tracing::warn!("fiche de {login} : {e}");
         None
     });
+    if let Some(p) = &profile {
+        keep_pinned(&app, &login, p);
+    }
     // Meilleur effort : StreamElements injoignable = pas de suggestion
     let streamelements = match streamelements::channel_id(&app.http, &login).await {
         Ok(Some(se_id)) => streamelements::active_giveaway(&app.http, &se_id).await.ok().flatten().map(|g| SeSuggestion {

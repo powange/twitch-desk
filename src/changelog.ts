@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.25',
+    date: '2026-11-04',
+    title: 'Message épinglé gardé, cadeaux sur la page StreamElements',
+    changes: [
+      { kind: 'new', text: 'Journal du chat : la dernière version du message épinglé est gardée. Streamer hors ligne ou message retiré : elle reste affichée, avec la date à laquelle elle a été vue. Le message est aussi relu chaque minute tant que le journal est ouvert.' },
+      { kind: 'new', text: 'Page StreamElements : colonne Cadeaux, avec les cadeaux rattachés au giveaway de la chaîne, puis ceux repérés dans le titre et la description du giveaway StreamElements en cours (petite étincelle), favoris étoilés.' }
+    ]
+  },
+  {
     version: '0.48.24',
     date: '2026-11-04',
     title: 'Message épinglé dans le journal du chat',
