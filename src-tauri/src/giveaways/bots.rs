@@ -19,7 +19,7 @@ pub enum BotEvent {
     StreamElementsUrl(String),
 }
 
-pub const CHAT_BOTS: &[&str] = &["streamelements", "wizebot", "nightbot", "phuzzybot"];
+pub const CHAT_BOTS: &[&str] = &["streamelements", "wizebot", "nightbot", "phuzzybot", "lingo_echo"];
 
 // Faux « gagnants » : « Nobody won… », « Personne a gagné… », « @x, you won… »
 const NON_WINNER_NAMES: &[&str] = &["nobody", "noone", "no", "one", "personne", "someone", "somebody", "you"];
@@ -40,6 +40,10 @@ static SE_TICKETS: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+)\s+got\s+\d+\s+ticket\(?s?\)?.*?\((\d+)/(\d+)\)"));
 static WIZEBOT_WIN: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)tombe sur .*?viewers?\s+@?([A-Za-z0-9_]+)"));
 static NIGHTBOT_WIN: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)congratulations,?\s+@?([A-Za-z0-9_]+).*?won the giveaway"));
+// Lingo Echo : « La personne gagnante est : @taz2_0 [✅ Suit la chaîne] 🎉 Participations : 8 ;
+// chance de gagner : 12.50% »
+static LINGO_WIN: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)personne\s+gagnante\s+est\s*:?\s*@?([A-Za-z0-9_]{3,25})\b"));
+static LINGO_CHANCE: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)chance\s+de\s+gagner\s*:?\s*([\d.,]+\s?%)"));
 static PURCHASE: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)@?([A-Za-z0-9_]+),?\s+(?:you\s+)?successfully bought\s+(\d+)\s+ticket"));
 
@@ -54,7 +58,7 @@ static GENERIC_WIN_SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
 });
 // « 🎁 Le gagnant du tirage est wazagoat. », « The winner of the giveaway is Bob »
 static GENERIC_WIN_IS: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?i)(?:\ble\s+gagnant|\bla\s+gagnante|\bles\s+gagnants?|\bthe\s+winners?)(?:\s+(?:du|de\s+la|of\s+the)\s+(?:tirage|giveaway|concours|raffle|loterie))?\s*(?:est|sont|is|are)\s*:?\s*@?([A-Za-z0-9_]{3,25})\b")
+    re(r"(?i)(?:\ble\s+gagnant|\bla\s+(?:personne\s+)?gagnante|\bles\s+gagnants?|\bthe\s+winners?)(?:\s+(?:du|de\s+la|of\s+the)\s+(?:tirage|giveaway|concours|raffle|loterie))?\s*(?:est|sont|is|are)\s*:?\s*@?([A-Za-z0-9_]{3,25})\b")
 });
 static GENERIC_WIN_EN: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?i)congrat(?:ulation)?s?\s*,?\s*@?([A-Za-z0-9_]{3,25})\b[^@]*?\b(?:you\s+(?:have\s+)?won|has\s+won)\b")
@@ -129,7 +133,7 @@ pub fn test_phrase(message: &str, templates: &[String]) -> Result<Option<(String
             return Ok(Some((winner, true)));
         }
     }
-    let builtin = [&SE_WIN_EN, &SE_WIN_FR, &WIZEBOT_WIN, &NIGHTBOT_WIN]
+    let builtin = [&SE_WIN_EN, &SE_WIN_FR, &WIZEBOT_WIN, &NIGHTBOT_WIN, &LINGO_WIN]
         .iter()
         .find_map(|re| re.captures(message).and_then(|c| winner("test", c.get(1).map(|m| m.as_str()), None)))
         .or_else(|| generic_winner_builtin("test", message));
@@ -220,6 +224,10 @@ pub fn parse_bot_message(user: &str, message: &str, privileged: bool) -> Vec<Bot
         "wizebot" => vec![WIZEBOT_WIN.captures(message).and_then(|c| winner("wizebot", c.get(1).map(|m| m.as_str()), None))],
         "nightbot" => vec![NIGHTBOT_WIN.captures(message).and_then(|c| winner("nightbot", c.get(1).map(|m| m.as_str()), None))],
         "phuzzybot" => vec![ticket_purchase(message)],
+        "lingo_echo" => vec![LINGO_WIN.captures(message).and_then(|c| {
+            let chance = LINGO_CHANCE.captures(message).and_then(|m| m.get(1)).map(|m| m.as_str().to_owned());
+            winner("lingo_echo", c.get(1).map(|m| m.as_str()), chance.as_deref())
+        })],
         _ => vec![],
     };
     let mut events: Vec<BotEvent> = events.into_iter().flatten().collect();
@@ -254,6 +262,16 @@ mod tests {
 
     fn win(bot: &str, w: &str, chance: Option<&str>) -> BotEvent {
         BotEvent::Winner { bot: bot.into(), winner: w.into(), chance: chance.map(Into::into) }
+    }
+
+    #[test]
+    fn lingo_echo_winner() {
+        let msg = "⠛⠛⠛⠛ 🟥 FBtouchdown La personne gagnante est : @taz2_0 [✅ Suit la chaîne] 🎉 Participations : 8 ; chance de gagner : 12.50% 🟥 Vous avez 90 secondes pour écrire dans le chat ! CoolCat HSWP Détails : https://lingo-echo.eu/giveaway/vulvyqueen ⣤⣤⣤";
+        assert_eq!(parse_bot_message("Lingo_Echo", msg, false), vec![win("lingo_echo", "taz2_0", Some("12.50%"))]);
+        // Même phrase écrite par un autre bot modérateur : formulation générale
+        assert_eq!(bot_events("autrebot", "La personne gagnante est : @taz2_0", true), vec![win("autrebot", "taz2_0", None)]);
+        // Un spectateur qui imite le message n'est pas lu
+        assert!(parse_bot_message("viewer42", msg, false).is_empty());
     }
 
     #[test]

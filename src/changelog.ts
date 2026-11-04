@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.17',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'fixed', text: 'Annonces du bot Lingo Echo reconnues : « La personne gagnante est : @pseudo … chance de gagner : 12.50% » enregistre le gagnant et sa chance sur le giveaway de la chaîne. La même tournure écrite par un autre bot modérateur est aussi reconnue.' }
+    ]
+  },
+  {
     version: '0.48.16',
     date: '2026-11-04',
     changes: [
