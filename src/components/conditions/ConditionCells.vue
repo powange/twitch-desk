@@ -21,15 +21,22 @@ defineProps<{ target: ConditionTarget, actions: ConditionActions }>()
           </span>
         </UTooltip>
         <!-- Réponse écrite automatiquement si un de tes comptes est désigné gagnant -->
-        <UTooltip
-          v-if="target.winReply"
-          :text="`Si tu gagnes, réponse dans le chat après ${target.winReplyDelay ?? 10} s : « ${target.winReply} »`"
-          :ui="{ content: 'max-w-sm h-auto' }"
-        >
-          <span class="inline-flex ml-1 rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" :aria-label="`Réponse automatique si tu gagnes : ${target.winReply}`">
+        <!-- Fenêtre au survol (et au clic) : le message en entier, jamais tronqué -->
+        <UPopover v-if="target.winReply" mode="hover" :open-delay="150" :close-delay="100">
+          <button type="button" class="inline-flex ml-1 rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Réponse automatique si tu gagnes : ${target.winReply}`">
             <UIcon name="i-lucide-message-circle-reply" class="size-4 text-primary block" />
-          </span>
-        </UTooltip>
+          </button>
+          <template #content>
+            <div class="flex flex-col gap-1.5 p-3 max-w-sm text-sm">
+              <div class="flex items-center gap-1.5 font-medium">
+                <UIcon name="i-lucide-message-circle-reply" class="size-4 text-primary" />
+                Réponse automatique si tu gagnes
+              </div>
+              <p class="whitespace-pre-wrap wrap-break-word">« {{ target.winReply }} »</p>
+              <p class="text-xs text-muted">Écrite dans le chat par le compte gagnant, {{ target.winReplyDelay ?? 10 }} s après l'annonce (annulable).</p>
+            </div>
+          </template>
+        </UPopover>
       </template>
     </div>
   </td>

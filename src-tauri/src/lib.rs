@@ -315,6 +315,7 @@ pub fn run() {
             commands::follow_status,
             commands::greeting_status,
             commands::say_hello,
+            commands::greeting_phrases,
             commands::test_winner_phrase,
             commands::get_detection_rules,
             commands::set_detection_rules,

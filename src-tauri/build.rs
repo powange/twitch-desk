@@ -58,6 +58,7 @@ const COMMANDS: &[&str] = &[
     "follow_status",
     "greeting_status",
     "say_hello",
+    "greeting_phrases",
     "test_winner_phrase",
     "get_detection_rules",
     "set_detection_rules",

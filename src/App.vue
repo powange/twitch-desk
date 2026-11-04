@@ -6,6 +6,7 @@ import { listen } from '@tauri-apps/api/event'
 import { getVersion } from '@tauri-apps/api/app'
 import AppUsage from './components/AppUsage.vue'
 import GiftPreviewModal from './components/GiftPreviewModal.vue'
+import GreetingConfirmModal from './components/GreetingConfirmModal.vue'
 import type { NavigationMenuItem } from '@nuxt/ui'
 import { useSnapshot } from './composables/useSnapshot'
 import { useUpdater } from './composables/useUpdater'
@@ -153,6 +154,7 @@ onMounted(async () => {
       </main>
       <GiveawayFormModal v-model:open="streamerOpen" :giveaway="null" :channel="streamerLogin" streamer-only />
       <GiftPreviewModal />
+      <GreetingConfirmModal />
     </div>
   </UApp>
 </template>

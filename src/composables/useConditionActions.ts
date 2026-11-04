@@ -48,6 +48,39 @@ async function loadFollows(channel: string) {
   }
 }
 
+// Bonjour à confirmer (fenêtre GreetingConfirmModal, montée une fois dans App.vue) : message
+// tiré au hasard pour chaque compte qui ne l'a pas encore dit, modifiable avant l'envoi
+export interface HelloDraft { accountId: number, login: string, message: string }
+export const helloRequest = reactive({
+  open: false,
+  channel: '',
+  phrases: [] as string[],
+  drafts: [] as HelloDraft[],
+  sending: false
+})
+export const randomPhrase = (phrases: string[], not?: string) => {
+  const pool = phrases.length > 1 ? phrases.filter(p => p !== not) : phrases
+  return pool[Math.floor(Math.random() * pool.length)] ?? ''
+}
+// Envoi confirmé : chaque compte écrit son message ; états de bonjour relus
+export async function sendHello(toast: ReturnType<typeof useToast>) {
+  const { channel, drafts } = helloRequest
+  const messages = drafts.map(d => ({ accountId: d.accountId, message: d.message.trim() })).filter(d => d.message)
+  if (!messages.length) return
+  helloRequest.sending = true
+  try {
+    greetings[channel] = await invoke<GreetingState[]>('say_hello', { channel, messages })
+    greetingsAt.set(channel, Date.now())
+    helloRequest.open = false
+    toast.add({ title: `Bonjour dit sur ${channel}`, color: 'success', icon: 'i-lucide-hand' })
+  } catch (e) {
+    toast.add({ title: 'Bonjour non envoyé', description: String(e), color: 'error' })
+    void loadGreetings(channel)
+  } finally {
+    helloRequest.sending = false
+  }
+}
+
 async function loadGreetings(channel: string) {
   greetings[channel] = 'loading'
   try {
@@ -170,19 +203,34 @@ export function useConditionActions(targets: () => ConditionTarget[]) {
     if (!list) return 'Avoir dit bonjour dans le chat'
     const missing = list.filter(s => !s.greeted).map(s => s.login)
     return missing.length
-      ? `Avoir dit bonjour : pas encore dit par ${missing.join(', ')}. Clique pour dire bonjour (phrase au hasard dans la langue de la chaîne)`
+      ? `Avoir dit bonjour : pas encore dit par ${missing.join(', ')}. Clique pour choisir le message (phrase au hasard dans la langue de la chaîne, modifiable) avant l'envoi`
       : 'Bonjour déjà dit par tous tes comptes'
   }
+  // Ouvre la confirmation : message tiré au hasard pour chaque compte qui doit encore le dire
   async function sayHello(channel: string) {
     if (greeting.value) return
     greeting.value = channel
     try {
-      greetings[channel] = await invoke<GreetingState[]>('say_hello', { channel })
+      const [phrases, states] = await Promise.all([
+        invoke<string[]>('greeting_phrases', { channel }),
+        invoke<GreetingState[]>('greeting_status', { channel })
+      ])
+      greetings[channel] = states
       greetingsAt.set(channel, Date.now())
-      toast.add({ title: `Bonjour dit sur ${channel}`, color: 'success', icon: 'i-lucide-hand' })
+      const missing = states.filter(s => !s.greeted)
+      if (!missing.length) {
+        toast.add({ title: `Bonjour déjà dit sur ${channel}`, description: 'Par tous tes comptes', color: 'info', icon: 'i-lucide-hand' })
+        return
+      }
+      Object.assign(helloRequest, {
+        open: true,
+        channel,
+        phrases,
+        drafts: missing.map(s => ({ accountId: s.accountId, login: s.login, message: randomPhrase(phrases) })),
+        sending: false
+      })
     } catch (e) {
-      toast.add({ title: 'Bonjour non envoyé', description: String(e), color: 'error' })
-      void loadGreetings(channel)
+      toast.add({ title: 'Bonjour impossible', description: String(e), color: 'error' })
     } finally {
       greeting.value = null
     }

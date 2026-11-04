@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.8',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'improved', text: 'Condition « Avoir dit bonjour » : un clic n\'envoie plus de message tout de suite. Une fenêtre montre la phrase tirée au hasard pour chaque compte qui ne l\'a pas encore dit : tu peux la modifier, en tirer une autre (dé), puis confirmer l\'envoi.' },
+      { kind: 'new', text: 'Chaînes surveillées : quand une chaîne est en live dans une de tes catégories et qu\'un giveaway StreamElements y est en cours, il est créé tout seul (avec sa commande et son maximum de tickets), même si aucun bot n\'a posté son lien. Il est cherché toutes les 3 minutes ; un giveaway que tu as clos n\'est jamais recréé.' },
+      { kind: 'improved', text: 'Réponse automatique si tu gagnes : au survol de son icône, une fenêtre affiche le message en entier, avec son délai, au lieu d\'une infobulle tronquée.' }
+    ]
+  },
+  {
     version: '0.48.7',
     date: '2026-11-04',
     changes: [

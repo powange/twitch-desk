@@ -68,6 +68,7 @@
     "allow-follow-status",
     "allow-greeting-status",
     "allow-say-hello",
+    "allow-greeting-phrases",
     "allow-test-winner-phrase",
     "allow-get-detection-rules",
     "allow-set-detection-rules",

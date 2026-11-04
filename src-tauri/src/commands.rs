@@ -668,20 +668,50 @@ pub fn greeting_status(app: AppState, channel: String) -> CmdResult<Vec<Greeting
         .collect())
 }
 
-/// Dit bonjour dans le chat avec chaque compte qui ne l'a pas encore fait : une phrase tirée
-/// au hasard dans la langue de la chaîne, sinon dans la langue par défaut
-#[tauri::command]
-pub async fn say_hello(app: AppState<'_>, channel: String) -> CmdResult<Vec<GreetingState>> {
-    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
-    let settings = app.db.settings();
-    let lang = app.channel_language(&channel).unwrap_or_default();
-    let phrases: Vec<String> = [lang.as_str(), settings.greeting_default_lang.as_str()]
+/// Phrases de bonjour pour une chaîne : celles de sa langue, sinon de la langue par défaut
+fn hello_phrases(app: &App, settings: &crate::db::Settings, channel: &str) -> Vec<String> {
+    let lang = app.channel_language(channel).unwrap_or_default();
+    [lang.as_str(), settings.greeting_default_lang.as_str()]
         .iter()
         .find_map(|l| settings.greetings.get(*l).filter(|p| p.iter().any(|x| !x.trim().is_empty())))
         .or_else(|| settings.greetings.values().find(|p| !p.is_empty()))
         .map(|p| p.iter().map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// Phrases de bonjour proposées pour une chaîne (fenêtre de confirmation)
+#[tauri::command]
+pub fn greeting_phrases(app: AppState, channel: String) -> CmdResult<Vec<String>> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    let phrases = hello_phrases(&app, &app.db.settings(), &channel);
     if phrases.is_empty() {
+        return Err("Aucune phrase de bonjour : ajoute-en dans Giveaways → Réglages".into());
+    }
+    Ok(phrases)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelloMessage {
+    account_id: i64,
+    message: String,
+}
+
+/// Dit bonjour dans le chat avec chaque compte qui ne l'a pas encore fait : le message confirmé
+/// pour ce compte, sinon une phrase tirée au hasard dans la langue de la chaîne (ou par défaut).
+/// `messages` donné : seuls ces comptes écrivent
+#[tauri::command]
+pub async fn say_hello(app: AppState<'_>, channel: String, messages: Option<Vec<HelloMessage>>) -> CmdResult<Vec<GreetingState>> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    let settings = app.db.settings();
+    let phrases = hello_phrases(&app, &settings, &channel);
+    let chosen: Option<std::collections::HashMap<i64, String>> = messages.map(|list| {
+        list.into_iter()
+            .map(|m| (m.account_id, m.message.replace(['\r', '\n'], " ").trim().chars().take(400).collect::<String>()))
+            .filter(|(_, m)| !m.is_empty())
+            .collect()
+    });
+    if phrases.is_empty() && chosen.is_none() {
         return Err("Aucune phrase de bonjour : ajoute-en dans Giveaways → Réglages".into());
     }
     let mut errors = vec![];
@@ -690,15 +720,21 @@ pub async fn say_hello(app: AppState<'_>, channel: String) -> CmdResult<Vec<Gree
         if has_greeted(&app, &settings, &channel, &account) {
             continue;
         }
+        let phrase = match &chosen {
+            Some(map) => match map.get(&account.id) {
+                Some(m) => m.clone(),
+                None => continue,
+            },
+            None => phrases[rand::random_range(0..phrases.len())].clone(),
+        };
         // Pas plusieurs comptes à la même seconde
         if !first {
             tokio::time::sleep(std::time::Duration::from_millis(rand::random_range(1500..4000))).await;
         }
         first = false;
-        let phrase = &phrases[rand::random_range(0..phrases.len())];
         let result = match app.secrets.load(&account.user_id) {
             None => Err("jeton introuvable : reconnecte ce compte".to_owned()),
-            Some(tokens) => crate::twitch::chat::send_message(&account.login, &tokens.access_token, &channel, phrase).await,
+            Some(tokens) => crate::twitch::chat::send_message(&account.login, &tokens.access_token, &channel, &phrase).await,
         };
         match result {
             Ok(()) => {

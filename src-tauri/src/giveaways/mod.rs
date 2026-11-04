@@ -201,6 +201,15 @@ struct SeReport {
 
 /// Giveaway StreamElements suivi : relu à ce rythme (ou tout de suite après une annonce du bot)
 const SE_CHECK_EVERY: Duration = Duration::from_secs(3 * 60);
+/// Chaîne surveillée en live dans une catégorie suivie : giveaway StreamElements en cours
+/// cherché à ce rythme (créé s'il n'est pas encore connu)
+const SE_ACTIVE_EVERY: Duration = Duration::from_secs(3 * 60);
+
+/// Giveaways StreamElements en cours des chaînes surveillées : (chaîne, giveaway en cours)
+struct SeActiveReport {
+    results: Vec<(String, crate::streamelements::Giveaway)>,
+    channel_ids: Vec<(String, Option<String>)>,
+}
 
 struct LiveReport {
     results: Vec<(String, Option<StreamInfo>)>,
@@ -222,6 +231,11 @@ struct Monitor {
     /// Relecture en cours depuis ; giveaway → dernière relecture
     se_busy: Option<Instant>,
     se_checked: HashMap<i64, Instant>,
+    /// Recherche du giveaway StreamElements en cours des chaînes surveillées
+    se_active_tx: mpsc::Sender<SeActiveReport>,
+    se_active_rx: Option<mpsc::Receiver<SeActiveReport>>,
+    se_active_busy: Option<Instant>,
+    se_active_checked: HashMap<String, Instant>,
     /// Chaîne → identifiant StreamElements (None : chaîne sans StreamElements)
     se_channels: HashMap<String, Option<String>>,
     /// Gagnants annoncés par le bot StreamElements (dans l'ordre, avec l'heure de la première
@@ -282,6 +296,7 @@ impl Monitor {
     fn new(app: Arc<App>, view: Arc<RwLock<GiveawaysView>>, tap: TapSender) -> Self {
         let (live_tx, live_rx) = mpsc::channel(4);
         let (se_tx, se_rx) = mpsc::channel(4);
+        let (se_active_tx, se_active_rx) = mpsc::channel(4);
         Self {
             app,
             games: vec![],
@@ -293,6 +308,10 @@ impl Monitor {
             se_rx: Some(se_rx),
             se_busy: None,
             se_checked: HashMap::new(),
+            se_active_tx,
+            se_active_rx: Some(se_active_rx),
+            se_active_busy: None,
+            se_active_checked: HashMap::new(),
             se_channels: HashMap::new(),
             se_announced: HashMap::new(),
             se_announced_at: HashMap::new(),
@@ -335,6 +354,7 @@ impl Monitor {
         let mut log_tick = tokio::time::interval(Duration::from_secs(5));
         let mut live_rx = self.live_rx.take().expect("moniteur lancé une fois");
         let mut se_rx = self.se_rx.take().expect("moniteur lancé une fois");
+        let mut se_active_rx = self.se_active_rx.take().expect("moniteur lancé une fois");
         loop {
             tokio::select! {
                 // Dans l'ordre : contrôle d'abord (une chaîne rejointe est connue avant ses premiers
@@ -354,6 +374,7 @@ impl Monitor {
                 _ = live_tick.tick() => self.check_lives(),
                 Some(report) = live_rx.recv() => self.on_live_report(report),
                 Some(report) = se_rx.recv() => self.on_se_report(report),
+                Some(report) = se_active_rx.recv() => self.on_se_active_report(report),
                 _ = log_tick.tick() => self.flush_chat_log(),
                 _ = tick.tick() => {
                     self.update_anonymous();
@@ -372,6 +393,7 @@ impl Monitor {
                     }
                     self.presence_reminders();
                     self.check_se_giveaways(None);
+                    self.check_se_active();
                 }
                 // Messages du chat en dernier : un chat très actif ne retarde ni les commandes
                 // ni les relevés (sélection dans l'ordre)
@@ -588,6 +610,92 @@ impl Monitor {
             }
             let _ = tx.send(SeReport { results, channel_ids: channel_ids.into_iter().collect() }).await;
         });
+    }
+
+    /// Chaînes surveillées en live dans une catégorie suivie : giveaway StreamElements en cours
+    /// cherché (au plus toutes les SE_ACTIVE_EVERY par chaîne), dans une tâche à part ; résultat
+    /// dans `on_se_active_report`
+    fn check_se_active(&mut self) {
+        if self.se_active_busy.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+            return;
+        }
+        let now = Instant::now();
+        let due: Vec<String> = self
+            .channels
+            .iter()
+            .map(|c| c.login.clone())
+            .filter(|c| self.live.get(c).is_some_and(|l| l.info.is_some()) && self.in_category(c))
+            // Chaîne sans StreamElements : rien à chercher
+            .filter(|c| !matches!(self.se_channels.get(c), Some(None)))
+            .filter(|c| self.se_active_checked.get(c).is_none_or(|t| now.duration_since(*t) >= SE_ACTIVE_EVERY))
+            .take(10)
+            .collect();
+        if due.is_empty() {
+            return;
+        }
+        for c in &due {
+            self.se_active_checked.insert(c.clone(), now);
+        }
+        self.se_active_busy = Some(now);
+        let known = self.se_channels.clone();
+        let app = self.app.clone();
+        let tx = self.se_active_tx.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut channel_ids = vec![];
+            let mut results = vec![];
+            for channel in due {
+                let se_id = match known.get(&channel) {
+                    Some(id) => id.clone(),
+                    None => match crate::streamelements::channel_id(&app.http, &channel).await {
+                        Ok(id) => {
+                            channel_ids.push((channel.clone(), id.clone()));
+                            id
+                        }
+                        Err(e) => {
+                            tracing::debug!("StreamElements : chaîne {channel} : {e}");
+                            continue;
+                        }
+                    },
+                };
+                let Some(se_id) = se_id else { continue };
+                // Cache partagé avec la page StreamElements (même giveaway pour tous les comptes)
+                let http = &app.http;
+                let since = crate::lives::since(SE_ACTIVE_EVERY);
+                match app.lives.se_giveaway.get(&se_id, since, || crate::streamelements::active_giveaway(http, &se_id)).await {
+                    Ok(Some(g)) => results.push((channel, g)),
+                    Ok(None) => {}
+                    Err(e) => tracing::debug!("StreamElements : giveaway en cours de {channel} : {e}"),
+                }
+            }
+            let _ = tx.send(SeActiveReport { results, channel_ids }).await;
+        });
+    }
+
+    /// Giveaway StreamElements en cours sur une chaîne surveillée : créé s'il n'est pas encore
+    /// connu (jamais rouvert : un giveaway clos à la main le reste)
+    fn on_se_active_report(&mut self, report: SeActiveReport) {
+        self.se_active_busy = None;
+        self.se_channels.extend(report.channel_ids);
+        for (channel, g) in report.results {
+            if !self.monitored(&channel) || !self.detection_active(&channel) {
+                continue;
+            }
+            let url = format!("https://streamelements.com/{}/giveaway/{}", crate::streamelements::page_name(&channel), g.id);
+            // Déjà connu : par son lien, ou par l'identifiant StreamElements d'un giveaway ouvert
+            let open = self.open_giveaways(&channel);
+            let paused = self.app.db.paused_giveaways(Some(&channel)).unwrap_or_default();
+            let same_id = |r: &GiveawayRow| r.url.as_deref().and_then(se_giveaway_id).is_some_and(|id| id.eq_ignore_ascii_case(&g.id));
+            if open.iter().chain(paused.iter()).any(same_id) || !matches!(self.app.db.giveaway_by_url(&channel, &url), Ok(None)) {
+                continue;
+            }
+            self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway StreamElements en cours trouvé sur {channel}"));
+            if let Some(id) = self.create_se_giveaway(&channel, &url, g.command.as_deref()) {
+                if let Some(max) = g.max_tickets {
+                    let _ = self.app.db.set_ticket_max_if_unknown(id, max);
+                }
+                self.publish();
+            }
+        }
     }
 
     /// Giveaway StreamElements tiré (un gagnant, même s'il n'est pas encore terminé) : gagnant noté
@@ -1133,22 +1241,29 @@ impl Monitor {
                 return;
             }
         }
-        match self.app.db.insert_giveaway(&NewGiveaway {
+        self.create_se_giveaway(channel, url, None);
+    }
+
+    /// Nouveau giveaway StreamElements (lien posté par un bot, ou trouvé en cours) : conditions
+    /// de la fiche, chaîne ajoutée à la page StreamElements, notification
+    fn create_se_giveaway(&mut self, channel: &str, url: &str, command: Option<&str>) -> Option<i64> {
+        let id = match self.app.db.insert_giveaway(&NewGiveaway {
             channel: channel.to_owned(),
             kind: "streamelements".into(),
-            command: None,
+            command: command.map(str::to_owned),
             url: Some(url.to_owned()),
             evidence: None,
             detected_at: now_rfc3339(),
         }) {
             Ok(id) => {
                 let _ = self.app.db.apply_streamer_conditions(id);
+                id
             }
             Err(e) => {
                 tracing::error!("giveaway StreamElements non enregistré : {e}");
-                return;
+                return None;
             }
-        }
+        };
         self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway StreamElements sur {channel}"));
         let app = self.app.clone();
         let login = channel.to_owned();
@@ -1157,6 +1272,7 @@ impl Monitor {
         self.app.notify(Alert::Giveaway, &format!("Giveaway StreamElements sur {channel}"), "Tickets à acheter avec tes points StreamElements");
         self.gifts_from_known_replies(channel);
         self.publish();
+        Some(id)
     }
 
     fn on_manual_winner(&mut self, channel: &str, winner: &str, giveaway_id: Option<i64>) {
