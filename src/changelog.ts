@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.10',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'improved', text: 'Réponse automatique si tu gagnes : elle part au moment du tirage plus le délai réglé dans la fiche du streamer, à 10 secondes près. Si le gain n\'est connu que plus tard (en relisant StreamElements), le délai restant est raccourci d\'autant, et la réponse n\'est pas envoyée si ce moment est passé de plus de 10 secondes.' }
+    ]
+  },
+  {
     version: '0.48.9',
     date: '2026-11-04',
     changes: [
