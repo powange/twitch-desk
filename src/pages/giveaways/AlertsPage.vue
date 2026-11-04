@@ -117,8 +117,12 @@ const liveOf = (channel: string) => liveByLogin.value.get(channel) ?? null
 const avatarByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, c.profileImage])))
 const avatarOf = (channel: string) => avatarByLogin.value.get(channel) ?? null
 
-// Conditions : follow, bonjour, Discord (giveaways ouverts ou en pause : rien à faire sur un giveaway clos)
-const cond = useConditionActions(() => giveaways.value.filter(g => g.status !== 'closed'))
+// Conditions : follow, bonjour, Discord des giveaways ouverts ou en pause, et follow des chaînes
+// de la page affichée des giveaways passés (cœur : suivie ou non aujourd'hui)
+const cond = useConditionActions(() => [
+  ...giveaways.value.filter(g => g.status !== 'closed'),
+  ...(past.value?.giveaways ?? []).map(g => ({ ...g, requireGreeting: null }))
+])
 
 // Ignorer, Vu, Clore, Supprimer : erreur affichée, bouton occupé pendant l'action
 const { run, busy } = useAction()

@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.3',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'fixed', text: 'Giveaways passés : le cœur « Follow requis » indique maintenant si tes comptes suivent la chaîne (plein et vert si tous la suivent, cliquable pour suivre sinon). Avant, l\'état restait inconnu pour une chaîne sans giveaway en cours.' }
+    ]
+  },
+  {
     version: '0.48.2',
     date: '2026-11-04',
     title: 'Ancienneté du follow en heures ou minutes',
