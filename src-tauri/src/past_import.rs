@@ -277,7 +277,7 @@ fn import(app: &Arc<App>, json: &str, dry_run: bool) -> Result<ImportReport, Str
         lines.push(line);
     }
     if imported_any {
-        app.giveaways.send(crate::giveaways::MonitorCmd::Reload);
+        app.giveaways.send(crate::giveaways::MonitorCmd::Republish);
         app.sync.poke();
     }
     let ok = lines.iter().filter(|l| l.ok).count();

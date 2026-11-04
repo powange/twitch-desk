@@ -19,7 +19,7 @@ const openExternal = useOpenExternal()
 
 <template>
   <div class="flex items-center gap-2">
-    <img v-if="avatar" :src="avatar" alt="" class="size-7 rounded-full shrink-0">
+    <img v-if="avatar" :src="avatar" alt="" class="size-7 rounded-full shrink-0" loading="lazy" decoding="async" width="28" height="28">
     <div class="min-w-0">
       <div class="flex items-center gap-1.5 whitespace-nowrap">
         <ChannelFlag :login="login" :lang="lang" />

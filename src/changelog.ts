@@ -14,6 +14,18 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.22',
+    date: '2026-11-04',
+    title: 'Performances',
+    changes: [
+      { kind: 'improved', text: 'Web app : la vue du téléphone se charge bien plus vite et consomme beaucoup moins de données mobiles (images des lots chargées à part et gardées en mémoire, seuls les giveaways en cours sont lus). Le téléphone ne relit plus tout quand une chaîne ou une fiche change, et son cache ne grossit plus à chaque mise à jour.' },
+      { kind: 'improved', text: 'Un changement du nombre de spectateurs ne relance plus de synchronisation, et les petites actions (lot reçu, gagnants corrigés, ancien giveaway ajouté) ne rechargent plus tout le suivi des giveaways.' },
+      { kind: 'improved', text: 'Giveaways StreamElements en pause ou d\'une chaîne hors ligne : vérifiés toutes les 45 minutes au lieu de 3 (et tout de suite au retour en live).' },
+      { kind: 'improved', text: 'La comparaison complète de la synchronisation ne bloque plus le chat, les drops et les points pendant qu\'elle tourne, et la liste des giveaways se lit plus vite.' },
+      { kind: 'improved', text: 'Journal du chat, page StreamElements et grands tableaux plus fluides (surlignage calculé une fois, photos de profil chargées au défilement).' }
+    ]
+  },
+  {
     version: '0.48.21',
     date: '2026-11-04',
     title: 'Frictions du rapport (gravité basse)',

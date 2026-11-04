@@ -1,6 +1,6 @@
 [package]
 name = "twitch-desk"
-version = "0.48.21"
+version = "0.48.22"
 description = "Giveaways, points de chaîne et drops Twitch, sur plusieurs comptes"
 authors = ["powange"]
 license = "MIT"
@@ -57,7 +57,9 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cr
 windows-registry = "0.6"
 
 [profile.release]
-codegen-units = 1
-lto = true
+# Optimisation « thin » sur plusieurs unités : compilation de la release nettement plus courte
+# (les 4 cœurs des machines de GitHub servent), installateur à peine plus gros
+lto = "thin"
+codegen-units = 8
 opt-level = "s"
 strip = true

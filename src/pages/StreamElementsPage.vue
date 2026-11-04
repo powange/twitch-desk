@@ -69,12 +69,24 @@ const seGiveaways = computed(() => {
   }
   return map
 })
-function knownGiveaway(channel: ChannelView): GiveawayView | null {
+function findKnown(channel: ChannelView, now: number): GiveawayView | null {
   const list = seGiveaways.value.get(channel.login) ?? []
   const active = channel.seGiveaway
   if (active) return list.find(g => g.url?.includes(active.id)) ?? null
-  const recent = list.filter(g => g.status !== 'closed' || Date.now() - new Date(g.detectedAt).getTime() < RECENT_MS)
-  return recent.sort((a, b) => b.detectedAt.localeCompare(a.detectedAt))[0] ?? null
+  let best: GiveawayView | null = null
+  for (const g of list) {
+    if (g.status === 'closed' && now - new Date(g.detectedAt).getTime() >= RECENT_MS) continue
+    if (!best || g.detectedAt > best.detectedAt) best = g
+  }
+  return best
+}
+// Table chaîne → giveaway connu, calculée une fois par mise à jour (pas à chaque cellule)
+const known = computed(() => {
+  const now = Date.now()
+  return new Map(channels.value.map(c => [c.login, findKnown(c, now)] as const))
+})
+function knownGiveaway(channel: ChannelView): GiveawayView | null {
+  return known.value.get(channel.login) ?? null
 }
 // État du giveaway : en cours (StreamElements le donne actif), en pause (live terminé), clos, ou rien de connu
 function giveawayState(channel: ChannelView): { label: string, color: 'primary' | 'neutral' | 'success' | 'warning' } | null {

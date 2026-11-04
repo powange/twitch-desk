@@ -435,6 +435,10 @@ const MIGRATIONS: &[&str] = &[r#"
 "#, r#"
     -- Achat automatique StreamElements : nombre de tickets voulu au plus (0 : sans limite)
     ALTER TABLE channels ADD COLUMN se_auto_buy_max INTEGER NOT NULL DEFAULT 0;
+"#, r#"
+    -- Vue des giveaways (ouverts et en pause, puis les plus récents) lue sans trier toute la table
+    CREATE INDEX giveaways_status_at ON giveaways (status, detected_at);
+    CREATE INDEX giveaways_at ON giveaways (detected_at);
 "#];
 
 /// Types de giveaway
@@ -1323,6 +1327,20 @@ impl Db {
             .ok()
     }
 
+    /// Tickets relevés de plusieurs giveaways StreamElements : (compte, giveaway) → tickets
+    pub fn se_tickets_of(&self, giveaway_ids: &[&str]) -> DbResult<HashMap<(i64, String), i64>> {
+        if giveaway_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached(
+            "SELECT account_id, giveaway_id, tickets FROM se_tickets WHERE giveaway_id IN (SELECT value FROM json_each(?1))",
+        )?;
+        let ids = serde_json::to_string(giveaway_ids).unwrap_or_else(|_| "[]".into());
+        let rows = stmt.query_map([ids], |r| Ok(((r.get::<_, i64>(0)?, r.get::<_, String>(1)?), r.get::<_, i64>(2)?)))?;
+        rows.collect()
+    }
+
     pub fn set_se_tickets(&self, account_id: i64, giveaway_id: &str, tickets: i64) -> DbResult<()> {
         self.conn().execute(
             "INSERT INTO se_tickets (account_id, giveaway_id, tickets) VALUES (?1, ?2, ?3)
@@ -1508,7 +1526,15 @@ impl Db {
 
     /// Giveaways récents (ouverts d'abord), avec leurs participations
     pub fn giveaways(&self, limit: usize) -> DbResult<Vec<GiveawayRow>> {
-        self.select_giveaways("ORDER BY status = 'open' DESC, status = 'paused' DESC, detected_at DESC LIMIT ?1", [limit as i64])
+        // Candidats lus par les index (ouverts et en pause, puis les plus récents), triés ensuite
+        self.select_giveaways(
+            "WHERE id IN (
+                 SELECT id FROM (SELECT id FROM giveaways WHERE status = 'open' ORDER BY detected_at DESC LIMIT ?1)
+                 UNION SELECT id FROM (SELECT id FROM giveaways WHERE status = 'paused' ORDER BY detected_at DESC LIMIT ?1)
+                 UNION SELECT id FROM (SELECT id FROM giveaways ORDER BY detected_at DESC LIMIT ?1))
+             ORDER BY status = 'open' DESC, status = 'paused' DESC, detected_at DESC LIMIT ?1",
+            [limit as i64],
+        )
     }
 
     /// Giveaways ouverts (d'une chaîne, ou de toutes), les plus récents d'abord
@@ -1519,7 +1545,6 @@ impl Db {
         }
     }
 
-    /// Giveaways en pause (d'une chaîne, ou de toutes), les plus récents d'abord
     /// Giveaways StreamElements ouverts ou en pause avec leur lien (identifiant du giveaway
     /// StreamElements), les plus récents d'abord
     pub fn se_giveaways_to_check(&self) -> DbResult<Vec<GiveawayRow>> {
@@ -1529,6 +1554,7 @@ impl Db {
         )
     }
 
+    /// Giveaways en pause (d'une chaîne, ou de toutes), les plus récents d'abord
     pub fn paused_giveaways(&self, channel: Option<&str>) -> DbResult<Vec<GiveawayRow>> {
         match channel {
             Some(c) => self.select_giveaways("WHERE status = 'paused' AND channel = ?1 ORDER BY detected_at DESC", [c]),
@@ -2790,6 +2816,34 @@ mod tests {
         db.set_se_tickets(a, "g1", 3).unwrap();
         db.set_se_tickets(a, "g1", 8).unwrap();
         assert_eq!(db.se_tickets(a, "g1"), Some(8));
+        let b = db.upsert_account("34", "ami", "dev").unwrap();
+        db.set_se_tickets(b, "g2", 2).unwrap();
+        db.set_se_tickets(b, "g3", 5).unwrap();
+        let all = db.se_tickets_of(&["g1", "g2"]).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!((all[&(a, "g1".to_owned())], all[&(b, "g2".to_owned())]), (8, 2));
+        assert!(db.se_tickets_of(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn recent_giveaways_open_then_paused_then_latest() {
+        let db = Db::memory().unwrap();
+        let new = |at: &str| NewGiveaway {
+            channel: "lunarsea".into(),
+            kind: "command".into(),
+            command: Some("!coffre".into()),
+            url: None,
+            evidence: None,
+            detected_at: at.into(),
+        };
+        let ids: Vec<i64> = (1..=6).map(|d| db.insert_giveaway(&new(&format!("2026-11-0{d}T10:00:00Z"))).unwrap()).collect();
+        // Le plus ancien reste ouvert, le deuxième en pause, les autres clos
+        for id in &ids[2..] {
+            db.close_giveaway(*id).unwrap();
+        }
+        db.conn().execute("UPDATE giveaways SET status = 'paused' WHERE id = ?1", [ids[1]]).unwrap();
+        let got: Vec<i64> = db.giveaways(4).unwrap().iter().map(|g| g.id).collect();
+        assert_eq!(got, vec![ids[0], ids[1], ids[5], ids[4]]);
     }
 
     #[test]

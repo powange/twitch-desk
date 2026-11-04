@@ -19,7 +19,7 @@
 //! un petit état (participations de ses comptes, statut live des chaînes) que les téléphones
 //! lisent.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -396,19 +396,23 @@ fn export_sent(conn: &Connection, collection: &str, id: &str, enabled: &[&str]) 
 
 /// `only` : un seul document ; `windowed` : giveaways ouverts ou récents seulement (ceux qu'on envoie)
 fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed: bool) -> rusqlite::Result<Vec<(String, Value)>> {
+    // Un seul document : condition écrite pour l'index de l'identifiant (« ?n IS NULL OR … »
+    // ferait relire toute la table à chaque document)
+    let one = |column: &str, n: u8| if only.is_some() { format!("{column} = ?{n}") } else { format!("?{n} IS NULL") };
     match collection {
         "groups" => conn
-            .prepare_cached("SELECT sync_id, name, game_id, game_name FROM gift_groups WHERE sync_id IS NOT NULL AND (?1 IS NULL OR sync_id = ?1)")?
+            .prepare_cached(&format!("SELECT sync_id, name, game_id, game_name FROM gift_groups WHERE sync_id IS NOT NULL AND {}", one("sync_id", 1)))?
             .query_map([only], |r| {
                 Ok((r.get(0)?, json!({ "name": r.get::<_, String>(1)?, "gameId": r.get::<_, Option<String>>(2)?, "gameName": r.get::<_, Option<String>>(3)? })))
             })?
             .collect(),
         "gifts" => conn
-            .prepare_cached(
+            .prepare_cached(&format!(
                 "SELECT g.sync_id, g.title, g.image, gr.sync_id, g.keywords, g.game_id, g.game_name
                  FROM gifts g LEFT JOIN gift_groups gr ON gr.id = g.group_id
-                 WHERE g.sync_id IS NOT NULL AND (?1 IS NULL OR g.sync_id = ?1)",
-            )?
+                 WHERE g.sync_id IS NOT NULL AND {}",
+                one("g.sync_id", 1)
+            ))?
             .query_map([only], |r| {
                 let keywords: Vec<String> = serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default();
                 Ok((
@@ -431,14 +435,15 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                  WHERE gg.giveaway_id = ?1 AND gi.sync_id IS NOT NULL ORDER BY gi.sync_id",
             )?;
             let rows: Vec<(i64, String, bool, Value, String, String)> = conn
-                .prepare_cached(
+                .prepare_cached(&format!(
                     "SELECT id, sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance, drawn_at,
                             ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                             require_follow, require_presence, require_discord, notes,
                             require_greeting, min_chat_minutes, follow_min_secs, winners, winner_chances
                      FROM giveaways WHERE sync_id IS NOT NULL
-                         AND (?2 IS NULL OR sync_id = ?2) AND (?3 = 0 OR status IN ('open', 'paused') OR detected_at >= ?1 OR manual = 1)",
-                )?
+                         AND {} AND (?3 = 0 OR status IN ('open', 'paused') OR detected_at >= ?1 OR manual = 1)",
+                    one("sync_id", 2)
+                ))?
                 .query_map(params![since, only, windowed], |r| {
                     Ok((
                         r.get(0)?,
@@ -496,15 +501,16 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                 .collect()
         }
         "channels" => conn
-            .prepare_cached("SELECT login, channel_id FROM giveaway_channels WHERE ?1 IS NULL OR login = ?1")?
+            .prepare_cached(&format!("SELECT login, channel_id FROM giveaway_channels WHERE {}", one("login", 1)))?
             .query_map([only], |r| Ok((r.get(0)?, json!({ "channelId": r.get::<_, String>(1)? }))))?
             .collect(),
         "streamers" => conn
-            .prepare_cached(
+            .prepare_cached(&format!(
                 "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_secs, require_presence,
                         require_discord, require_greeting, min_chat_minutes, se_name
-                 FROM streamers WHERE ?1 IS NULL OR login = ?1",
-            )?
+                 FROM streamers WHERE {}",
+                one("login", 1)
+            ))?
             .query_map([only], |r| {
                 let ignored: Vec<String> = serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default();
                 Ok((
@@ -658,6 +664,23 @@ fn diff_one<'a>(conn: &Connection, collection: &'a str, id: &str, enabled: &[&st
     })
 }
 
+/// Comparaison d'une collection entière : documents comparés par verrou de la base
+const WHOLE_BATCH: usize = 25;
+
+/// Identifiants des documents locaux d'une collection, quelle que soit leur date (None : règles
+/// de détection, dont l'identifiant est calculé)
+fn local_ids(conn: &Connection, collection: &str) -> rusqlite::Result<Option<Vec<String>>> {
+    let sql = match collection {
+        "groups" => "SELECT sync_id FROM gift_groups WHERE sync_id IS NOT NULL",
+        "gifts" => "SELECT sync_id FROM gifts WHERE sync_id IS NOT NULL",
+        "giveaways" => "SELECT sync_id FROM giveaways WHERE sync_id IS NOT NULL",
+        "channels" => "SELECT login FROM giveaway_channels",
+        "streamers" => "SELECT login FROM streamers",
+        _ => return Ok(None),
+    };
+    conn.prepare_cached(sql)?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>().map(Some)
+}
+
 /// Collection notée en entier, et dernier numéro couvert
 type Whole<'a> = (&'a str, i64);
 
@@ -671,6 +694,28 @@ fn outgoing<'a>(db: &Db, enabled: &[&'a str]) -> rusqlite::Result<(Vec<Pending<'
     for &c in enabled {
         let ids = dirty(&db.conn(), c)?;
         if let Some(seq) = ids.iter().filter(|(id, _)| id == WHOLE).map(|(_, s)| *s).next() {
+            // Tout ce qui est noté pour la collection jusqu'ici est couvert
+            let covered = ids.iter().map(|(_, s)| *s).max().unwrap_or(seq);
+            // Identifiants locaux et connus du serveur comparés un par un (diff_one), verrou de
+            // la base rendu tous les WHOLE_BATCH documents : le chat, les drops et les points ne
+            // l'attendent pas pendant toute la collection
+            let local = local_ids(&db.conn(), c)?;
+            if let Some(local) = local {
+                let mut every: BTreeSet<String> = local.into_iter().collect();
+                every.extend(state(&db.conn(), c)?.into_keys());
+                let every: Vec<String> = every.into_iter().collect();
+                for chunk in every.chunks(WHOLE_BATCH) {
+                    let conn = db.conn();
+                    for id in chunk {
+                        if let Some((change, hash)) = diff_one(&conn, c, id, enabled)? {
+                            out.push(Pending { change, hash, seq: None });
+                        }
+                    }
+                }
+                whole.push((c, covered));
+                continue;
+            }
+            // Règles de détection (identifiant calculé, peu nombreuses) : comparées d'un coup
             let conn = db.conn();
             let known = state(&conn, c)?;
             let mut exported = HashSet::new();
@@ -694,8 +739,7 @@ fn outgoing<'a>(db: &Db, enabled: &[&'a str]) -> rusqlite::Result<(Vec<Pending<'
                     }
                 }
             }
-            // Tout ce qui est noté pour la collection jusqu'ici est couvert
-            whole.push((c, ids.iter().map(|(_, s)| *s).max().unwrap_or(seq)));
+            whole.push((c, covered));
             continue;
         }
         for (id, seq) in ids {

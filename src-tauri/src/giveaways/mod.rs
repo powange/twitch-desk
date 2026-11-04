@@ -44,6 +44,9 @@ const PRESENCE_REMINDER: chrono::Duration = chrono::Duration::minutes(5);
 pub enum MonitorCmd {
     /// Chaînes, réglages ou comptes modifiés
     Reload,
+    /// Giveaways seuls changés (gagnants, lot reçu, ancien giveaway…) : vue republiée sans relire
+    /// réglages, règles, chaînes ni comptes
+    Republish,
     /// Retirer un giveaway de la file d'alertes sans participer
     Dismiss(i64),
     Close(i64),
@@ -203,6 +206,8 @@ struct SeReport {
 
 /// Giveaway StreamElements suivi : relu à ce rythme (ou tout de suite après une annonce du bot)
 const SE_CHECK_EVERY: Duration = Duration::from_secs(3 * 60);
+/// … en pause ou chaîne hors ligne
+const SE_CHECK_IDLE: Duration = Duration::from_secs(45 * 60);
 /// Chaîne surveillée en live dans une catégorie suivie : giveaway StreamElements en cours
 /// cherché à ce rythme (créé s'il n'est pas encore connu)
 const SE_ACTIVE_EVERY: Duration = Duration::from_secs(3 * 60);
@@ -545,6 +550,17 @@ impl Monitor {
         });
     }
 
+    /// Rythme de relecture d'un giveaway StreamElements : en pause ou chaîne hors ligne, le
+    /// tirage est rare (relu au retour en live et à l'annonce du bot de toute façon)
+    fn se_check_every(&self, g: &GiveawayRow) -> Duration {
+        let offline = self.live.get(&g.channel).is_some_and(|l| l.info.is_none());
+        if g.status == "paused" || offline {
+            SE_CHECK_IDLE
+        } else {
+            SE_CHECK_EVERY
+        }
+    }
+
     /// Relit l'état des giveaways StreamElements suivis par leur identifiant (dus, ou ceux de
     /// `channel` tout de suite) dans une tâche à part ; résultat dans `on_se_report`
     fn check_se_giveaways(&mut self, channel: Option<&str>) {
@@ -569,7 +585,7 @@ impl Monitor {
             .filter(|g| {
                 channel.is_some_and(|c| c == g.channel)
                     || self.se_announced.contains_key(&g.channel)
-                    || self.se_checked.get(&g.id).is_none_or(|t| now.duration_since(*t) >= SE_CHECK_EVERY)
+                    || self.se_checked.get(&g.id).is_none_or(|t| now.duration_since(*t) >= self.se_check_every(g))
             })
             // Page StreamElements du lien (partenaire, autre nom) quand ce n'est pas celle de la
             // chaîne : son identifiant est cherché par la page (clé « page:<nom> »)
@@ -823,6 +839,7 @@ impl Monitor {
             self.gqls.clear();
         }
         let mut changed = false;
+        let mut live_changed = false;
         for (channel, info) in report.results {
             let was_live = self.live.get(&channel).is_some_and(|l| l.info.is_some());
             if was_live && info.is_none() {
@@ -849,18 +866,24 @@ impl Monitor {
             if !was_live && info.is_some() {
                 // De retour en live : giveaways en pause repris, sans nouvelle alerte
                 for g in self.app.db.resume_channel_giveaways(&channel, &now_rfc3339()).unwrap_or_default() {
+                    // StreamElements relu au prochain passage (il l'était au rythme lent)
+                    self.se_checked.remove(&g.id);
                     let what = g.command.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
                     self.app.log("giveaways", EventKind::Info, format!("Giveaway de {channel}{what} repris (live)"));
                     changed = true;
                 }
             }
             if was_live != info.is_some() || self.live.get(&channel).map(|l| &l.info) != Some(&info) {
-                changed = true;
+                live_changed = true;
             }
             self.live.insert(channel, LiveState { info, at: Instant::now() });
         }
+        // Giveaway clos, mis en pause ou repris : vue complète (et synchronisation) ; statut live,
+        // spectateurs, titre seuls : chaînes seulement (les giveaways n'en dépendent pas)
         if changed {
             self.publish();
+        } else if live_changed {
+            self.publish_channels();
         }
     }
 
@@ -934,6 +957,7 @@ impl Monitor {
     fn on_cmd(&mut self, cmd: MonitorCmd) {
         match cmd {
             MonitorCmd::Reload => self.reload(),
+            MonitorCmd::Republish => self.publish(),
             MonitorCmd::Dismiss(id) => {
                 let _ = self.app.db.set_giveaway_handled(id);
                 self.publish();
@@ -1552,6 +1576,9 @@ fn rows_to_views(app: &App, rows: Vec<GiveawayRow>, accounts: &[(i64, String)]) 
             Some((s.login, (text, s.win_reply_delay.unwrap_or(crate::db::WIN_REPLY_DELAY))))
         })
         .collect();
+    // Tickets StreamElements de tous ces giveaways : une seule lecture
+    let se_ids: Vec<&str> = rows.iter().filter_map(|r| r.url.as_deref().and_then(se_giveaway_id)).collect();
+    let tickets = app.db.se_tickets_of(&se_ids).unwrap_or_default();
     rows.into_iter()
         .map(|row| {
             let login_of = |id: i64| accounts.iter().find(|(a, _)| *a == id).map(|(_, l)| l.clone()).unwrap_or_default();
@@ -1569,7 +1596,7 @@ fn rows_to_views(app: &App, rows: Vec<GiveawayRow>, accounts: &[(i64, String)]) 
             // StreamElements : nos tickets relevés sur ce giveaway valent participation
             if let Some(se_id) = row.url.as_deref().and_then(se_giveaway_id) {
                 for (account_id, login) in accounts {
-                    let Some(tickets) = app.db.se_tickets(*account_id, se_id).filter(|t| *t > 0) else { continue };
+                    let Some(tickets) = tickets.get(&(*account_id, se_id.to_owned())).copied().filter(|t| *t > 0) else { continue };
                     match entries_view.iter_mut().find(|e| e.account_id == *account_id) {
                         Some(e) => e.tickets = Some(tickets),
                         None => entries_view.push(GiveawayEntryView {

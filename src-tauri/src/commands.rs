@@ -607,7 +607,7 @@ pub fn set_giveaway_winners(app: AppState, id: i64, winners: Vec<WinnerInput>) -
     if !app.db.set_giveaway_winners(id, &list, &at).map_err(db_err)? {
         return Err("Ce giveaway n'existe plus".into());
     }
-    app.giveaways.send(if list.is_empty() { MonitorCmd::WinnersCleared(id) } else { MonitorCmd::Reload });
+    app.giveaways.send(if list.is_empty() { MonitorCmd::WinnersCleared(id) } else { MonitorCmd::Republish });
     app.sync.poke();
     Ok(())
 }
@@ -1271,7 +1271,7 @@ pub async fn create_past_giveaway(app: AppState<'_>, input: crate::db::GiveawayI
     let at = at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let winners = winner_list(&winners)?;
     let id = insert_past_giveaway(&app, &input, &at, &winners)?;
-    app.giveaways.send(MonitorCmd::Reload);
+    app.giveaways.send(MonitorCmd::Republish);
     app.sync.poke();
     Ok(id)
 }
@@ -1391,7 +1391,7 @@ pub fn save_gift(app: AppState, mut gift: crate::db::Gift) -> CmdResult<i64> {
         }
     }
     let id = app.db.save_gift(&gift).map_err(db_err)?;
-    app.giveaways.send(MonitorCmd::Reload);
+    app.giveaways.send(MonitorCmd::Republish);
     app.sync.poke();
     Ok(id)
 }
@@ -1405,7 +1405,7 @@ pub fn set_gift_favorite(app: AppState, id: i64, favorite: bool) -> CmdResult<()
 #[tauri::command]
 pub fn delete_gift(app: AppState, id: i64) -> CmdResult<()> {
     app.db.delete_gift(id).map_err(db_err)?;
-    app.giveaways.send(MonitorCmd::Reload);
+    app.giveaways.send(MonitorCmd::Republish);
     app.sync.poke();
     Ok(())
 }
@@ -1479,7 +1479,7 @@ pub async fn get_wins(app: AppState<'_>) -> CmdResult<Vec<crate::giveaways::Give
 pub fn set_prize(app: AppState, id: i64, received: bool, note: Option<String>) -> CmdResult<()> {
     let note = note.map(|n| n.trim().chars().take(500).collect::<String>()).filter(|n| !n.is_empty());
     app.db.set_prize(id, received, note.as_deref()).map_err(db_err)?;
-    app.giveaways.send(MonitorCmd::Reload);
+    app.giveaways.send(MonitorCmd::Republish);
     app.sync.poke();
     Ok(())
 }
@@ -1646,7 +1646,7 @@ fn import_gifts_from(app: &App, path: &str) -> CmdResult<GiftImportResult> {
             result.added += 1;
         }
     }
-    app.giveaways.send(MonitorCmd::Reload);
+    app.giveaways.send(MonitorCmd::Republish);
     app.sync.poke();
     Ok(result)
 }
@@ -1670,7 +1670,7 @@ pub fn set_giveaway_command(app: AppState, id: i64, command: Option<String>) -> 
         return Err("Commande trop longue (50 caractères au plus)".into());
     }
     app.db.set_giveaway_command(id, command.as_deref()).map_err(db_err)?;
-    app.giveaways.send(MonitorCmd::Reload);
+    app.giveaways.send(MonitorCmd::Republish);
     app.sync.poke();
     Ok(())
 }

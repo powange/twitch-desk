@@ -1,14 +1,21 @@
 name: CI
 
+# web/ : web app mobile, vérifiée par server.yml (pas par cette CI)
 on:
   push:
     branches: [main]
-    paths-ignore: ['site/**', 'server/**', '**.md']
+    paths-ignore: ['site/**', 'server/**', 'web/**', '**.md']
   pull_request:
-    paths-ignore: ['site/**', 'server/**', '**.md']
+    paths-ignore: ['site/**', 'server/**', 'web/**', '**.md']
 
 permissions:
   contents: read
+
+# Demande de fusion poussée de nouveau : la vérification précédente est annulée (sur main,
+# chaque commit garde la sienne)
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:

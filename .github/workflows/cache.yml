@@ -105,7 +105,9 @@ jobs:
       - run: npx tauri build --no-bundle
 
   # Caches enregistrés sur des tags (refs/tags/…) : aucun autre tag ne peut les relire, ils
-  # ne font que prendre la place des 10 Go permis
+  # ne font que prendre la place des 10 Go permis. Caches Rust remplacés (même famille, clé
+  # plus ancienne : dépendances ou Rust d'avant) et ancien cache npm (plus utilisé) : effacés
+  # aussi, sinon la limite est dépassée et GitHub peut évincer le cache de la release
   cleanup:
     name: Ménage des caches
     needs: warm
@@ -121,5 +123,19 @@ jobs:
           gh cache list --limit 1000 --json id,key,ref --jq '.[] | select(.ref | startswith("refs/tags/")) | "\(.id) \(.ref) \(.key)"' |
             while read -r id ref key; do
               echo "Effacé : $key ($ref)"
+              gh cache delete "$id"
+            done
+          # Famille : la clé sans sa dernière empreinte (v0-rust-release-Linux-x64-01b81e85) ;
+          # seule la plus récente de chaque famille et de chaque branche est gardée
+          gh cache list --limit 1000 --json id,key,ref,createdAt --jq '
+              [.[] | select(.key | startswith("v0-rust-")) | . + {family: "\(.ref) \(.key | split("-") | .[0:-1] | join("-"))"}]
+              | group_by(.family)[] | sort_by(.createdAt) | .[0:-1][] | "\(.id) \(.key)"' |
+            while read -r id key; do
+              echo "Remplacé, effacé : $key"
+              gh cache delete "$id"
+            done
+          gh cache list --limit 1000 --json id,key --jq '.[] | select(.key | startswith("node-cache-")) | "\(.id) \(.key)"' |
+            while read -r id key; do
+              echo "Cache npm plus utilisé, effacé : $key"
               gh cache delete "$id"
             done

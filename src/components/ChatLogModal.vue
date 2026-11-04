@@ -95,6 +95,8 @@ async function load(append = false) {
       beforeAt: beforeAt.value
     })
     if (seq !== loadSeq) return
+    // Surlignage d'après la recherche lancée (pas à chaque lettre tapée)
+    searched.value = text.value.trim()
     entries.value = append ? [...entries.value, ...page] : page
     more.value = page.length === PAGE
   } catch (e) {
@@ -183,6 +185,7 @@ watch(open, (isOpen) => {
   selectedCommands.value = []
   author.value = ''
   text.value = ''
+  searched.value = ''
   entries.value = []
   sections.value = []
   more.value = false
@@ -211,13 +214,20 @@ watch([author, text], () => {
   if (authorTimer) clearTimeout(authorTimer)
   authorTimer = setTimeout(reloadIfChanged, 300)
 })
-// Message découpé pour surligner les mots-clés cherchés
-function messageParts(message: string): { text: string, hit: boolean }[] {
-  const words = text.value.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  if (!words.length) return [{ text: message, hit: false }]
+// Message découpé pour surligner les mots-clés cherchés : expression calculée une fois par
+// recherche lancée
+const searched = ref('')
+const highlight = computed(() => {
+  const words = searched.value.toLowerCase().split(/\s+/).filter(Boolean)
+  if (!words.length) return null
   const escaped = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-  return message.split(new RegExp(`(${escaped.join('|')})`, 'gi')).filter(Boolean)
-    .map(part => ({ text: part, hit: words.includes(part.toLowerCase()) }))
+  return { words: new Set(words), re: new RegExp(`(${escaped.join('|')})`, 'gi') }
+})
+function messageParts(message: string): { text: string, hit: boolean }[] {
+  const h = highlight.value
+  if (!h) return [{ text: message, hit: false }]
+  return message.split(h.re).filter(Boolean)
+    .map(part => ({ text: part, hit: h.words.has(part.toLowerCase()) }))
 }
 
 // Gagnant non détecté : désigné à la main, sur le giveaway de la commande du message (sinon

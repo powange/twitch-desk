@@ -1,6 +1,7 @@
 # Publie une version : pousser un tag vX.Y.Z (même numéro que tauri.conf.json).
-# Vérifie le numéro et les tests, compile Windows (installateur NSIS) et Linux (AppImage,
-# .deb) sans la clé de signature, puis signe chaque paquet dans un job à part qui n'exécute
+# Vérifie le numéro (.github/scripts/check-version.sh) et les tests, compile Windows
+# (installateur NSIS) et Linux (AppImage, .deb) sans la clé de signature, puis crée la
+# release en brouillon et signe chaque paquet dans un job à part qui n'exécute
 # aucun code du projet, et publie latest.json, que l'application lit pour se mettre à
 # jour. La release reste en brouillon jusqu'à ce que tous les paquets soient envoyés : un
 # brouillon n'est pas la « dernière release », les applications gardent donc la version
@@ -18,38 +19,18 @@ permissions:
   contents: read
 
 jobs:
-  version:
-    name: Numéro de version
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Tag et version de l'application identiques
-        run: |
-          if [ "$GITHUB_REF_TYPE" != tag ]; then
-            echo "::error::À lancer sur un tag vX.Y.Z (--ref vX.Y.Z), pas sur $GITHUB_REF_NAME"
-            exit 1
-          fi
-          tag="${GITHUB_REF_NAME#v}"
-          conf=$(jq -r .version src-tauri/tauri.conf.json)
-          cargo=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
-          echo "tag $tag, tauri.conf.json $conf, Cargo.toml $cargo"
-          if [ "$tag" != "$conf" ] || [ "$tag" != "$cargo" ]; then
-            echo "::error::Le tag $GITHUB_REF_NAME ne correspond pas à la version de l'application ($conf / $cargo)"
-            exit 1
-          fi
-
   # Tests sous Linux seulement : le code propre à Windows est compilé par le job build, et
   # une compilation qui échoue laisse la release en brouillon (rien n'est publié)
   test:
     name: Tests
-    needs: version
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Tag et version de l'application identiques
+        run: .github/scripts/check-version.sh
 
       - name: Dépendances Linux
         run: |
@@ -84,36 +65,12 @@ jobs:
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
 
-  # Brouillon et compilation sans attendre les tests (déjà passés sur main par ci.yml) : ils
-  # tournent en parallèle, et la signature comme la publication attendent toujours leur réussite
-  draft:
-    name: Release en brouillon
-    needs: version
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    outputs:
-      id: ${{ steps.release.outputs.id }}
-    steps:
-      # Brouillon créé une fois ici : le job sign y envoie paquets, signatures et latest.json
-      - id: release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -1)
-          if [ -z "$id" ]; then
-            id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
-              -f tag_name="$TAG" -f name="Twitch Desk $TAG" -f body="Voir les changements dans le dépôt." \
-              -F draft=true -F prerelease=false --jq .id)
-          fi
-          echo "id=$id" >> "$GITHUB_OUTPUT"
-
   # Compilation sans la clé de signature ni droit d'écriture : npm ci, npm run build et les
   # build.rs des crates exécutent du code tiers, qui ne doit pas pouvoir la lire. Les
-  # paquets passent au job sign, qui signe sans rien compiler
+  # paquets passent au job sign, qui signe sans rien compiler. Sans attendre les tests (déjà
+  # passés sur main par ci.yml) : ils tournent en parallèle, et la signature comme la
+  # publication attendent toujours leur réussite
   build:
-    needs: draft
     strategy:
       fail-fast: false
       matrix:
@@ -123,6 +80,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Tag et version de l'application identiques
+        shell: bash
+        run: .github/scripts/check-version.sh
 
       - name: Dépendances Linux
         if: matrix.platform == 'ubuntu-22.04'
@@ -152,10 +113,11 @@ jobs:
       - run: npm ci
 
       # createUpdaterArtifacts coupé pour cette compilation seulement : activé, tauri build
-      # exige la clé privée. Les paquets produits sont les mêmes, sans leur .sig
+      # exige la clé privée. Les paquets produits sont les mêmes, sans leur .sig. Interface
+      # construite sans revérifier ses types (fait par le job test)
       - name: Paquets (sans signature)
         shell: bash
-        run: npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        run: npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false},"build":{"beforeBuildCommand":"npx vite build"}}'
 
       # Seuls les fichiers publiés aujourd'hui (installateur NSIS ; AppImage et .deb), de la
       # version du tag : le cache peut contenir des paquets d'une version précédente
@@ -193,11 +155,29 @@ jobs:
   # qui signe
   sign:
     name: Signature et latest.json
-    needs: [draft, build, test]
+    needs: [build, test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    outputs:
+      id: ${{ steps.release.outputs.id }}
     steps:
+      # Release en brouillon (créée une fois, retrouvée si le run est relancé) : paquets,
+      # signatures et latest.json y sont envoyés
+      - id: release
+        name: Release en brouillon
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -1)
+          if [ -z "$id" ]; then
+            id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$TAG" -f name="Twitch Desk $TAG" -f body="Voir les changements dans le dépôt." \
+              -F draft=true -F prerelease=false --jq .id)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: paquets-*
@@ -296,12 +276,12 @@ jobs:
           cat latest.json
           ls -l
 
-      # Envoi dans le brouillon créé par le job draft (le tag doit désigner ce brouillon)
+      # Envoi dans le brouillon créé plus haut (le tag doit désigner ce brouillon)
       - name: Envoi dans la release
         working-directory: ${{ runner.temp }}/envoi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ID: ${{ needs.draft.outputs.id }}
+          ID: ${{ steps.release.outputs.id }}
         run: |
           tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/$ID" --jq 'select(.draft) | .tag_name')
           if [ "$tag" != "$GITHUB_REF_NAME" ]; then
@@ -312,7 +292,7 @@ jobs:
 
   publish:
     name: Publication
-    needs: [draft, sign]
+    needs: sign
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -322,7 +302,7 @@ jobs:
       # (deux releases en même temps, l'ancienne finissant en dernier) : elle reste la dernière
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ID: ${{ needs.draft.outputs.id }}
+          ID: ${{ needs.sign.outputs.id }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/releases/$ID" --jq '.assets[].name' | grep -qx latest.json \
             || { echo "::error::latest.json absent de la release"; exit 1; }
