@@ -14,6 +14,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.16',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'fixed', text: 'Page Chaînes : les conditions des fiches de streamers reçues d\'un autre PC par la synchronisation s\'affichent sans avoir à changer de page.' }
+    ]
+  },
+  {
     version: '0.48.15',
     date: '2026-11-04',
     changes: [

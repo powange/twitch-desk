@@ -191,6 +191,8 @@ async function loadStreamers() {
 onMounted(loadStreamers)
 // Fiche ou giveaway enregistré : conditions habituelles relues
 watch([formOpen, streamerOpen], ([a, b]) => { if (!a && !b) void loadStreamers() })
+// Synchronisation passée (fiches reçues d'un autre PC) : relues aussi
+watch(() => snapshot.value?.sync.lastSync, (at, before) => { if (at && at !== before) void loadStreamers() })
 function computeConditions(c: GiveawayChannelView): ConditionTarget {
   const g = openGiveaway(c)
   if (g) return g
