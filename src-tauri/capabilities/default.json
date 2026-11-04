@@ -76,6 +76,7 @@
     "allow-get-chat-log",
     "allow-set-giveaway-command",
     "allow-get-chat-log-meta",
+    "allow-chat-pinned-message",
     "allow-get-chat-log-sections",
     "allow-set-manual-winner",
     "allow-clear-giveaway-winner",

@@ -50,6 +50,8 @@ const kindItems = [
 const entries = ref<ChatLogEntry[]>([])
 const commands = ref<[string, number][]>([])
 const replies = ref<BotReply[]>([])
+// Message épinglé du chat, relu sur Twitch à chaque ouverture
+const pinned = ref<{ text: string, sender: string | null } | null>(null)
 const sections = ref<ChatLogSection[]>([])
 // Ouvert sur un giveaway fini : messages jusqu'à sa fin (les plus récents sur demande)
 const beforeAt = ref<string | null>(null)
@@ -110,8 +112,17 @@ function reloadIfChanged() {
   if (open.value && filterKey() !== requestedKey) void load()
 }
 
+async function loadPinned(channel: string) {
+  try {
+    const p = await invoke<{ text: string, sender: string | null } | null>('chat_pinned_message', { channel })
+    if (props.channel === channel) pinned.value = p
+  } catch {
+    // Meilleur effort : pas d'encart
+  }
+}
 async function refresh() {
   if (!props.channel) return
+  void loadPinned(props.channel)
   try {
     const meta = await invoke<{ commands: [string, number][], replies: BotReply[] }>('get_chat_log_meta', { channel: props.channel })
     commands.value = meta.commands
@@ -187,6 +198,7 @@ watch(open, (isOpen) => {
   text.value = ''
   searched.value = ''
   entries.value = []
+  pinned.value = null
   sections.value = []
   more.value = false
   beforeAt.value = null
@@ -233,6 +245,11 @@ function messageParts(message: string): { text: string, hit: boolean }[] {
 // Gagnant non détecté : désigné à la main, sur le giveaway de la commande du message (sinon
 // le giveaway ouvert de la chaîne, sinon en pause, sinon le plus récent), modifiable avant de valider
 const { snapshot } = useSnapshot()
+// Réponse d'un bot de nouveau demandée pendant que le journal est ouvert : la dernière remplace
+// l'ancienne sans rouvrir le journal
+watch(() => props.channel ? snapshot.value?.giveaways.botReplies[props.channel] : undefined, (list) => {
+  if (open.value && list) replies.value = list
+})
 const STATUS_RANK = { open: 0, paused: 1, closed: 2 } as const
 const channelGiveaways = computed(() => (snapshot.value?.giveaways.giveaways ?? [])
   .filter(g => g.channel === props.channel)
@@ -275,7 +292,16 @@ function time(iso: string) {
   <UModal v-model:open="open" :title="`Journal du chat de ${channel ?? ''}`" description="Commandes des spectateurs, tes messages, ceux du streamer, annonces de gagnant et réponses des bots, gardés 14 jours." :ui="{ content: 'max-w-5xl' }">
     <template #body>
       <div class="flex flex-col gap-3">
-        <!-- Réponses des bots aux commandes d'information -->
+        <!-- Message épinglé dans le chat -->
+        <div v-if="pinned" class="border border-primary/40 bg-primary/5 rounded-md px-3 py-2 text-sm flex flex-col gap-0.5">
+          <div class="flex items-center gap-1.5 text-xs text-muted">
+            <UIcon name="i-lucide-pin" class="size-3.5 text-primary" />
+            <span class="font-medium text-default">Message épinglé</span>
+            <span v-if="pinned.sender">· {{ pinned.sender }}</span>
+          </div>
+          <div class="break-words whitespace-pre-line">{{ pinned.text }}</div>
+        </div>
+        <!-- Réponses des bots aux commandes d'information (la dernière de chaque commande) -->
         <div v-if="replies.length" class="flex flex-col gap-1.5">
           <div class="text-sm font-medium">Réponses des bots</div>
           <div v-for="r in replies" :key="r.command" class="border border-default rounded-md px-3 py-2 text-sm flex flex-col gap-0.5">

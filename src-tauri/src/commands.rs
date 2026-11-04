@@ -632,6 +632,13 @@ pub fn get_chat_log_meta(app: AppState, channel: String) -> CmdResult<ChatLogMet
     })
 }
 
+/// Message épinglé du chat d'une chaîne, relu sur Twitch (journal du chat)
+#[tauri::command]
+pub async fn chat_pinned_message(app: AppState<'_>, channel: String) -> CmdResult<Option<crate::twitch::gql::PinnedMessage>> {
+    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    crate::twitch::gql::pinned_message(&app.http, &channel).await.map_err(|e| format!("Message épinglé illisible : {e}"))
+}
+
 /// Teste une annonce de gagnant avec les formulations intégrées et celles données
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

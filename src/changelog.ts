@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.24',
+    date: '2026-11-04',
+    title: 'Message épinglé dans le journal du chat',
+    changes: [
+      { kind: 'new', text: 'Journal du chat : le message épinglé du chat de la chaîne est affiché tout en haut.' },
+      { kind: 'improved', text: 'Journal du chat : quand un bot répond de nouveau à une commande (!giveaway…) pendant que le journal est ouvert, sa dernière réponse remplace l\'ancienne tout de suite.' }
+    ]
+  },
+  {
     version: '0.48.23',
     date: '2026-11-04',
     title: 'Lien StreamElements trouvé tout seul, favoris sur la page Alertes',

@@ -426,6 +426,33 @@ pub fn find_discord(text: &str) -> Option<String> {
     Some(format!("https://{host}/{}", &c[2]))
 }
 
+/// Message épinglé dans le chat d'une chaîne : texte et auteur (ou qui l'a épinglé)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedMessage {
+    pub text: String,
+    pub sender: Option<String>,
+}
+
+/// Message épinglé du chat (None : aucun ; meilleur effort, Twitch peut ne pas le donner)
+pub async fn pinned_message(http: &reqwest::Client, login: &str) -> Result<Option<PinnedMessage>> {
+    if !is_login(login) {
+        return Ok(None);
+    }
+    let query = format!(
+        "query {{ channel(name: \"{login}\") {{ pinnedChatMessages(first: 1) {{ edges {{ node {{ \
+         pinnedBy {{ displayName }} pinnedMessage {{ content {{ text }} sender {{ displayName }} }} }} }} }} }} }}"
+    );
+    let v = raw_query(http, &query).await?;
+    let node = v.pointer("/data/channel/pinnedChatMessages/edges/0/node");
+    let text = node.and_then(|n| n.pointer("/pinnedMessage/content/text")).and_then(Value::as_str).map(str::to_owned);
+    let sender = node
+        .and_then(|n| n.pointer("/pinnedMessage/sender/displayName").or_else(|| n.pointer("/pinnedBy/displayName")))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Ok(text.filter(|t| !t.trim().is_empty()).map(|text| PinnedMessage { text, sender }))
+}
+
 pub async fn channel_profile(http: &reqwest::Client, login: &str) -> Result<Option<ChannelProfile>> {
     if !is_login(login) {
         return Ok(None);
@@ -442,23 +469,12 @@ pub async fn channel_profile(http: &reqwest::Client, login: &str) -> Result<Opti
         None => return Ok(None),
     };
     // Message épinglé : requête à part, une erreur ne doit pas faire perdre la fiche
-    let pinned = format!(
-        "query {{ channel(name: \"{login}\") {{ pinnedChatMessages(first: 1) {{ edges {{ node {{ \
-         pinnedBy {{ displayName }} pinnedMessage {{ content {{ text }} sender {{ displayName }} }} }} }} }} }} }}"
-    );
-    match raw_query(http, &pinned).await {
-        Ok(v) => {
-            let node = v.pointer("/data/channel/pinnedChatMessages/edges/0/node");
-            profile.pinned_message = node
-                .and_then(|n| n.pointer("/pinnedMessage/content/text"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            profile.pinned_by = node
-                .and_then(|n| n.pointer("/pinnedMessage/sender/displayName").or_else(|| n.pointer("/pinnedBy/displayName")))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-
+    match pinned_message(http, login).await {
+        Ok(Some(p)) => {
+            profile.pinned_message = Some(p.text);
+            profile.pinned_by = p.sender;
         }
+        Ok(None) => {}
         Err(e) => tracing::debug!("message épinglé de {login} : {e}"),
     }
     Ok(Some(profile))
