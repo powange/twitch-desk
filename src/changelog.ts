@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.11',
+    date: '2026-11-04',
+    changes: [
+      { kind: 'improved', text: 'File d\'alertes : chaque carte précise que le giveaway est déjà ajouté aux giveaways en cours. Le bouton « Ignorer » est remplacé par « Vu », tout à droite comme pour les mentions : il retire seulement la carte de la file, le giveaway reste en cours.' },
+      { kind: 'new', text: 'Carte d\'un giveaway StreamElements : pour chaque compte, ses tickets s\'il relève déjà les points StreamElements de la chaîne, sinon un bouton pour l\'ajouter à sa page StreamElements. « Acheter des tickets » ouvre la page StreamElements filtrée sur la chaîne.' }
+    ]
+  },
+  {
     version: '0.48.10',
     date: '2026-11-04',
     changes: [

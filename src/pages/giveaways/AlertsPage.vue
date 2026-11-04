@@ -392,6 +392,21 @@ function share(g: GiveawayView) {
             <span class="text-sm text-muted underline decoration-dotted cursor-help rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" :aria-label="evidenceText(g)">{{ share(g) }} % du chat</span>
           </UTooltip>
           <span class="text-xs text-muted ml-auto">{{ timeAgo(g.detectedAt, now) }}</span>
+          <!-- Comme les mentions : retire la carte de la file, le giveaway reste en cours -->
+          <UButton
+            label="Vu"
+            size="xs"
+            color="neutral"
+            variant="soft"
+            title="Retire cette carte de la file d'alertes. Le giveaway reste dans les giveaways en cours (rien n'est supprimé ni clos)"
+            :loading="busy(`dismiss-${g.id}`)"
+            @click="dismiss(g)"
+          />
+        </div>
+        <!-- Le giveaway est déjà enregistré : l'alerte ne fait que le signaler -->
+        <div class="text-sm text-muted flex items-center gap-2">
+          <UIcon name="i-lucide-circle-check" class="size-4 text-success shrink-0" />
+          <span>{{ g.kind === 'streamelements' ? 'Giveaway StreamElements ajouté' : 'Giveaway ajouté' }} aux giveaways en cours{{ g.status === 'paused' ? ' (en pause)' : '' }}.</span>
         </div>
         <!-- Réponse d'un bot à !giveaway… sur la chaîne -->
         <div v-for="r in view?.botReplies[g.channel] ?? []" :key="r.command" class="text-sm flex items-start gap-2">
@@ -444,11 +459,33 @@ function share(g: GiveawayView) {
           </template>
           <template v-else>
             <UButton v-if="g.url" label="Voir le giveaway" icon="i-lucide-external-link" size="sm" @click="openExternal(g.url)" />
-            <UButton label="Acheter des tickets" icon="i-lucide-ticket" size="sm" color="neutral" variant="soft" to="/streamelements" />
+            <UButton label="Acheter des tickets" icon="i-lucide-ticket" size="sm" color="neutral" variant="soft" :to="{ path: '/streamelements', query: { channels: g.channel } }" />
+            <!-- Chaque compte : ses tickets s'il relève les points StreamElements de la chaîne,
+                 sinon un bouton pour l'ajouter à sa page StreamElements -->
+            <template v-for="e in participationsOf(g)" :key="e.accountId">
+              <UButton
+                v-if="!inSeList(e.accountId, g.channel)"
+                :label="`${e.login} · ajouter à StreamElements`"
+                icon="i-lucide-plus"
+                size="sm"
+                color="neutral"
+                variant="outline"
+                :loading="busy(`se-add-${g.id}-${e.accountId}`)"
+                :title="`Relever les points StreamElements de ${g.channel} avec ${e.login}, pour acheter des tickets`"
+                @click="addToSe(g, e.accountId)"
+              />
+              <UBadge
+                v-else
+                :label="`${e.login} · ${e.tickets ?? 0} ticket${(e.tickets ?? 0) > 1 ? 's' : ''}`"
+                icon="i-lucide-ticket"
+                :color="e.tickets ? 'success' : 'neutral'"
+                variant="subtle"
+                title="Points StreamElements de la chaîne relevés pour ce compte"
+              />
+            </template>
           </template>
           <UButton label="Regarder" icon="i-lucide-tv" size="sm" color="neutral" variant="soft" title="Ajouter le stream à la fenêtre multi-stream" @click="watchStream(g.channel)" />
           <UButton label="Modifier" icon="i-lucide-pencil" size="sm" color="neutral" variant="ghost" @click="openForm(g)" />
-          <UButton label="Ignorer" size="sm" color="neutral" variant="ghost" :loading="busy(`dismiss-${g.id}`)" @click="dismiss(g)" />
         </div>
       </div>
 
