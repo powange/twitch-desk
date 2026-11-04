@@ -189,16 +189,21 @@ jobs:
           node-version: 24
 
       # package-lock.json lu par l'API (sans checkout) : même version et mêmes empreintes que
-      # la compilation. --ignore-scripts : aucun script d'installation n'est lancé (la CLI
-      # n'en a pas besoin, son binaire vient du paquet propre à la plateforme)
-      - name: CLI Tauri
+      # la compilation. Lu dans une étape à part : le jeton (droit d'écriture sur le dépôt)
+      # n'est pas dans l'environnement de l'installation qui suit
+      - name: package-lock.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir "$RUNNER_TEMP/cli"
-          cd "$RUNNER_TEMP/cli"
           gh api "repos/$GITHUB_REPOSITORY/contents/package-lock.json?ref=$GITHUB_SHA" \
             -H 'Accept: application/vnd.github.raw' > "$RUNNER_TEMP/package-lock.json"
+
+      # --ignore-scripts : aucun script d'installation n'est lancé (la CLI n'en a pas besoin,
+      # son binaire vient du paquet propre à la plateforme)
+      - name: CLI Tauri
+        run: |
+          mkdir "$RUNNER_TEMP/cli"
+          cd "$RUNNER_TEMP/cli"
           version=$(jq -er '.packages["node_modules/@tauri-apps/cli"].version' "$RUNNER_TEMP/package-lock.json")
           npm install --no-save --ignore-scripts --no-audit --no-fund "@tauri-apps/cli@$version"
           # Chaque paquet installé doit avoir l'empreinte de package-lock.json

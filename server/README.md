@@ -24,7 +24,7 @@ Mettre le serveur derrière un proxy HTTPS (Nginx Proxy Manager, Traefik, Caddy�
 
 Le port publié sur l'hôte sert en HTTP simple : il n'est ouvert qu'à l'hôte lui-même (`127.0.0.1`) par défaut, pour un proxy installé sur l'hôte ou un essai local. Pour l'ouvrir aux autres machines (proxy sur une autre machine, réseau local), définir `SYNC_HOST_BIND=0.0.0.0` (ou l'adresse d'une interface), en sachant que le code y passe en clair ; joint ainsi sans proxy, mettre aussi `SYNC_PROXY_HOPS=0`.
 
-Protection : après 10 codes incorrects en 10 minutes depuis une même adresse, celle-ci est refusée (réponse 429) pendant 15 minutes. Derrière un proxy, l'adresse du client est celle que le proxy ajoute à `X-Forwarded-For` (`SYNC_PROXY_HOPS` : nombre de proxys en chaîne, 1 par défaut). Le code est vérifié avant la lecture du corps de la requête ; 16 requêtes au plus sont traitées en même temps, chacune abandonnée après 45 s. Les flux temps réel (`/api/v1/events`) n'entrent pas dans cette limite : 64 au plus restent ouverts en même temps (au-delà, réponse 503 ; l'application réessaie et garde en attendant son passage toutes les 30 s).
+Protection : après 10 codes incorrects en 10 minutes depuis une même adresse, celle-ci est refusée (réponse 429) pendant 15 minutes ; une adresse IPv6 compte pour tout son réseau /64. Derrière un proxy, l'adresse du client est celle que le proxy ajoute à `X-Forwarded-For` (`SYNC_PROXY_HOPS` : nombre de proxys en chaîne, 1 par défaut). Le code est vérifié avant la lecture du corps de la requête ; 16 requêtes au plus sont traitées en même temps, chacune abandonnée après 45 s. Les flux temps réel (`/api/v1/events`) n'entrent pas dans cette limite : 64 au plus restent ouverts en même temps (au-delà, réponse 503 ; l'application réessaie et garde en attendant son passage toutes les 30 s), dont 2 par téléphone et 4 par adresse pour les applications : au-delà, le plus ancien est fermé.
 
 ### Temps réel derrière un proxy
 
@@ -52,7 +52,7 @@ Sans temps réel (serveur d'avant la 0.5 ou proxy qui bloque le flux), l'applica
 
 Dans l'application : Paramètres → Synchronisation → « Connecter un téléphone ». Un code à 6 chiffres s'affiche avec un QR code (lien `https://<serveur>/app/#pair=<code>`) : le scanner avec l'appareil photo ouvre la web app, qui se connecte seule ; sinon ouvrir `https://<serveur>/app/` et taper le code. Le téléphone apparaît alors dans la liste « Téléphones connectés », d'où on peut le déconnecter. Sur le téléphone, « Ajouter à l'écran d'accueil » l'installe comme une application.
 
-- Le code vaut 5 minutes, une seule fois ; un nouveau code remplace le précédent. Après 5 codes incorrects en 10 minutes, une adresse est refusée pendant 10 minutes.
+- Le code vaut 5 minutes, une seule fois ; un nouveau code remplace le précédent. Après 5 codes incorrects en 10 minutes, une adresse est refusée pendant 10 minutes ; après 30 codes incorrects en 10 minutes toutes adresses confondues, les codes en attente sont annulés (en demander un nouveau sur le PC).
 - Le téléphone reçoit son propre jeton (le code du serveur ne quitte jamais le PC). Le serveur n'en garde que l'empreinte (SHA-256). Ce jeton ne permet que de lire les giveaways ouverts et l'état publié par le PC qui l'a associé, et de gérer son propre abonnement aux notifications : rien d'autre.
 - Déconnecter un téléphone depuis le PC refuse son jeton aussitôt et ferme sa connexion temps réel.
 - Chaque PC publie un petit état (comptes, participations aux giveaways ouverts, statut live de leurs chaînes) quelques secondes après un changement : le téléphone se met à jour en temps réel.
@@ -86,7 +86,8 @@ Depuis la web app (menu ⋮ → Notifications), un téléphone s'abonne aux aler
 
 - La web app doit être servie en **HTTPS** (exigence des navigateurs).
 - Sur iPhone et iPad (iOS 16.4 ou plus) : ajouter d'abord la web app à l'écran d'accueil, puis activer les notifications depuis cette icône.
-- Le serveur doit pouvoir joindre Internet en sortie (services de push de Google, Apple, Mozilla).
+- Le serveur doit pouvoir joindre Internet en sortie (services de push de Google, Apple, Mozilla, Microsoft). Seuls ces services sont acceptés comme adresse d'abonnement, et aucune redirection n'est suivie : le serveur n'envoie rien ailleurs, ni vers son réseau local.
+- Images des lots : une image intégrée au cadeau est servie par le serveur ; une image en ligne n'est montrée aux téléphones que si elle vient de Twitch (sinon son hébergeur verrait leur adresse IP).
 - Une clé VAPID est créée au premier démarrage et gardée dans la base : la conserver (volume `/data`), sinon les téléphones devront réactiver leurs notifications.
 - Le contenu de chaque notification est chiffré pour le téléphone : le service de push ne le lit pas. Déconnecter un téléphone efface aussi son abonnement.
 

@@ -26,6 +26,10 @@ pub const PAIR_TTL: Duration = Duration::from_secs(5 * 60);
 pub const PAIR_MAX_FAILURES: u32 = 5;
 pub const PAIR_WINDOW: Duration = Duration::from_secs(10 * 60);
 pub const PAIR_BLOCK: Duration = Duration::from_secs(10 * 60);
+/// Toutes adresses confondues : au-delà de PAIR_GLOBAL_MAX codes refusés en PAIR_WINDOW, les codes
+/// en attente sont annulés (deviner un code à 6 chiffres depuis beaucoup d'adresses n'aboutit pas ;
+/// il suffit d'en demander un nouveau sur le PC)
+pub const PAIR_GLOBAL_MAX: usize = 30;
 /// Corps d'une demande d'association (code et nom de l'appareil)
 const MAX_CLAIM_BODY: usize = 4 * 1024;
 /// État publié par une application (participations, statut live) : quelques Ko d'habitude
@@ -297,6 +301,21 @@ pub async fn pair_claim(State(server): State<Shared>, request: Request) -> Resul
     let Some(pairing) = instance else {
         server.pair_guard.failed(ip, now);
         tracing::warn!("code d'association refusé pour {ip}");
+        let mut failures = server.pair_failures.lock().unwrap_or_else(|e| e.into_inner());
+        while failures.front().is_some_and(|t| now.duration_since(*t) > PAIR_WINDOW) {
+            failures.pop_front();
+        }
+        failures.push_back(now);
+        if failures.len() >= PAIR_GLOBAL_MAX {
+            failures.clear();
+            let cancelled = {
+                let mut pairings = server.pairings.lock().unwrap_or_else(|e| e.into_inner());
+                let n = pairings.len();
+                pairings.clear();
+                n
+            };
+            tracing::warn!("{PAIR_GLOBAL_MAX} codes d'association refusés en {} min : {cancelled} code(s) en attente annulé(s)", PAIR_WINDOW.as_secs() / 60);
+        }
         return Err(ApiError::BadPairingCode);
     };
     let name = clean_name(body.device_name.as_deref()).unwrap_or_else(|| "Téléphone".to_owned());
@@ -379,10 +398,12 @@ fn text(v: &Value, key: &str) -> Option<String> {
 }
 
 /// Image d'un cadeau envoyée à part (`gift_image`) : adresse avec l'empreinte de l'image (gardée
-/// en cache par le téléphone tant qu'elle ne change pas) ; image en ligne : son adresse
+/// en cache par le téléphone tant qu'elle ne change pas) ; image en ligne : son adresse, seulement
+/// chez Twitch (une image hébergée ailleurs ferait connaître l'adresse IP des téléphones à son
+/// hébergeur)
 fn gift_image_url(gift_id: &str, image: &str) -> Option<String> {
     if image.starts_with("https://") {
-        return Some(image.to_owned());
+        return twitch_image(image).then(|| image.to_owned());
     }
     if !image.starts_with("data:image/") {
         return None;
@@ -390,6 +411,16 @@ fn gift_image_url(gift_id: &str, image: &str) -> Option<String> {
     let hash: String = Sha256::digest(image.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect();
     let id: String = gift_id.bytes().map(|b| if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
     Some(format!("/api/v1/app/gifts/{id}/image?v={hash}"))
+}
+
+/// Image servie par Twitch (photos, jeux, récompenses de drops)
+fn twitch_image(url: &str) -> bool {
+    let Ok(uri) = url.parse::<axum::http::Uri>() else { return false };
+    let host = uri.host().unwrap_or_default().to_ascii_lowercase();
+    uri.scheme_str() == Some("https")
+        && uri.port().is_none()
+        && !url.contains('@')
+        && ["jtvnw.net", "twitchcdn.net", "twitch.tv"].iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
 /// Giveaways ouverts ou en pause, ouverts d'abord, les plus récents en premier ; cadeaux
@@ -521,4 +552,19 @@ pub async fn overview(State(server): State<Shared>, Extension(access): Extension
     })
     .await?;
     Ok(Json(overview))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn online_gift_images_only_from_twitch() {
+        assert!(gift_image_url("a", "https://static-cdn.jtvnw.net/twitch-quests-assets/REWARD/x.png").is_some());
+        assert!(gift_image_url("a", "https://exemple.fr/x.png").is_none());
+        assert!(gift_image_url("a", "https://jtvnw.net.exemple.fr/x.png").is_none());
+        assert!(gift_image_url("a", "https://static-cdn.jtvnw.net:8443/x.png").is_none());
+        assert!(gift_image_url("a", "http://static-cdn.jtvnw.net/x.png").is_none());
+        assert!(gift_image_url("a", "data:image/png;base64,iVBORw==").unwrap().starts_with("/api/v1/app/gifts/a/image?v="));
+    }
 }

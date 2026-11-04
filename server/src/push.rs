@@ -56,8 +56,10 @@ impl Push {
             }
         };
         let public_key = Base64UrlUnpadded::encode_string(&key.public_key().public_key().to_bytes_uncompressed());
+        // Aucune redirection suivie : la requête reste chez le service de push
         let http = reqwest::Client::builder()
             .timeout(SEND_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("twitch-desk-sync/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("client HTTP");
@@ -80,8 +82,9 @@ pub struct SubscribeBody {
     events: Vec<String>,
 }
 
-/// Adresse d'un service de push : https vers un nom d'hôte (pas d'adresse IP ni de machine
-/// locale : le serveur n'envoie rien vers son propre réseau)
+/// Adresse d'un vrai service de push des navigateurs (Chrome et Android, Firefox, Safari, Edge),
+/// en https sur le port par défaut : le serveur n'envoie rien ailleurs (ni vers son réseau, ni
+/// vers un nom qui y mènerait)
 fn valid_endpoint(endpoint: &str) -> bool {
     if endpoint.len() > MAX_ENDPOINT {
         return false;
@@ -90,14 +93,11 @@ fn valid_endpoint(endpoint: &str) -> bool {
         return false;
     };
     let Some(host) = uri.host() else { return false };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    uri.scheme_str() == Some("https")
-        && host.contains('.')
-        && host.parse::<std::net::Ipv4Addr>().is_err()
-        && !host.starts_with('[')
-        && !host.ends_with(".localhost")
-        && !host.ends_with(".local")
-        && !host.ends_with(".internal")
+    let host = host.to_ascii_lowercase();
+    let known = matches!(host.as_str(), "fcm.googleapis.com" | "updates.push.services.mozilla.com" | "web.push.apple.com")
+        || host.ends_with(".push.apple.com")
+        || host.ends_with(".notify.windows.com");
+    uri.scheme_str() == Some("https") && uri.port().is_none() && known && !endpoint.contains('@')
 }
 
 /// Clé publique (65 octets) et secret (16 octets) de l'abonnement
@@ -280,6 +280,11 @@ fn build_request(push: &Push, target: &Target, payload: &[u8]) -> Result<reqwest
 async fn deliver(server: Shared, targets: Vec<Target>, payload: Vec<u8>) {
     let mut tasks = tokio::task::JoinSet::new();
     for target in targets {
+        // Abonnement enregistré avant la liste des services connus : ignoré
+        if !valid_endpoint(&target.endpoint) {
+            tracing::warn!("notification pour l'appareil {} : service de push inconnu, ignorée", target.device);
+            continue;
+        }
         let request = match build_request(&server.push, &target, &payload) {
             Ok(r) => r,
             Err(e) => {
@@ -348,6 +353,12 @@ mod tests {
         assert!(!valid_endpoint("https://localhost/x"));
         assert!(!valid_endpoint("https://nas.local/x"));
         assert!(!valid_endpoint("https://sync/x"));
+        assert!(valid_endpoint("https://wns2-par02p.notify.windows.com/w/?token=x"));
+        assert!(!valid_endpoint("https://fcm.googleapis.com:8443/x"));
+        assert!(!valid_endpoint("https://exemple.fr/x"));
+        assert!(!valid_endpoint("https://fcm.googleapis.com.exemple.fr/x"));
+        assert!(!valid_endpoint("https://notify.windows.com.exemple.fr/x"));
+        assert!(!valid_endpoint("https://x@fcm.googleapis.com/x"));
         assert!(!valid_endpoint(&format!("https://a.b/{}", "x".repeat(MAX_ENDPOINT))));
     }
 
@@ -369,12 +380,12 @@ mod tests {
         let auth = [3u8; 16];
         let target = Target {
             device: "d".into(),
-            endpoint: "https://push.example.com/sub/1".into(),
+            endpoint: "https://fcm.googleapis.com/fcm/send/sub/1".into(),
             p256dh: Base64UrlUnpadded::encode_string(phone.public_key().to_sec1_bytes().as_ref()),
             auth: Base64UrlUnpadded::encode_string(&auth),
         };
         let request = build_request(&push, &target, br#"{"title":"Tu as gagne"}"#).unwrap();
-        assert_eq!(request.url().as_str(), "https://push.example.com/sub/1");
+        assert_eq!(request.url().as_str(), "https://fcm.googleapis.com/fcm/send/sub/1");
         assert_eq!(request.headers()["urgency"], "high");
         assert_eq!(request.headers()["content-encoding"], "aes128gcm");
         let vapid = request.headers()["authorization"].to_str().unwrap();

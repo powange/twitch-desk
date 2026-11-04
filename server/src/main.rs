@@ -77,6 +77,10 @@ const MAX_TRACKED: usize = 10_000;
 /// Flux d'événements ouverts en même temps au plus (au-delà : 503) ; ils échappent à
 /// MAX_CONCURRENT et REQUEST_TIMEOUT, qui ne visent que les requêtes courtes
 const MAX_STREAMS: usize = 64;
+/// Flux ouverts au plus par appareil, et par adresse pour les applications (code partagé) ; au-delà,
+/// le plus ancien est fermé (une seule personne ne prend pas toutes les places)
+const STREAMS_PER_DEVICE: usize = 2;
+const STREAMS_PER_ADDRESS: usize = 4;
 /// Commentaire envoyé sur un flux sans nouvelle, pour que les proxys ne le ferment pas
 const KEEP_ALIVE: Duration = Duration::from_secs(20);
 
@@ -95,10 +99,15 @@ struct Server {
     phone_seq: watch::Sender<Option<i64>>,
     /// Places des flux d'événements (MAX_STREAMS)
     streams: Arc<Semaphore>,
+    /// Flux ouverts par appareil ou adresse : numéro et signal de fermeture, du plus ancien au plus récent
+    stream_owners: Mutex<HashMap<String, StreamList>>,
+    next_stream: std::sync::atomic::AtomicU64,
     /// Codes d'association refusés, par adresse (plus strict que `guard`)
     pair_guard: Guard,
     /// Codes d'association en attente : code → application (en mémoire : perdus au redémarrage)
     pairings: Mutex<HashMap<String, mobile::Pairing>>,
+    /// Codes d'association refusés récemment, toutes adresses confondues (limite globale)
+    pair_failures: Mutex<std::collections::VecDeque<Instant>>,
     /// États publiés et appareils révoqués, annoncés aux flux des appareils
     notices: broadcast::Sender<mobile::Notice>,
     /// Fichiers de la web app (`SYNC_WEB_DIR`)
@@ -126,8 +135,11 @@ impl Server {
             seq: watch::Sender::new(Some(seq)),
             phone_seq: watch::Sender::new(Some(seq)),
             streams: Arc::new(Semaphore::new(MAX_STREAMS)),
+            stream_owners: Mutex::new(HashMap::new()),
+            next_stream: std::sync::atomic::AtomicU64::new(0),
             pair_guard: Guard::new(mobile::PAIR_MAX_FAILURES, mobile::PAIR_WINDOW, mobile::PAIR_BLOCK),
             pairings: Mutex::new(HashMap::new()),
+            pair_failures: Mutex::new(std::collections::VecDeque::new()),
             notices: broadcast::channel(64).0,
             web_dir: PathBuf::from(web::DEFAULT_WEB_DIR),
             push,
@@ -152,6 +164,9 @@ impl Server {
 }
 
 type Shared = Arc<Server>;
+
+/// Flux d'un propriétaire : numéro et signal de fermeture, du plus ancien au plus récent
+type StreamList = std::collections::VecDeque<(u64, tokio::sync::oneshot::Sender<()>)>;
 
 /// Essais de code refusés, par adresse : après `max_failures` essais en `window`, l'adresse
 /// attend `block`
@@ -195,16 +210,27 @@ impl Guard {
 
     /// Temps d'attente restant quand l'adresse est bloquée
     fn blocked(&self, ip: IpAddr, now: Instant) -> Option<Duration> {
+        let ip = guard_key(ip);
         let map = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
         map.get(&ip).and_then(|a| a.blocked_until).filter(|until| *until > now).map(|until| until - now)
     }
 
     fn failed(&self, ip: IpAddr, now: Instant) {
+        let ip = guard_key(ip);
         let mut map = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
         if map.len() >= MAX_TRACKED && !map.contains_key(&ip) {
             map.retain(|_, a| !a.expired(now, self.window));
+            // Encore plein : les plus anciennes adresses non bloquées sont oubliées (les
+            // blocages en cours restent), jusqu'à un dixième de place libre
             if map.len() >= MAX_TRACKED {
-                map.clear();
+                let mut free: Vec<(IpAddr, Instant)> = map.iter().filter(|(_, a)| a.blocked_until.is_none()).map(|(k, a)| (*k, a.since)).collect();
+                free.sort_by_key(|(_, since)| *since);
+                for (k, _) in free.into_iter().take(MAX_TRACKED / 10) {
+                    map.remove(&k);
+                }
+            }
+            if map.len() >= MAX_TRACKED {
+                return;
             }
         }
         let a = map.entry(ip).or_insert_with(|| Attempts::fresh(now));
@@ -219,7 +245,19 @@ impl Guard {
 
     fn succeeded(&self, ip: IpAddr) {
         let mut map = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
-        map.remove(&ip);
+        map.remove(&guard_key(ip));
+    }
+}
+
+/// Adresse comptée par les blocages : une adresse IPv6 vaut tout son réseau /64 (un abonné en
+/// reçoit des milliards), une IPv4 écrite en IPv6 vaut l'IPv4
+fn guard_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v6) & !((1u128 << 64) - 1))),
+        },
+        v4 => v4,
     }
 }
 
@@ -613,6 +651,17 @@ async fn push(State(server): State<Shared>, Json(body): Json<Push>) -> Result<Js
     Ok(Json(PushResult { accepted, seq }))
 }
 
+/// Lance une fonction à la fin d'une portée (y compris sur un `return` anticipé)
+struct OnDrop<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
+    }
+}
+
 /// Collections montrées par la vue des téléphones
 const PHONE_COLLECTIONS: [&str; 3] = ["giveaways", "gifts", "groups"];
 
@@ -627,8 +676,45 @@ fn seq_event(seq: i64) -> Event {
 ///
 /// Appareil associé (0.6) : en plus, un événement `state` (`data: {"instance":"…"}`) quand
 /// son application publie un nouvel état ; son flux se ferme dès qu'il est révoqué
-async fn events(State(server): State<Shared>, Extension(access): Extension<Access>) -> Response {
+async fn events(State(server): State<Shared>, Extension(access): Extension<Access>, request: Request) -> Response {
+    // Propriétaire du flux : l'appareil, ou l'adresse de l'application ; ses flux en trop
+    // (le plus ancien d'abord) sont fermés pour faire de la place
+    let (owner, limit) = match &access {
+        Access::Device { id, .. } => (format!("device:{id}"), STREAMS_PER_DEVICE),
+        Access::Full => {
+            let peer = request.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
+            (format!("ip:{}", guard_key(client_ip(request.headers(), peer, server.proxy_hops))), STREAMS_PER_ADDRESS)
+        }
+    };
+    let stream_id = server.next_stream.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (kick_tx, mut kick) = tokio::sync::oneshot::channel::<()>();
+    {
+        let mut owners = server.stream_owners.lock().unwrap_or_else(|e| e.into_inner());
+        let list = owners.entry(owner.clone()).or_default();
+        list.push_back((stream_id, kick_tx));
+        while list.len() > limit {
+            if let Some((_, old)) = list.pop_front() {
+                let _ = old.send(());
+            }
+        }
+    }
+    let release = {
+        let server = server.clone();
+        let owner = owner.clone();
+        move || {
+            let mut owners = server.stream_owners.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(list) = owners.get_mut(&owner) {
+                list.retain(|(id, _)| *id != stream_id);
+                if list.is_empty() {
+                    owners.remove(&owner);
+                }
+            }
+        }
+    };
+    // Flux fermé juste avant : sa place revient dès que sa tâche s'arrête
+    tokio::task::yield_now().await;
     let Ok(place) = server.streams.clone().try_acquire_owned() else {
+        release();
         let body = Json(serde_json::json!({ "error": "Trop de connexions en temps réel : réessayer plus tard" }));
         return (StatusCode::SERVICE_UNAVAILABLE, [(header::RETRY_AFTER, "60")], body).into_response();
     };
@@ -645,6 +731,8 @@ async fn events(State(server): State<Shared>, Extension(access): Extension<Acces
     };
     let s = server.clone();
     tokio::spawn(async move {
+        // Flux terminé, quelle qu'en soit la raison : retiré de ceux de son propriétaire
+        let _release = OnDrop(Some(release));
         let first = *seq.borrow_and_update();
         let Some(first) = first else { return };
         if tx.send(seq_event(first)).await.is_err() {
@@ -653,6 +741,8 @@ async fn events(State(server): State<Shared>, Extension(access): Extension<Acces
         loop {
             let event = tokio::select! {
                 _ = tx.closed() => break,
+                // Trop de flux pour ce propriétaire : le plus ancien (celui-ci) se ferme
+                _ = &mut kick => break,
                 changed = seq.changed() => {
                     let current = *seq.borrow_and_update();
                     match (changed, current) {
@@ -1244,6 +1334,52 @@ mod tests {
         assert_eq!(s.streams.available_permits(), MAX_STREAMS);
     }
 
+    #[tokio::test]
+    async fn too_many_streams_from_one_address_close_the_oldest() {
+        let s = server(&["gifts"]);
+        let res = app(s.clone()).oneshot(request("GET", "/api/v1/events", Some("code-secret"), "6.6.6.7", "")).await.unwrap();
+        let mut oldest = res.into_body().into_data_stream();
+        assert_eq!(next_event(&mut oldest).await, "event: seq\ndata: {\"seq\":0}\n\n");
+        let mut kept = vec![];
+        for _ in 0..STREAMS_PER_ADDRESS {
+            kept.push(app(s.clone()).oneshot(request("GET", "/api/v1/events", Some("code-secret"), "6.6.6.7", "")).await.unwrap());
+        }
+        // Le plus ancien est fermé ; une autre adresse garde les siens
+        assert!(tokio::time::timeout(Duration::from_secs(5), oldest.next()).await.unwrap().is_none());
+        let other = app(s.clone()).oneshot(request("GET", "/api/v1/events", Some("code-secret"), "6.6.6.8", "")).await.unwrap();
+        assert_eq!(other.status(), StatusCode::OK);
+        assert_eq!(s.stream_owners.lock().unwrap().get("ip:6.6.6.7").map(|l| l.len()), Some(STREAMS_PER_ADDRESS));
+        drop(kept);
+    }
+
+    #[test]
+    fn ipv6_blocked_by_its_network() {
+        let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:ffff:1:2:3".parse().unwrap();
+        let other: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_eq!(guard_key(a), guard_key(b));
+        assert_ne!(guard_key(a), guard_key(other));
+        assert_eq!(guard_key("::ffff:5.5.5.5".parse().unwrap()), "5.5.5.5".parse::<IpAddr>().unwrap());
+        let guard = Guard::new(3, Duration::from_secs(60), Duration::from_secs(60));
+        let now = Instant::now();
+        for _ in 0..3 {
+            guard.failed(a, now);
+        }
+        assert!(guard.blocked(b, now).is_some() && guard.blocked(other, now).is_none());
+    }
+
+    #[tokio::test]
+    async fn many_wrong_pairing_codes_cancel_the_pending_ones() {
+        let s = server(&["giveaways"]);
+        let code = start_pairing(&s, INSTANCE).await;
+        let wrong = if code == "000000" { "111111" } else { "000000" };
+        // Depuis beaucoup d'adresses (chacune sous sa propre limite)
+        for i in 0..mobile::PAIR_GLOBAL_MAX {
+            assert_eq!(claim(&s, wrong, &format!("5.6.{}.{}", i / 4, i % 4 + 1)).await.0, StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(claim(&s, &code, "5.7.7.7").await.0, StatusCode::BAD_REQUEST);
+    }
+
     /// Requête avec un en-tête `Authorization` quelconque
     fn request_auth(method: &str, uri: &str, auth: &str, ip: &str, body: &str) -> Request {
         Request::builder()
@@ -1497,11 +1633,11 @@ mod tests {
         };
         let local = sub("https://127.0.0.1/x", r#"["win"]"#);
         assert_eq!(status(&s, request_auth("PUT", "/api/v1/app/push", &auth, "7.7.7.1", &local)).await, StatusCode::BAD_REQUEST);
-        let body = sub("https://push.example.com/a", r#"["win","giveaway","inconnue","win"]"#);
+        let body = sub("https://fcm.googleapis.com/fcm/send/a", r#"["win","giveaway","inconnue","win"]"#);
         let (status_code, v) = json_of(&s, request_auth("PUT", "/api/v1/app/push", &auth, "7.7.7.1", &body)).await;
         assert_eq!(status_code, StatusCode::OK);
         assert_eq!(v["events"], serde_json::json!(["giveaway", "win"]));
-        let body2 = sub("https://push.example.com/b", r#"["win"]"#);
+        let body2 = sub("https://fcm.googleapis.com/fcm/send/b", r#"["win"]"#);
         assert_eq!(status(&s, request_auth("PUT", "/api/v1/app/push", &auth2, "7.7.7.1", &body2)).await, StatusCode::OK);
         // Le code partagé n'a pas d'abonnement ; un appareil n'envoie pas d'alerte
         assert_eq!(status(&s, request("PUT", "/api/v1/app/push", Some("code-secret"), "7.7.7.1", &body)).await, StatusCode::BAD_REQUEST);
@@ -1544,7 +1680,7 @@ mod tests {
         let (old_token, _) = paired_device(&s, INSTANCE).await;
         let (new_token, _) = paired_device(&s, INSTANCE).await;
         let p256dh = "BLn9b-VR0ca83knDNZ32dCHGyjJp-1riX9ZTN40MqV8K_LpQmLqxC_DoHvqvFXO_nGdAB4W9dogZb_sM-uV4JbY";
-        let body = format!(r#"{{"endpoint":"https://push.example.com/same","keys":{{"p256dh":"{p256dh}","auth":"_ordMnz7uTCmrpBTeUV4Bw"}},"events":["win"]}}"#);
+        let body = format!(r#"{{"endpoint":"https://fcm.googleapis.com/fcm/send/same","keys":{{"p256dh":"{p256dh}","auth":"_ordMnz7uTCmrpBTeUV4Bw"}},"events":["win"]}}"#);
         assert_eq!(status(&s, request_auth("PUT", "/api/v1/app/push", &format!("Device {old_token}"), "7.7.7.1", &body)).await, StatusCode::OK);
         // Nouveau QR code scanné dans le même navigateur : même adresse d'abonnement
         assert_eq!(status(&s, request_auth("PUT", "/api/v1/app/push", &format!("Device {new_token}"), "7.7.7.1", &body)).await, StatusCode::OK);
