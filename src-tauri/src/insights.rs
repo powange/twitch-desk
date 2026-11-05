@@ -54,6 +54,10 @@ impl InsightsState {
     pub fn view(&self) -> HashMap<String, ChannelInsight> {
         self.view.clone()
     }
+
+    pub fn get(&self, login: &str) -> Option<&ChannelInsight> {
+        self.view.get(login)
+    }
 }
 
 pub fn spawn(app: Arc<App>) {

@@ -14,6 +14,16 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.29',
+    date: '2026-11-05',
+    title: 'Cadeaux du live rattachés tout seuls',
+    changes: [
+      { kind: 'new', text: 'Un cadeau repéré dans le titre du live, la description ou le message épinglé est maintenant rattaché tout seul aux giveaways ouverts de la chaîne, comme si tu l\'avais ajouté à la main (il reste après la fin du live, et sur les autres appareils). C\'était déjà le cas pour les réponses des bots et le giveaway StreamElements.' },
+      { kind: 'improved', text: 'Un cadeau retiré à la main n\'est pas remis tant que le titre, la description, le message épinglé et le catalogue de cadeaux ne changent pas.' },
+      { kind: 'fixed', text: 'Un giveaway tout juste détecté reçoit bien les cadeaux des réponses de bot déjà connues sur la chaîne.' }
+    ]
+  },
+  {
     version: '0.48.28',
     date: '2026-11-05',
     title: 'Cadeaux repérés sur les giveaways en cours',

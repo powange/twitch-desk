@@ -3016,6 +3016,9 @@ mod tests {
         assert_eq!(gifts_in_text(&gifts, "Giveaway : OBSIDIAN   sails + une Epee"), vec![1, 2]);
         assert!(gifts_in_text(&gifts, "monkey business").is_empty());
         assert_eq!(gifts_in_text(&gifts, "3 keys"), vec![3]);
+        // Titre de live typique : symboles et barres autour du nom du cadeau
+        let cards = vec![gift(4, "Gift Card", &[])];
+        assert_eq!(gifts_in_text(&cards, "24/7 @Beardageddon | £50 Gift Card Giveaway | Sea of Thieves"), vec![4]);
     }
 
     #[test]

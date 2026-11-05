@@ -253,6 +253,10 @@ struct Monitor {
     live_busy: Option<Instant>,
     /// Giveaways ouverts (toutes chaînes), relus à chaque publication : lus à chaque message
     open: Vec<GiveawayRow>,
+    /// Giveaway → empreinte du titre du live, de la description, du message épinglé et du
+    /// catalogue de cadeaux dernièrement passés au crible (repassés seulement quand ils
+    /// changent : un cadeau retiré à la main le reste)
+    gifts_scanned: HashMap<i64, u64>,
     view: Arc<RwLock<GiveawaysView>>,
     tap: TapSender,
     channels: Vec<GiveawayChannel>,
@@ -315,6 +319,7 @@ impl Monitor {
             se_rx: Some(se_rx),
             se_busy: None,
             se_checked: HashMap::new(),
+            gifts_scanned: HashMap::new(),
             se_active_tx,
             se_active_rx: Some(se_active_rx),
             se_active_busy: None,
@@ -878,6 +883,9 @@ impl Monitor {
             }
             self.live.insert(channel, LiveState { info, at: Instant::now() });
         }
+        // Cadeaux annoncés dans le titre, la description ou le message épinglé : rattachés aux
+        // giveaways ouverts
+        changed |= self.gifts_from_live();
         // Giveaway clos, mis en pause ou repris : vue complète (et synchronisation) ; statut live,
         // spectateurs, titre seuls : chaînes seulement (les giveaways n'en dépendent pas)
         if changed {
@@ -1066,7 +1074,8 @@ impl Monitor {
             return;
         }
         let mut added = 0;
-        for g in self.open_giveaways(channel) {
+        // Relus en base : giveaway tout juste enregistré pas encore dans la liste des ouverts
+        for g in self.app.db.open_giveaways(Some(channel)).unwrap_or_default() {
             added += self.app.db.attach_gifts(g.id, &found).unwrap_or(0);
         }
         if added > 0 {
@@ -1089,11 +1098,62 @@ impl Monitor {
         self.publish();
     }
 
-    /// Nouveau giveaway sur une chaîne : cadeaux des réponses de bot déjà connues
+    /// Nouveau giveaway sur une chaîne : cadeaux des réponses de bot déjà connues, du titre du
+    /// live, de la description et du message épinglé
     fn gifts_from_known_replies(&mut self, channel: &str) {
         for r in self.app.db.bot_replies(channel).unwrap_or_default() {
             self.gifts_from_reply(channel, &r.message);
         }
+        self.gifts_from_live();
+    }
+
+    /// Cadeaux repérés dans le titre du live, la description et le message épinglé, ajoutés
+    /// aux giveaways ouverts des chaînes en live (ceux déjà rattachés restent) ; chaque giveaway
+    /// n'est repassé au crible que si ces textes ou le catalogue ont changé. Vrai si un cadeau a
+    /// été ajouté
+    fn gifts_from_live(&mut self) -> bool {
+        use std::hash::{Hash, Hasher};
+        let open = self.app.db.open_giveaways(None).unwrap_or_default();
+        self.gifts_scanned.retain(|id, _| open.iter().any(|g| g.id == *id));
+        if open.is_empty() {
+            return false;
+        }
+        let gifts = self.app.db.gifts().unwrap_or_default();
+        let mut catalog = std::collections::hash_map::DefaultHasher::new();
+        for g in &gifts {
+            (g.id, &g.title, &g.keywords).hash(&mut catalog);
+        }
+        let mut todo: Vec<(GiveawayRow, String, u64)> = Vec::new();
+        for g in open {
+            let Some(info) = self.live.get(&g.channel).and_then(|l| l.info.as_ref()) else { continue };
+            let insight = self.app.insights.lock().unwrap().get(&g.channel).cloned().unwrap_or_default();
+            let text = [Some(info.title.as_str()), insight.description.as_deref(), insight.pinned_message.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut h = catalog.clone();
+            text.hash(&mut h);
+            let print = h.finish();
+            if self.gifts_scanned.get(&g.id) != Some(&print) {
+                todo.push((g, text, print));
+            }
+        }
+        let mut any = false;
+        for (g, text, print) in todo {
+            let found = crate::db::gifts_in_text(&gifts, &text);
+            let added = if found.is_empty() { 0 } else { self.app.db.attach_gifts(g.id, &found).unwrap_or(0) };
+            self.gifts_scanned.insert(g.id, print);
+            if added > 0 {
+                let names: Vec<&str> = gifts.iter().filter(|x| found.contains(&x.id)).map(|x| x.title.as_str()).collect();
+                self.app.log("giveaways", EventKind::Giveaway, format!("Cadeaux repérés dans le live de {} : {}", g.channel, names.join(", ")));
+                any = true;
+            }
+        }
+        if any {
+            self.app.sync.poke();
+        }
+        any
     }
 
     /// Un de nos comptes tape la commande d'un giveaway ouvert dans le chat (depuis Twitch ou
