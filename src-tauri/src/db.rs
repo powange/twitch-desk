@@ -2049,10 +2049,21 @@ impl Db {
     }
 
     pub fn gifts(&self) -> DbResult<Vec<Gift>> {
+        self.read_gifts(true)
+    }
+
+    /// Catalogue sans les images (jusqu'à 2 Mo chacune) : repérage dans les textes, rapprochement
+    /// par titre, identifiants
+    pub fn gift_terms(&self) -> DbResult<Vec<Gift>> {
+        self.read_gifts(false)
+    }
+
+    fn read_gifts(&self, images: bool) -> DbResult<Vec<Gift>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, title, image, group_id, keywords, game_id, game_name, favorite FROM gifts ORDER BY title COLLATE NOCASE",
-        )?;
+        let image = if images { "image" } else { "NULL" };
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, title, {image}, group_id, keywords, game_id, game_name, favorite FROM gifts ORDER BY title COLLATE NOCASE"
+        ))?;
         let rows = stmt.query_map([], |r| {
             let keywords: String = r.get(4)?;
             Ok(Gift {

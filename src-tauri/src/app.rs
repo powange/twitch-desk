@@ -43,7 +43,7 @@ pub enum ChannelState {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelView {
     pub id: i64,
@@ -88,7 +88,7 @@ pub struct ChannelView {
     pub se_auto_buy_max: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountView {
     pub id: i64,
@@ -99,6 +99,9 @@ pub struct AccountView {
     pub status_text: Option<String>,
     pub realtime: bool,
     pub chat_connected: bool,
+    /// Envoyé à part à l'interface (partie « drops ») : les campagnes ne repartent pas à chaque
+    /// changement du compte (spectateurs, solde)
+    #[serde(skip)]
     pub drops: crate::drops::DropsView,
     pub se_account: SeAccount,
     pub channels: Vec<ChannelView>,
@@ -421,8 +424,15 @@ impl App {
         let _ = self.handle.emit("paused", paused);
     }
 
+    /// Vue d'un compte republiée par son superviseur (à chaque tour de boucle) : rien à envoyer ni
+    /// à synchroniser si elle n'a pas changé
     pub fn set_view(&self, view: AccountView) {
-        self.views.write().unwrap().insert(view.id, view);
+        let mut views = self.views.write().unwrap();
+        if views.get(&view.id) == Some(&view) {
+            return;
+        }
+        views.insert(view.id, view);
+        drop(views);
         self.touch_domain(Domain::Accounts);
     }
 
@@ -481,7 +491,10 @@ impl App {
             parts.push(("operationsUpdated", to_json(&operations_updated)));
         }
         if wants(Domain::Accounts) {
-            parts.push(("accounts", to_json(&self.account_views())));
+            let views = self.account_views();
+            let drops: BTreeMap<i64, &crate::drops::DropsView> = views.iter().map(|a| (a.id, &a.drops)).collect();
+            parts.push(("accounts", to_json(&views)));
+            parts.push(("drops", to_json(&drops)));
         }
         if wants(Domain::Giveaways) {
             let g = self.giveaways.view();

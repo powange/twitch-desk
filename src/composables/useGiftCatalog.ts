@@ -46,6 +46,17 @@ export function useKnownCategories() {
   })
 }
 
+export interface GiftHit { gift: Gift, attached: boolean }
+
+// Colonne Cadeaux : cadeaux rattachés (dans leur ordre) puis ceux repérés dans le texte, sans
+// doublon ; même calcul pour toutes les pages
+export function giftHits(byId: Map<number, Gift>, catalog: Gift[], attachedIds: readonly number[], text: string | null | undefined): GiftHit[] {
+  const attached = attachedIds.map(id => byId.get(id)).filter((g): g is Gift => !!g)
+  const ids = new Set(attached.map(g => g.id))
+  const found = text ? suggestGifts(catalog, text).filter(g => !ids.has(g.id)) : []
+  return [...attached.map(gift => ({ gift, attached: true })), ...found.map(gift => ({ gift, attached: false }))]
+}
+
 // Cadeaux dont le titre ou un mot-clé apparaît dans le texte (titre d'un live, description…),
 // sans tenir compte des majuscules ni des accents, au début d'un mot (« key » trouve « keys »,
 // pas « monkey » ; un terme qui commence par un symbole, comme « €-card », n'importe où)

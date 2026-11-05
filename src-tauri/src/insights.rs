@@ -13,6 +13,7 @@ use crate::twitch::gql;
 
 const REFRESH_EVERY: Duration = Duration::from_secs(5 * 60);
 const TICK: Duration = Duration::from_secs(20);
+const SE_MAX_AGE: Duration = crate::lives::SE_SHARED_MAX_AGE;
 /// Chaînes relues par passage, pour étaler les requêtes
 const PER_TICK: usize = 4;
 
@@ -130,7 +131,7 @@ async fn refresh(app: &Arc<App>) {
         };
         match se_id {
             None => insight.streamelements = None,
-            Some(se_id) => match crate::streamelements::active_giveaway(&app.http, &se_id).await {
+            Some(se_id) => match crate::streamelements::active_giveaway_cached(app, &se_id, SE_MAX_AGE).await {
                 Ok(Some(g)) => {
                     insight.streamelements = Some(SeActive { title: g.title, description: g.description, command: g.command, cost: g.cost })
                 }

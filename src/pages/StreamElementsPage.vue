@@ -9,11 +9,9 @@ import { useSnapshot } from '../composables/useSnapshot'
 import { useOpenExternal } from '../utils/external'
 import { useWatchStream } from '../utils/viewer'
 import { formatNumber } from '../utils/format'
-import type { ChannelView, Gift, GiveawayView } from '../types'
-import { suggestGifts, useGiftCatalog } from '../composables/useGiftCatalog'
-import { useGiftPreview } from '../composables/useGiftPreview'
-import SolidIcon from '../components/SolidIcon.vue'
-import GiftThumb from '../components/GiftThumb.vue'
+import type { ChannelView, GiveawayView } from '../types'
+import { giftHits, useGiftCatalog } from '../composables/useGiftCatalog'
+import GiftBadge from '../components/GiftBadge.vue'
 import AccountPicker from '../components/AccountPicker.vue'
 import { useSelectedAccount } from '../composables/useSelectedAccount'
 import { stringList, usePersisted } from '../composables/usePersisted'
@@ -95,12 +93,9 @@ function knownGiveaway(channel: ChannelView): GiveawayView | null {
 // Cadeaux : ceux rattachés au giveaway connu, puis ceux repérés dans le titre et la description
 // du giveaway StreamElements en cours (calculés une fois par mise à jour)
 const { byId: giftById, gifts: catalogGifts } = useGiftCatalog()
-const { openGift } = useGiftPreview()
 const giftsByLogin = computed(() => new Map(channels.value.map((c) => {
-  const attached = (known.value.get(c.login)?.giftIds ?? []).map(id => giftById.value.get(id)).filter((g): g is Gift => !!g)
   const text = [c.seGiveaway?.title, c.seGiveaway?.description].filter(Boolean).join('\n')
-  const found = text ? suggestGifts(catalogGifts.value, text).filter(g => !attached.some(a => a.id === g.id)) : []
-  return [c.login, [...attached.map(gift => ({ gift, attached: true })), ...found.map(gift => ({ gift, attached: false }))]] as const
+  return [c.login, giftHits(giftById.value, catalogGifts.value, known.value.get(c.login)?.giftIds ?? [], text)] as const
 })))
 const channelGifts = (c: ChannelView) => giftsByLogin.value.get(c.login) ?? []
 // État du giveaway : en cours (StreamElements le donne actif), en pause (live terminé), clos, ou rien de connu
@@ -423,13 +418,7 @@ function affordable(channel: ChannelView): number | null {
               </td>
               <td class="px-1.5 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
-                  <UTooltip v-for="x in channelGifts(channel)" :key="x.gift.id" :text="`${x.gift.title} (${x.attached ? 'rattaché au giveaway' : 'repéré dans le titre ou la description'}${x.gift.favorite ? ', favori' : ''})`">
-                    <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${x.gift.title} en grand`" @click="openGift(x.gift.id)">
-                      <GiftThumb :src="x.gift.image" class="size-8" lazy />
-                      <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
-                      <SolidIcon v-if="x.gift.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
-                    </button>
-                  </UTooltip>
+                  <GiftBadge v-for="x in channelGifts(channel)" :key="x.gift.id" :gift="x.gift" :attached="x.attached" found-label="repéré dans le titre ou la description" lazy />
                   <span v-if="channelGifts(channel).length === 0" class="text-muted">—</span>
                 </div>
               </td>

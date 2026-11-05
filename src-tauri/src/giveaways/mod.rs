@@ -77,6 +77,31 @@ pub struct GiveawayEntryView {
 }
 
 /// Identifiant StreamElements du giveaway, lu dans son lien (…/giveaway/<id>)
+/// Message du chat analysé une seule fois : annonces d'un bot, gagnant annoncé par un modérateur
+/// ou le streamer
+struct Parsed {
+    bot_like: bool,
+    events: Vec<BotEvent>,
+    moderator_winner: Option<BotEvent>,
+}
+
+impl Parsed {
+    fn of(channel: &str, user_l: &str, text: &str, moderator: bool) -> Self {
+        let privileged = moderator || user_l == channel;
+        let bot_like = bots::is_bot_like(user_l);
+        Parsed {
+            bot_like,
+            events: if bot_like { bots::bot_events(user_l, text, privileged) } else { Vec::new() },
+            moderator_winner: if privileged { bots::moderator_winner(user_l, text) } else { None },
+        }
+    }
+
+    /// Annonce d'un gagnant (bot, modérateur ou streamer) : rangée comme telle dans le journal
+    fn announces_winner(&self) -> bool {
+        self.events.iter().any(|e| matches!(e, BotEvent::Winner { .. })) || self.moderator_winner.is_some()
+    }
+}
+
 pub(crate) fn se_giveaway_id(url: &str) -> Option<&str> {
     let id = url.trim_end_matches('/').rsplit_once("/giveaway/")?.1;
     (!id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit())).then_some(id)
@@ -261,6 +286,9 @@ struct Monitor {
     gifts_scanned: HashMap<i64, u64>,
     /// Gagnants annoncés sans giveaway trouvé (chaîne, pseudo en minuscules) : répétition ignorée
     untargeted_wins: HashMap<(String, String), Instant>,
+    /// Traitement groupé en cours (relevé StreamElements) : publications reportées à la fin
+    batching: bool,
+    publish_pending: bool,
     view: Arc<RwLock<GiveawaysView>>,
     tap: TapSender,
     channels: Vec<GiveawayChannel>,
@@ -325,6 +353,8 @@ impl Monitor {
             se_checked: HashMap::new(),
             gifts_scanned: HashMap::new(),
             untargeted_wins: HashMap::new(),
+            batching: false,
+            publish_pending: false,
             se_active_tx,
             se_active_rx: Some(se_active_rx),
             se_active_busy: None,
@@ -394,7 +424,6 @@ impl Monitor {
                 Some(report) = se_active_rx.recv() => self.on_se_active_report(report),
                 _ = log_tick.tick() => self.flush_chat_log(),
                 _ = tick.tick() => {
-                    self.update_anonymous();
                     let now = chrono::Utc::now();
                     let at = |d: chrono::Duration| (now - d).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
                     let closed = self.app.db.close_giveaways_before(&at(AUTO_CLOSE_AFTER), &at(PAUSED_MAX_AGE)).unwrap_or(0);
@@ -405,8 +434,12 @@ impl Monitor {
                     if expired > 0 {
                         self.app.log("giveaways", EventKind::Info, format!("{expired} giveaway(s) en pause expiré(s), clos"));
                     }
+                    // Giveaways ouverts relus (changés par une commande ou la synchronisation) ;
+                    // la publication le fait déjà
                     if closed + expired > 0 {
                         self.publish();
+                    } else {
+                        self.update_anonymous();
                     }
                     self.presence_reminders();
                     self.check_se_giveaways(None);
@@ -442,7 +475,7 @@ impl Monitor {
         for c in stale {
             self.detector.forget(&c);
         }
-        self.update_anonymous();
+        // Chats lus et giveaways ouverts mis à jour par la publication
         self.publish();
     }
 
@@ -589,7 +622,7 @@ impl Monitor {
                 self.record_winner(&channel, target, &winner, None, true);
             }
         }
-        let due: Vec<(i64, String, String)> = rows
+        let due: Vec<(i64, String, String, bool)> = rows
             .into_iter()
             // Annonce du bot en attente (lecture précédente échouée) : relu à chaque passage
             .filter(|g| {
@@ -606,24 +639,25 @@ impl Monitor {
                     Some((page, _)) if page != crate::streamelements::page_name(&g.channel) => format!("page:{page}"),
                     _ => g.channel.clone(),
                 };
-                Some((g.id, key, se_id))
+                Some((g.id, key, se_id, self.se_announced.contains_key(&g.channel)))
             })
             .take(20)
             .collect();
         if due.is_empty() {
             return;
         }
-        for (id, _, _) in &due {
+        for (id, _, _, _) in &due {
             self.se_checked.insert(*id, now);
         }
         self.se_busy = Some(now);
         let known = self.se_channels.clone();
+        let app = self.app.clone();
         let http = self.app.http.clone();
         let tx = self.se_tx.clone();
         tauri::async_runtime::spawn(async move {
             let mut channel_ids: HashMap<String, Option<String>> = HashMap::new();
             let mut results = vec![];
-            for (id, channel, se_id) in due {
+            for (id, channel, se_id, announced) in due {
                 let se_channel = match known.get(&channel).or_else(|| channel_ids.get(&channel)) {
                     Some(c) => c.clone(),
                     None => match match channel.strip_prefix("page:") {
@@ -641,11 +675,21 @@ impl Monitor {
                         }
                     },
                 };
-                let outcome = match se_channel {
-                    Some(c) => crate::streamelements::giveaway_outcome(&http, &c, &se_id).await.map_err(|e| {
+                // Toujours le giveaway en cours de la chaîne (cache partagé avec les points) et pas
+                // d'annonce de gagnant en attente : en cours, sans gagnant, sans relire son détail
+                let running = match (&se_channel, announced) {
+                    (Some(c), false) => match crate::streamelements::active_giveaway_cached(&app, c, SE_ACTIVE_EVERY).await {
+                        Ok(Some(g)) if g.id.eq_ignore_ascii_case(&se_id) => Some(crate::streamelements::running_outcome(g)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let outcome = match (running, se_channel) {
+                    (Some(o), _) => Ok(Some(o)),
+                    (None, Some(c)) => crate::streamelements::giveaway_outcome(&http, &c, &se_id).await.map_err(|e| {
                         tracing::debug!("StreamElements : giveaway {se_id} de {channel} : {e}");
                     }),
-                    None => Ok(None),
+                    (None, None) => Ok(None),
                 };
                 results.push((id, outcome));
             }
@@ -742,6 +786,16 @@ impl Monitor {
     /// gagnant (tirage à venir) : reste ouvert. Annonce du bot sans giveaway tiré : elle
     /// concernait un autre tirage
     fn on_se_report(&mut self, report: SeReport) {
+        // Une seule publication pour tout le relevé (plusieurs gagnants, cadeaux, clôtures)
+        self.batching = true;
+        self.on_se_report_inner(report);
+        self.batching = false;
+        if std::mem::take(&mut self.publish_pending) {
+            self.publish();
+        }
+    }
+
+    fn on_se_report_inner(&mut self, report: SeReport) {
         self.se_busy = None;
         self.se_channels.extend(report.channel_ids);
         let mut drawn_channels: HashSet<String> = HashSet::new();
@@ -953,12 +1007,14 @@ impl Monitor {
             TapEvent::Message { source, channel, user, text, moderator } => {
                 // Un seul lecteur par chaîne : sinon chaque message compterait double
                 if self.logged(&channel) && self.reader(&channel) == Some(source) {
-                    self.log_chat(&channel, &user, &text, moderator);
+                    // Annonces des bots et des modérateurs analysées une seule fois (journal, gagnants)
+                    let parsed = Parsed::of(&channel, &user.to_lowercase(), &text, moderator);
+                    self.log_chat(&channel, &user, &text, &parsed);
                     if self.monitored(&channel) {
-                        self.on_message(&channel, &user, &text, moderator);
+                        self.on_message(&channel, &user, &text, parsed);
                     } else {
                         // Chaîne lue pour un giveaway ouvert : gagnant seulement, pas de détection
-                        self.on_announcement(&channel, &user.to_lowercase(), &text, moderator, false);
+                        self.on_announcement(&channel, parsed, false);
                     }
                 }
             }
@@ -996,7 +1052,7 @@ impl Monitor {
             MonitorCmd::WinnersCleared(id) => {
                 let live = self.app.db.giveaway(id).ok().flatten().is_none_or(|g| self.live.get(&g.channel).is_none_or(|l| l.info.is_some()));
                 let _ = self.app.db.restart_giveaway(id, live, &now_rfc3339());
-                self.reload();
+                self.publish();
                 self.app.sync.poke();
             }
             MonitorCmd::Delete(id) => {
@@ -1019,7 +1075,7 @@ impl Monitor {
 
     /// Journal du chat : commandes des spectateurs, tous nos messages et ceux du streamer,
     /// annonces de gagnant, réponses des bots
-    fn log_chat(&mut self, channel: &str, user: &str, text: &str, moderator: bool) {
+    fn log_chat(&mut self, channel: &str, user: &str, text: &str, parsed: &Parsed) {
         let author = user.to_lowercase();
         // Commande avec « ! », ou mot-clé d'un giveaway ouvert tapé seul (« bonbons »)
         let mut command = detect::extract_command(text).or_else(|| {
@@ -1035,10 +1091,7 @@ impl Monitor {
         let kind = if let Some(account) = self.accounts.iter().find(|(_, l)| *l == author).map(|(id, _)| *id) {
             self.own_participation(channel, account, text);
             "own"
-        } else if (bots::is_bot_like(&author)
-            && bots::bot_events(&author, text, moderator || author == channel).iter().any(|e| matches!(e, BotEvent::Winner { .. })))
-            || ((moderator || author == channel) && bots::moderator_winner(&author, text).is_some())
-        {
+        } else if parsed.announces_winner() {
             "winner"
         } else if let Some(cmd) = reply {
             command = Some(cmd);
@@ -1071,7 +1124,7 @@ impl Monitor {
     /// Réponse de bot nouvelle ou changée : cadeaux du catalogue repérés dedans ajoutés aux
     /// giveaways ouverts de la chaîne (ceux déjà rattachés restent)
     fn gifts_from_reply(&mut self, channel: &str, message: &str) {
-        let gifts = self.app.db.gifts().unwrap_or_default();
+        let gifts = self.app.db.gift_terms().unwrap_or_default();
         let found = crate::db::gifts_in_text(&gifts, message);
         if found.is_empty() {
             return;
@@ -1091,7 +1144,7 @@ impl Monitor {
     /// Cadeaux repérés dans le titre et la description d'un giveaway StreamElements, ajoutés à
     /// ce giveaway (ceux déjà rattachés restent)
     fn gifts_from_se_giveaway(&mut self, g: &GiveawayRow, text: &str) {
-        let gifts = self.app.db.gifts().unwrap_or_default();
+        let gifts = self.app.db.gift_terms().unwrap_or_default();
         let found = crate::db::gifts_in_text(&gifts, text);
         if found.is_empty() || self.app.db.attach_gifts(g.id, &found).unwrap_or(0) == 0 {
             return;
@@ -1104,8 +1157,10 @@ impl Monitor {
     /// Nouveau giveaway sur une chaîne : cadeaux des réponses de bot déjà connues, du titre du
     /// live, de la description et du message épinglé
     fn gifts_from_known_replies(&mut self, channel: &str) {
-        for r in self.app.db.bot_replies(channel).unwrap_or_default() {
-            self.gifts_from_reply(channel, &r.message);
+        // Toutes les réponses d'un coup : catalogue et giveaways lus une seule fois
+        let replies: Vec<String> = self.app.db.bot_replies(channel).unwrap_or_default().into_iter().map(|r| r.message).collect();
+        if !replies.is_empty() {
+            self.gifts_from_reply(channel, &replies.join("\n"));
         }
         self.gifts_from_live();
     }
@@ -1121,7 +1176,7 @@ impl Monitor {
         if open.is_empty() {
             return false;
         }
-        let gifts = self.app.db.gifts().unwrap_or_default();
+        let gifts = self.app.db.gift_terms().unwrap_or_default();
         let mut catalog = std::collections::hash_map::DefaultHasher::new();
         for g in &gifts {
             (g.id, &g.title, &g.keywords).hash(&mut catalog);
@@ -1234,20 +1289,17 @@ impl Monitor {
     /// Annonces des bots, des modérateurs et du streamer (gagnant, lien StreamElements, tickets) ;
     /// vrai si le message est traité (bot, ou gagnant annoncé). `monitored` : un lien
     /// StreamElements crée un giveaway (chaîne surveillée seulement)
-    fn on_announcement(&mut self, channel: &str, user_l: &str, text: &str, moderator: bool, monitored: bool) -> bool {
-        let privileged = moderator || user_l == channel;
+    fn on_announcement(&mut self, channel: &str, parsed: Parsed, monitored: bool) -> bool {
         // Annonce du gagnant par un modérateur (bot ou humain) ou le streamer : badges du message,
         // qu'un spectateur ne peut pas imiter
-        if privileged && !bots::is_bot_like(user_l) {
-            if let Some(BotEvent::Winner { bot, winner, chance }) = bots::moderator_winner(user_l, text) {
+        if !parsed.bot_like {
+            if let Some(BotEvent::Winner { bot, winner, chance }) = parsed.moderator_winner {
                 self.on_winner(channel, &bot, &winner, chance.as_deref());
                 return true;
             }
-        }
-        if !bots::is_bot_like(user_l) {
             return false;
         }
-        let events = bots::bot_events(user_l, text, privileged);
+        let events = parsed.events;
         let announces_winner = events.iter().any(|e| matches!(e, BotEvent::Winner { .. }));
         for event in events {
             match event {
@@ -1274,9 +1326,9 @@ impl Monitor {
         true
     }
 
-    fn on_message(&mut self, channel: &str, user: &str, text: &str, moderator: bool) {
+    fn on_message(&mut self, channel: &str, user: &str, text: &str, parsed: Parsed) {
         let user_l = user.to_lowercase();
-        if self.on_announcement(channel, &user_l, text, moderator, true) {
+        if self.on_announcement(channel, parsed, true) {
             return;
         }
         self.on_mention(channel, &user_l, text);
@@ -1284,12 +1336,19 @@ impl Monitor {
             return;
         }
 
+        // Commandes écartées : liste de la chaîne copiée seulement s'il faut y ajouter celle des
+        // tickets StreamElements ; giveaways ouverts copiés seulement si une commande est trouvée
+        let has_se = self.open.iter().any(|g| g.channel == channel && g.kind == "streamelements");
+        let excluded = self.channels.iter().find(|c| c.login == channel).map(|c| c.excluded.as_slice()).unwrap_or(&[]);
+        let with_se: Vec<String>;
+        let ignored: &[String] = if has_se {
+            with_se = excluded.iter().cloned().chain([detect::STREAMELEMENTS_TICKET_COMMAND.to_owned()]).collect();
+            &with_se
+        } else {
+            excluded
+        };
+        let Some((command, evidence)) = self.detector.push(channel, &user_l, text, ignored) else { return };
         let open = self.open_giveaways(channel);
-        let mut ignored = self.channels.iter().find(|c| c.login == channel).map(|c| c.excluded.clone()).unwrap_or_default();
-        if open.iter().any(|g| g.kind == "streamelements") {
-            ignored.push(detect::STREAMELEMENTS_TICKET_COMMAND.to_owned());
-        }
-        let Some((command, evidence)) = self.detector.push(channel, &user_l, text, &ignored) else { return };
         // Même commande déjà ouverte sur la chaîne : pas de doublon
         if open.iter().any(|g| g.command.as_deref() == Some(command.as_str())) {
             return;
@@ -1461,6 +1520,15 @@ impl Monitor {
         // Annonce de StreamElements alors qu'un giveaway StreamElements suivi par son identifiant
         // est ouvert ou en pause : StreamElements dit lequel est tiré (vérifié tout de suite)
         if bot == "streamelements" {
+            // Annonces d'affilée : déjà une vérification en route pour cette chaîne, le gagnant
+            // s'ajoute à la liste qu'elle rangera (pas de nouvelle lecture)
+            if let Some(pending) = self.se_announced.get_mut(channel) {
+                let winner = winner.to_lowercase();
+                if !pending.contains(&winner) {
+                    pending.push(winner);
+                }
+                return;
+            }
             let followed = self
                 .app
                 .db
@@ -1620,6 +1688,11 @@ impl Monitor {
     }
 
     fn publish(&mut self) {
+        // Traitement groupé en cours : une seule publication à la fin
+        if self.batching {
+            self.publish_pending = true;
+            return;
+        }
         // Giveaways ouverts changés : chats lus et mots-clés journalisés à jour
         self.update_anonymous();
         update_point_priority(&self.app);

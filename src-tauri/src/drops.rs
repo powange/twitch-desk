@@ -550,7 +550,7 @@ pub enum GameStatus {
     Disabled,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DropGameView {
     pub id: i64,
@@ -563,7 +563,7 @@ pub struct DropGameView {
     pub streams: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DropTargetView {
     pub game_name: String,
@@ -574,7 +574,7 @@ pub struct DropTargetView {
     pub campaign_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DropsView {
     pub enabled: bool,

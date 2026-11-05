@@ -10,11 +10,11 @@ import { boxArt, formatNumber } from '../../utils/format'
 import type { Gift, GiveawayChannelView, GiveawayView } from '../../types'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
-import { suggestGifts, useGiftCatalog, useKnownCategories } from '../../composables/useGiftCatalog'
+import { giftHits, useGiftCatalog, useKnownCategories } from '../../composables/useGiftCatalog'
+import type { GiftHit } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
-import SolidIcon from '../../components/SolidIcon.vue'
 import GiftThumb from '../../components/GiftThumb.vue'
-import { useGiftPreview } from '../../composables/useGiftPreview'
+import GiftBadge from '../../components/GiftBadge.vue'
 import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
 import ConditionCells from '../../components/conditions/ConditionCells.vue'
 import { useConditionActions } from '../../composables/useConditionActions'
@@ -24,7 +24,6 @@ import { numberList, stringList, usePersisted } from '../../composables/usePersi
 import StreamerSelect from '../../components/StreamerSelect.vue'
 
 const { snapshot } = useSnapshot()
-const { openGift } = useGiftPreview()
 const toast = useToast()
 const openExternal = useOpenExternal()
 const watchStream = useWatchStream()
@@ -61,13 +60,11 @@ const kindByLogin = computed(() => new Map((view.value?.channels ?? []).map(c =>
 const currentKind = (c: GiveawayChannelView) => kindByLogin.value.get(c.login) ?? null
 // Cadeaux du giveaway ouvert, puis ceux repérés dans le titre du live, la description,
 // le message épinglé et le giveaway StreamElements actif
-function giftsOf(c: GiveawayChannelView): { gift: Gift, attached: boolean }[] {
-  const attached = (openGiveaway(c)?.giftIds ?? []).map(id => byId.value.get(id)).filter((g): g is Gift => !!g)
+function giftsOf(c: GiveawayChannelView): GiftHit[] {
   const i = insightOf(c)
   const replies = (view.value?.botReplies[c.login] ?? []).map(r => r.message)
   const text = c.live ? [c.live.title, i?.description, i?.pinnedMessage, i?.streamelements?.title, i?.streamelements?.description, ...replies].filter(Boolean).join('\n') : ''
-  const found = suggestGifts(gifts.value, text).filter(g => !attached.some(a => a.id === g.id))
-  return [...attached.map(gift => ({ gift, attached: true })), ...found.map(gift => ({ gift, attached: false }))]
+  return giftHits(byId.value, gifts.value, openGiveaway(c)?.giftIds ?? [], text)
 }
 // Cadeaux de chaque chaîne, calculés une fois par mise à jour
 const giftsByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, giftsOf(c)])))
@@ -376,13 +373,7 @@ async function confirmRemove() {
             </td>
             <td class="px-3 py-2">
               <div class="flex flex-wrap items-center gap-1 min-w-36 max-w-80">
-                <UTooltip v-for="x in channelGifts(c)" :key="x.gift.id" :text="`${x.gift.title} (${x.attached ? 'rattaché au giveaway' : 'repéré'}${x.gift.favorite ? ', favori' : ''})`">
-                  <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${x.gift.title} en grand`" @click="openGift(x.gift.id)">
-                    <GiftThumb :src="x.gift.image" class="size-8" />
-                    <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
-                    <SolidIcon v-if="x.gift.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
-                  </button>
-                </UTooltip>
+                <GiftBadge v-for="x in channelGifts(c)" :key="x.gift.id" :gift="x.gift" :attached="x.attached" />
                 <span v-if="channelGifts(c).length === 0" class="text-muted">—</span>
               </div>
             </td>

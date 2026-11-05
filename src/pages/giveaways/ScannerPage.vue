@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import ChannelCell from '../../components/ChannelCell.vue'
-import { useGiftPreview } from '../../composables/useGiftPreview'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
@@ -12,8 +11,7 @@ import { LANGUAGES } from '../../utils/languages'
 import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import type { Gift, ScanMatch } from '../../types'
-import SolidIcon from '../../components/SolidIcon.vue'
-import GiftThumb from '../../components/GiftThumb.vue'
+import GiftBadge from '../../components/GiftBadge.vue'
 import { useSettings } from '../../composables/useSettings'
 import { isBoolean, oneOf, usePersisted } from '../../composables/usePersisted'
 
@@ -215,7 +213,6 @@ function liveFor(iso: string | null) {
   return h ? `${h} h ${String(min % 60).padStart(2, '0')}` : `${min} min`
 }
 // Vignette d'un cadeau : affichée en grand
-const { openGift } = useGiftPreview()
 </script>
 
 <template>
@@ -378,12 +375,7 @@ const { openGift } = useGiftPreview()
               </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-36 max-w-80">
-                  <UTooltip v-for="g in giftsOf(m)" :key="g.id" :text="g.favorite ? `${g.title} (favori)` : g.title">
-                    <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${g.title} en grand`" @click="openGift(g.id)">
-                      <GiftThumb :src="g.image" class="size-8" />
-                      <SolidIcon v-if="g.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
-                    </button>
-                  </UTooltip>
+                  <GiftBadge v-for="g in giftsOf(m)" :key="g.id" :gift="g" />
                   <span v-if="giftsOf(m).length === 0" class="text-muted">—</span>
                 </div>
               </td>

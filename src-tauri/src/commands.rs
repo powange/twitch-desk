@@ -1189,7 +1189,7 @@ pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdRe
     }
     // Meilleur effort : StreamElements injoignable = pas de suggestion
     let streamelements = match streamelements::channel_id(&app.http, &login).await {
-        Ok(Some(se_id)) => streamelements::active_giveaway(&app.http, &se_id).await.ok().flatten().map(|g| SeSuggestion {
+        Ok(Some(se_id)) => streamelements::active_giveaway_cached(&app, &se_id, std::time::Duration::from_secs(60)).await.ok().flatten().map(|g| SeSuggestion {
             url: format!("https://streamelements.com/{}/giveaway/{}", streamelements::page_name(&login), g.id),
             title: g.title,
             description: g.description,
@@ -1359,7 +1359,7 @@ pub async fn create_giveaway(app: AppState<'_>, input: crate::db::GiveawayInput)
     let mut wanted = input.details.clone();
     keep_known(&mut wanted, sheet.as_ref());
     app.db.save_streamer_conditions(&input.channel, sheet.as_ref(), &wanted).map_err(db_err)?;
-    app.giveaways.send(MonitorCmd::Reload);
+    app.giveaways.send(MonitorCmd::Republish);
     app.sync.poke();
     add_giveaway_channel_to_lists(&app, &input).await;
     Ok(id)
@@ -1377,7 +1377,7 @@ pub async fn update_giveaway(app: AppState<'_>, id: i64, input: crate::db::Givea
     if let Some(before) = before.filter(|g| g.status != "closed" && g.channel == input.channel) {
         app.db.save_streamer_conditions(&input.channel, Some(&before.details), &input.details).map_err(db_err)?;
     }
-    app.giveaways.send(MonitorCmd::Reload);
+    app.giveaways.send(MonitorCmd::Republish);
     app.sync.poke();
     add_giveaway_channel_to_lists(&app, &input).await;
     Ok(())
@@ -1709,7 +1709,7 @@ fn import_gifts_from(app: &App, path: &str) -> CmdResult<GiftImportResult> {
 
 /// Garde les cadeaux qui existent encore dans le catalogue
 fn known_gifts(app: &App, ids: &[i64]) -> Vec<i64> {
-    let known: Vec<i64> = app.db.gifts().unwrap_or_default().into_iter().map(|g| g.id).collect();
+    let known: Vec<i64> = app.db.gift_terms().unwrap_or_default().into_iter().map(|g| g.id).collect();
     ids.iter().copied().filter(|id| known.contains(id)).collect()
 }
 

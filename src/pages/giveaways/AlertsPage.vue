@@ -9,18 +9,18 @@ import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
 import { useWatchStream } from '../../utils/viewer'
 import { channelUrl, formatNumber, timeAgo } from '../../utils/format'
-import type { Gift, GiveawayKind, GiveawayView, ParticipationResult } from '../../types'
+import type { GiveawayKind, GiveawayView, ParticipationResult } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayConditions from '../../components/GiveawayConditions.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import ImportPastModal from '../../components/ImportPastModal.vue'
 import StreamerSelect from '../../components/StreamerSelect.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
-import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
+import { giftHits, useGiftCatalog } from '../../composables/useGiftCatalog'
+import type { GiftHit } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, GIVEAWAY_KIND_ITEMS, formatDrawAt, isLingoEcho } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
-import GiftThumb from '../../components/GiftThumb.vue'
-import { useGiftPreview } from '../../composables/useGiftPreview'
+import GiftBadge from '../../components/GiftBadge.vue'
 import ConditionHeaders from '../../components/conditions/ConditionHeaders.vue'
 import ConditionCells from '../../components/conditions/ConditionCells.vue'
 import { useConditionActions } from '../../composables/useConditionActions'
@@ -128,7 +128,12 @@ function reloadPastSoon() {
 }
 // Relu quand un giveaway récent change d'état ou qu'un giveaway clos change (pas à chaque
 // participation ou preuve du chat des giveaways en cours)
-const pastKey = computed(() => JSON.stringify(giveaways.value.map(g => g.status === 'closed' ? g : [g.id, g.status])))
+// Clé calculée sans les preuves du chat (la plus grosse partie, figée une fois le giveaway clos)
+const pastKey = computed(() => JSON.stringify(giveaways.value.map((g) => {
+  if (g.status !== 'closed') return [g.id, g.status]
+  const { evidence: _evidence, ...rest } = g
+  return rest
+})))
 watch(pastKey, reloadPastSoon, { immediate: true })
 onBeforeUnmount(() => {
   if (pastTimer) clearTimeout(pastTimer)
@@ -313,24 +318,27 @@ const { byId: giftById, gifts: catalogGifts } = useGiftCatalog()
 // Cadeaux rattachés au giveaway puis, s'il est en cours, ceux repérés dans le titre du live,
 // la description, le message épinglé, le giveaway StreamElements actif et les réponses des
 // bots (comme sur la page Chaînes) ; giveaway passé : rien d'après le live actuel
-function giftsOf(g: GiveawayView): { gift: Gift, attached: boolean }[] {
-  const attached = g.giftIds.map(id => giftById.value.get(id)).filter((x): x is Gift => !!x)
-  let found: Gift[] = []
+function giftsOf(g: GiveawayView): GiftHit[] {
+  let text = ''
   if (g.status !== 'closed') {
-    const live = view.value?.channels.find(c => c.login === g.channel)?.live
+    const live = liveOf(g.channel)
     const i = live ? snapshot.value?.insights[g.channel] : undefined
     const replies = (view.value?.botReplies[g.channel] ?? []).map(r => r.message)
-    const text = [live?.title, i?.description, i?.pinnedMessage, i?.streamelements?.title, i?.streamelements?.description, ...replies].filter(Boolean).join('\n')
-    found = suggestGifts(catalogGifts.value, text).filter(x => !attached.some(a => a.id === x.id))
+    text = [live?.title, i?.description, i?.pinnedMessage, i?.streamelements?.title, i?.streamelements?.description, ...replies].filter(Boolean).join('\n')
   }
-  return [...attached.map(gift => ({ gift, attached: true })), ...found.map(gift => ({ gift, attached: false }))]
+  return giftHits(giftById.value, catalogGifts.value, g.giftIds, text)
 }
-// Calculés une fois par mise à jour pour les giveaways en cours, à la demande pour les passés
-const currentGifts = computed(() => new Map(current.value.map(g => [g.id, giftsOf(g)])))
-const giveawayGifts = (g: GiveawayView) => (g.status !== 'closed' && currentGifts.value.get(g.id)) || giftsOf(g)
+// Calculés une fois par mise à jour pour tous les giveaways affichés (en cours, récents et page
+// des passés), et la mise en avant avec
+const giftsById = computed(() => {
+  const map = new Map<number, GiftHit[]>()
+  for (const g of [...giveaways.value, ...(past.value?.giveaways ?? [])]) if (!map.has(g.id)) map.set(g.id, giftsOf(g))
+  return map
+})
+const giveawayGifts = (g: GiveawayView) => giftsById.value.get(g.id) ?? giftsOf(g)
 // Un cadeau favori parmi ceux du giveaway : ligne mise en avant (bordure violette), comme sur la page Chaînes
-const hasFavorite = (g: GiveawayView) => giveawayGifts(g).some(x => x.gift.favorite)
-const { openGift } = useGiftPreview()
+const favoriteIds = computed(() => new Set([...giftsById.value].filter(([, hits]) => hits.some(x => x.gift.favorite)).map(([id]) => id)))
+const hasFavorite = (g: GiveawayView) => favoriteIds.value.has(g.id)
 
 // Formulaire : null = nouveau giveaway
 const formOpen = ref(false)
@@ -653,13 +661,7 @@ function share(g: GiveawayView) {
               </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
-                  <UTooltip v-for="x in giveawayGifts(g)" :key="x.gift.id" :text="`${x.gift.title} (${x.attached ? 'rattaché au giveaway' : 'repéré dans le live'}${x.gift.favorite ? ', favori' : ''})`">
-                    <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${x.gift.title} en grand`" @click="openGift(x.gift.id)">
-                      <GiftThumb :src="x.gift.image" class="size-8" />
-                      <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
-                      <SolidIcon v-if="x.gift.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
-                    </button>
-                  </UTooltip>
+                  <GiftBadge v-for="x in giveawayGifts(g)" :key="x.gift.id" :gift="x.gift" :attached="x.attached" found-label="repéré dans le live" />
                   <span v-if="giveawayGifts(g).length === 0" class="text-muted">—</span>
                 </div>
               </td>

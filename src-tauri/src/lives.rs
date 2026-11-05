@@ -20,6 +20,9 @@ use crate::twitch::{Result, TwitchError};
 /// Lectures du statut live une par une (avec un compte) au plus par appel, si la requête
 /// groupée sans compte échoue : les autres chaînes attendent le passage suivant
 pub const FALLBACK_PER_CALL: usize = 3;
+/// Giveaway StreamElements en cours partagé : relu au plus une fois par ce temps par les
+/// analyses de chaînes et le scanner (les points le relisent toutes les 2 min)
+pub const SE_SHARED_MAX_AGE: Duration = Duration::from_secs(120);
 /// Chaînes au plus par relecture groupée
 pub const BATCH: usize = gql::STREAMS_BATCH;
 

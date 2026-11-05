@@ -1,7 +1,7 @@
 import { computed, shallowRef, type ShallowRef } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import type { GiveawaysView, LogEvent, Snapshot } from '../types'
+import type { AccountView, GiveawaysView, LogEvent, Snapshot } from '../types'
 
 // État poussé par le cœur Rust. Lecture complète au démarrage (get_snapshot, avec sa
 // version), puis mises à jour partielles (« snapshot-patch », au plus 4 fois par seconde) :
@@ -25,6 +25,16 @@ interface SnapshotPatch {
 }
 
 const top = Object.fromEntries(TOP_KEYS.map(k => [k, shallowRef()])) as { [K in TopKey]: ShallowRef<Snapshot[K]> }
+
+// Drops de chaque compte envoyés à part (partie « drops ») : remis dans chaque compte, le même
+// objet tant qu'ils ne changent pas (les pages Drops ne recalculent rien pour un changement de
+// spectateurs ou de solde)
+type DropsById = Record<string, AccountView['drops']>
+let rawAccounts: Omit<AccountView, 'drops'>[] = []
+let dropsById: DropsById = {}
+function mergeAccounts() {
+  top.accounts.value = rawAccounts.map(a => ({ ...a, drops: dropsById[a.id] }) as AccountView)
+}
 const giveawaysParts = Object.fromEntries(GIVEAWAYS_KEYS.map(k => [k, shallowRef()])) as { [K in GiveawaysKey]: ShallowRef<GiveawaysView[K]> }
 
 // Objets stables dont chaque champ lit sa référence : pas de dépendance à tout l'état
@@ -47,6 +57,12 @@ function setPart(key: string, value: unknown) {
   if (key.startsWith('giveaways.')) {
     const sub = key.slice('giveaways.'.length) as GiveawaysKey
     if (sub in giveawaysParts) giveawaysParts[sub].value = value as never
+  } else if (key === 'accounts') {
+    rawAccounts = value as typeof rawAccounts
+    mergeAccounts()
+  } else if (key === 'drops') {
+    dropsById = value as DropsById
+    mergeAccounts()
   } else if (key in top) {
     top[key as TopKey].value = value as never
   }
@@ -80,8 +96,11 @@ async function reload() {
   loading = true
   version = -1
   try {
-    const full = await invoke<Snapshot & { version: number }>('get_snapshot')
+    const full = await invoke<Snapshot & { version: number, drops: DropsById }>('get_snapshot')
     for (const k of TOP_KEYS) top[k].value = full[k] as never
+    rawAccounts = full.accounts
+    dropsById = full.drops ?? {}
+    mergeAccounts()
     for (const k of GIVEAWAYS_KEYS) giveawaysParts[k].value = full.giveaways[k] as never
     version = full.version
     ready.value = true

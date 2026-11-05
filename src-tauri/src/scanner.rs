@@ -276,7 +276,7 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
             },
         };
         let Some(se_id) = se_id else { continue };
-        if let Ok(Some(g)) = crate::streamelements::active_giveaway(&app.http, &se_id).await {
+        if let Ok(Some(g)) = crate::streamelements::active_giveaway_cached(app, &se_id, crate::lives::SE_SHARED_MAX_AGE).await {
             let text = format!("{}\n{}", g.title, g.description);
             kinds.insert(login, ("streamelements".into(), g.command, Some(text)));
         }

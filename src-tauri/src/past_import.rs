@@ -223,7 +223,7 @@ pub async fn import_past_giveaways(app: State<'_, Arc<App>>, json: String, dry_r
 
 fn import(app: &Arc<App>, json: &str, dry_run: bool) -> Result<ImportReport, String> {
     let items = items_of(json)?;
-    let gifts = app.db.gifts().map_err(|e| e.to_string())?;
+    let gifts = app.db.gift_terms().map_err(|e| e.to_string())?;
     let mut lines = vec![];
     let mut seen: Vec<String> = vec![];
     let mut imported_any = false;

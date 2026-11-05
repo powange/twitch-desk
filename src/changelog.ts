@@ -14,6 +14,17 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.32',
+    date: '2026-11-05',
+    title: 'Application plus légère',
+    changes: [
+      { kind: 'improved', text: 'Moins de travail en arrière-plan : l\'état d\'un compte n\'est plus renvoyé à l\'interface ni au serveur toutes les 2 secondes quand rien n\'a changé, et les campagnes de drops ne repartent plus à chaque changement du nombre de spectateurs.' },
+      { kind: 'improved', text: 'Le repérage des cadeaux ne relit plus les images de tout le catalogue à chaque passage, et chaque message du chat est analysé une seule fois.' },
+      { kind: 'improved', text: 'StreamElements : le giveaway en cours d\'une chaîne est lu une seule fois pour toute l\'application (points, giveaways, analyses, scanner, formulaire), son détail n\'est plus relu tant qu\'il est en cours, et plusieurs gagnants annoncés d\'affilée ne lancent plus une vérification chacun.' },
+      { kind: 'improved', text: 'Créer ou modifier un giveaway ne recharge plus tous les réglages ni les connexions ; les cadeaux des tableaux (Alertes, Chaînes, StreamElements, Scanner) sont calculés une fois par mise à jour avec le même affichage partout.' }
+    ]
+  },
+  {
     version: '0.48.31',
     date: '2026-11-05',
     title: 'Corrections de logique (audit)',

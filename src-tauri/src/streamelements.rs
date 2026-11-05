@@ -286,6 +286,22 @@ fn to_outcome(raw: OutcomeRaw) -> GiveawayOutcome {
     }
 }
 
+/// État d'un giveaway encore en cours d'après le giveaway actif de la chaîne : participations
+/// ouvertes, pas de gagnant (son détail n'a pas besoin d'être relu)
+pub fn running_outcome(g: Giveaway) -> GiveawayOutcome {
+    GiveawayOutcome {
+        running: true,
+        state: "running".into(),
+        winners: vec![],
+        drawn_at: vec![],
+        title: g.title,
+        description: g.description,
+        total_tickets: g.total_tickets,
+        total_users: g.total_users,
+        max_tickets: g.max_tickets,
+    }
+}
+
 /// État d'un giveaway par son identifiant (None : inconnu de StreamElements), sans compte
 pub async fn giveaway_outcome(http: &reqwest::Client, se_channel: &str, id: &str) -> Result<Option<GiveawayOutcome>, reqwest::Error> {
     let res = http.get(format!("{API}/kappa/v3/giveaways/{se_channel}/{id}")).send().await?;
@@ -366,6 +382,13 @@ fn to_loyalty(raw: LoyaltyRaw) -> Loyalty {
         subscriber_multiplier: raw.subscriber_multiplier.unwrap_or(1.0),
         bonuses: raw.bonuses.into_iter().filter(|(_, v)| *v > 0).collect(),
     }
+}
+
+/// Giveaway en cours d'une chaîne StreamElements lu au plus une fois par `max_age` pour toute
+/// l'application (points, giveaways, analyses, scanner, formulaire)
+pub async fn active_giveaway_cached(app: &crate::app::App, se_id: &str, max_age: std::time::Duration) -> Result<Option<Giveaway>, reqwest::Error> {
+    let http = &app.http;
+    app.lives.se_giveaway.get(se_id, crate::lives::since(max_age), || active_giveaway(http, se_id)).await
 }
 
 /// Giveaway en cours (None : aucun ; StreamElements répond 404)
