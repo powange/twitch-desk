@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.40',
+    date: '2026-11-05',
+    title: 'Ligne survolée surlignée',
+    changes: [
+      { kind: 'improved', text: 'Tableaux : la ligne sous la souris est surlignée sur toute sa largeur, pour suivre la même ligne d\'un bout à l\'autre (aussi sur les lignes déjà colorées et les colonnes figées).' }
+    ]
+  },
+  {
     version: '0.48.39',
     date: '2026-11-05',
     title: 'Mise à jour installée au démarrage',

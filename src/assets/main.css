@@ -17,3 +17,15 @@ body {
     cursor: pointer;
   }
 }
+
+/* Tableaux : ligne survolée surlignée d'un bout à l'autre, pour suivre la même ligne. Un calque
+   (background-image) par-dessus la couleur de fond : visible aussi sur les lignes déjà colorées
+   et les colonnes figées. Lignes « aucun résultat » (une seule cellule fusionnée) : pas de surlignage */
+@layer base {
+  tbody tr:hover > td:not([colspan]) {
+    background-image: linear-gradient(
+      color-mix(in oklab, var(--ui-primary) 9%, transparent),
+      color-mix(in oklab, var(--ui-primary) 9%, transparent)
+    );
+  }
+}
