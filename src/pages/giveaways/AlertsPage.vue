@@ -612,8 +612,7 @@ function share(g: GiveawayView) {
               <th class="text-left px-3 py-2">Détecté</th>
               <th class="px-2 py-2"><span class="sr-only">Regarder</span></th>
               <th class="text-left px-3 py-2">Chaîne</th>
-              <th class="text-left px-3 py-2">Type</th>
-              <th class="text-left px-3 py-2">Commande</th>
+              <th class="text-left px-3 py-2">Type / commande</th>
               <th class="text-left px-3 py-2">Cadeaux</th>
               <ConditionHeaders />
               <th class="text-left px-3 py-2">Tirage</th>
@@ -638,22 +637,26 @@ function share(g: GiveawayView) {
               <td class="px-3 py-2">
                 <ChannelCell :login="g.channel" :avatar="avatarOf(g.channel)" :live="liveOf(g.channel)" />
               </td>
-              <td class="px-3 py-2">
+              <!-- Type et commande (fusionnés à la demande) : le type, puis la commande dessous (clic :
+                   copiée). StreamElements avec son lien : le type ouvre le giveaway (navigateur) -->
+              <td class="px-3 py-2 whitespace-nowrap group/cmd">
                 <div class="flex items-center gap-1.5">
-                  <UBadge :label="GIVEAWAY_KIND[g.kind].label" :color="GIVEAWAY_KIND[g.kind].color" variant="subtle" class="whitespace-nowrap" />
+                  <UTooltip v-if="g.kind === 'streamelements' && g.url" text="Ouvrir le giveaway sur StreamElements (navigateur)">
+                    <button type="button" class="inline-flex rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Ouvrir le giveaway StreamElements de ${g.channel}`" @click="openExternal(g.url)">
+                      <UBadge :label="GIVEAWAY_KIND[g.kind].label" :color="GIVEAWAY_KIND[g.kind].color" variant="subtle" trailing-icon="i-lucide-external-link" class="whitespace-nowrap cursor-pointer hover:bg-primary/20" />
+                    </button>
+                  </UTooltip>
+                  <UBadge v-else :label="GIVEAWAY_KIND[g.kind].label" :color="GIVEAWAY_KIND[g.kind].color" variant="subtle" class="whitespace-nowrap" />
                   <UBadge v-if="isLingoEcho(g.url)" label="Lingo Echo" color="success" variant="subtle" class="whitespace-nowrap" />
                   <!-- Ticket : usage unique ou multi-tickets -->
                   <GiveawayConditions v-if="g.kind === 'ticket' && g.ticketUnique !== null" :details="{ ...g, requireFollow: null, requirePresence: null, requireDiscord: null }" :kind="g.kind" />
                 </div>
-              </td>
-              <td class="px-3 py-2 whitespace-nowrap group/cmd">
-                <span class="inline-flex items-center gap-1">
+                <span class="inline-flex items-center gap-1 mt-1">
                   <UTooltip v-if="g.command" text="Copier la commande">
                     <button type="button" class="font-mono hover:text-primary" @click="copyCommand(g.command)">{{ g.command }}</button>
                   </UTooltip>
-                  <button v-else-if="g.url" class="text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
                   <span v-else-if="g.rewardName">{{ g.rewardName }}<template v-if="g.rewardCost !== null"> ({{ g.rewardCost }} pts)</template></span>
-                  <span v-else class="text-muted">—</span>
+                  <span v-else-if="g.kind !== 'streamelements'" class="text-muted">—</span>
                   <UPopover :open="editingCommand === g.id" @update:open="(v: boolean) => { if (!v) editingCommand = null }">
                     <UButton
                       icon="i-lucide-pencil"
@@ -674,8 +677,8 @@ function share(g: GiveawayView) {
                     </template>
                   </UPopover>
                 </span>
-                <!-- Commande connue : le lien du giveaway en dessous (les deux informations) -->
-                <button v-if="g.command && g.url" type="button" class="block text-xs text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
+                <!-- Lien d'un autre giveaway que StreamElements (Lingo Echo…) : dessous -->
+                <button v-if="g.url && g.kind !== 'streamelements'" type="button" class="block text-xs text-primary hover:underline" @click="openExternal(g.url)">Lien du giveaway</button>
               </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
@@ -780,7 +783,7 @@ function share(g: GiveawayView) {
               </td>
             </tr>
             <tr v-if="group.list.length === 0" @contextmenu.stop.prevent>
-              <td colspan="17" class="px-3 py-8 text-center text-muted">{{ group.empty }}</td>
+              <td colspan="16" class="px-3 py-8 text-center text-muted">{{ group.empty }}</td>
             </tr>
           </tbody>
         </table>

@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.44',
+    date: '2026-11-05',
+    title: 'Type et commande réunis',
+    changes: [
+      { kind: 'improved', text: 'Page Alertes : les colonnes Type et Commande n\'en font plus qu\'une. Le type s\'affiche, avec la commande juste en dessous (un clic la copie, le crayon la modifie).' },
+      { kind: 'improved', text: 'Page Alertes : un giveaway StreamElements qui a son lien affiche le type « StreamElements » avec une icône de lien externe. Un clic ouvre le giveaway sur StreamElements, dans le navigateur.' }
+    ]
+  },
+  {
     version: '0.48.43',
     date: '2026-11-05',
     title: 'Menu d\'actions des giveaways',
