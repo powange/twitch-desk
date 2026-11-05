@@ -452,6 +452,18 @@ const MIGRATIONS: &[&str] = &[r#"
     -- Giveaway masqué sur ce PC (jamais synchronisé) : ni affiché, ni alerte, ni participation
     -- ou achat automatique
     ALTER TABLE giveaways ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+"#, r#"
+    -- Première détection d'un giveaway repris ou rouvert automatiquement (detected_at repart de
+    -- la reprise) : les limites d'âge de 7 et 14 jours comptent depuis elle. NULL : detected_at
+    ALTER TABLE giveaways ADD COLUMN first_at TEXT;
+"#, r#"
+    -- Cadeaux retirés à la main d'un giveaway : plus jamais rattachés automatiquement (titre du
+    -- live, réponses des bots, StreamElements) ; propre à ce PC
+    CREATE TABLE giveaway_gifts_rejected (
+        giveaway_id INTEGER NOT NULL REFERENCES giveaways(id) ON DELETE CASCADE,
+        gift_id INTEGER NOT NULL REFERENCES gifts(id) ON DELETE CASCADE,
+        PRIMARY KEY (giveaway_id, gift_id)
+    );
 "#];
 
 /// Message épinglé gardé ; `current` : relu sur Twitch à l'instant (sinon dernière version vue)
@@ -642,13 +654,19 @@ pub(crate) fn starts_word(text: &str, term: &str) -> bool {
     false
 }
 
+/// Terme utilisable pour le repérage : au moins 2 lettres ou chiffres (« a » ou « + » seraient
+/// trouvés partout ; même règle que l'interface)
+pub fn usable_term(term: &str) -> bool {
+    term.chars().filter(|c| c.is_alphanumeric()).count() >= 2
+}
+
 /// Cadeaux du catalogue dont le titre ou un mot-clé apparaît dans le texte (même règle que
 /// l'interface : début de mot, majuscules et accents ignorés)
 pub fn gifts_in_text(gifts: &[Gift], text: &str) -> Vec<i64> {
     let t = fold(text);
     gifts
         .iter()
-        .filter(|g| std::iter::once(&g.title).chain(g.keywords.iter()).any(|term| starts_word(&t, &fold(term.trim()))))
+        .filter(|g| std::iter::once(&g.title).chain(g.keywords.iter()).filter(|term| usable_term(term)).any(|term| starts_word(&t, &fold(term.trim()))))
         .map(|g| g.id)
         .collect()
 }
@@ -828,6 +846,10 @@ pub struct GiveawayInput {
     pub url: Option<String>,
     #[serde(default)]
     pub gift_ids: Vec<i64>,
+    /// Cadeaux affichés à l'ouverture du formulaire : seuls ceux-là, décochés, sont retirés (un
+    /// cadeau rattaché automatiquement pendant la saisie reste). Absent : `gift_ids` fait foi
+    #[serde(default)]
+    pub shown_gift_ids: Option<Vec<i64>>,
     #[serde(flatten)]
     pub details: GiveawayDetails,
 }
@@ -1490,7 +1512,11 @@ impl Db {
     pub fn resume_channel_giveaways(&self, channel: &str, at: &str) -> DbResult<Vec<GiveawayRow>> {
         let paused = self.paused_giveaways(Some(channel))?;
         if !paused.is_empty() {
-            self.conn().execute("UPDATE giveaways SET status = 'open', detected_at = ?2 WHERE status = 'paused' AND channel = ?1", [channel, at])?;
+            self.conn().execute(
+                "UPDATE giveaways SET status = 'open', first_at = COALESCE(first_at, detected_at), detected_at = ?2
+                 WHERE status = 'paused' AND channel = ?1",
+                [channel, at],
+            )?;
         }
         Ok(paused)
     }
@@ -1500,7 +1526,7 @@ impl Db {
     pub fn expire_paused_giveaways(&self, draw_before: &str, detected_before: &str) -> DbResult<usize> {
         self.conn().execute(
             "UPDATE giveaways SET status = 'closed' WHERE status = 'paused'
-                 AND ((winner IS NULL AND COALESCE(julianday(draw_at) < julianday(?1), 0) = 1) OR detected_at < ?2)",
+                 AND ((winner IS NULL AND COALESCE(julianday(draw_at) < julianday(?1), 0) = 1) OR COALESCE(first_at, detected_at) < ?2)",
             [draw_before, detected_before],
         )
     }
@@ -1597,7 +1623,7 @@ impl Db {
         Ok(self
             .select_giveaways(
                 "WHERE channel = ?1 AND kind = 'command' AND status IN ('paused', 'closed') AND winner IS NULL
-                     AND command = ?2 COLLATE NOCASE AND detected_at >= ?3 ORDER BY detected_at DESC LIMIT 1",
+                     AND command = ?2 COLLATE NOCASE AND COALESCE(first_at, detected_at) >= ?3 ORDER BY detected_at DESC LIMIT 1",
                 [channel, command, since],
             )?
             .pop())
@@ -1651,7 +1677,10 @@ impl Db {
     /// Rouvre un giveaway (lien StreamElements reposté) : redétecté maintenant, pour ne pas
     /// être clos aussitôt par l'ancienneté
     pub fn reopen_giveaway(&self, id: i64, at: &str) -> DbResult<()> {
-        self.conn().execute("UPDATE giveaways SET status = 'open', detected_at = ?2 WHERE id = ?1", params![id, at])?;
+        self.conn().execute(
+            "UPDATE giveaways SET status = 'open', first_at = COALESCE(first_at, detected_at), detected_at = ?2 WHERE id = ?1",
+            params![id, at],
+        )?;
         Ok(())
     }
 
@@ -1759,7 +1788,7 @@ impl Db {
 
     pub fn update_giveaway(&self, id: i64, g: &GiveawayInput) -> DbResult<()> {
         let d = &g.details;
-        self.set_giveaway_gifts(id, &g.gift_ids)?;
+        self.edit_giveaway_gifts(id, &g.gift_ids, g.shown_gift_ids.as_deref())?;
         self.conn().execute(
             "UPDATE giveaways SET channel = ?2, kind = ?3, command = ?4, url = ?5, ticket_unique = ?6, ticket_max = ?7,
                  reward_name = ?8, reward_cost = ?9, draw_at = ?10, require_follow = ?11, require_presence = ?12,
@@ -1786,6 +1815,33 @@ impl Db {
                 d.follow_min_secs
             ],
         )?;
+        Ok(())
+    }
+
+    /// Cadeaux choisis à la main : ceux retirés (parmi `shown`, ceux affichés au départ, sinon
+    /// tous ceux rattachés) sont mémorisés comme refusés ; ceux cochés ne le sont plus. Un
+    /// cadeau rattaché automatiquement depuis l'affichage reste
+    pub fn edit_giveaway_gifts(&self, id: i64, gift_ids: &[i64], shown: Option<&[i64]>) -> DbResult<()> {
+        let current: Vec<i64> = {
+            let conn = self.conn();
+            let mut stmt = conn.prepare("SELECT gift_id FROM giveaway_gifts WHERE giveaway_id = ?1")?;
+            let rows = stmt.query_map([id], |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let before = shown.unwrap_or(&current);
+        let removed: Vec<i64> = before.iter().copied().filter(|g| !gift_ids.contains(g)).collect();
+        let mut wanted = gift_ids.to_vec();
+        // Rattachés pendant la saisie (absents de l'affichage de départ) : gardés
+        let added: Vec<i64> = current.iter().copied().filter(|g| !before.contains(g) && !gift_ids.contains(g)).collect();
+        wanted.extend(added);
+        self.set_giveaway_gifts(id, &wanted)?;
+        let conn = self.conn();
+        for gift in &removed {
+            conn.execute("INSERT OR IGNORE INTO giveaway_gifts_rejected (giveaway_id, gift_id) VALUES (?1, ?2)", params![id, gift])?;
+        }
+        for gift in gift_ids {
+            conn.execute("DELETE FROM giveaway_gifts_rejected WHERE giveaway_id = ?1 AND gift_id = ?2", params![id, gift])?;
+        }
         Ok(())
     }
 
@@ -2109,6 +2165,19 @@ impl Db {
     }
 
     /// Giveaway StreamElements (identifiant de son lien) masqué sur ce PC
+    /// Dernier giveaway StreamElements d'une chaîne pour un identifiant StreamElements, tous statuts
+    /// confondus (le lien peut porter le pseudo Twitch ou le vrai nom de page) : dédoublonnage
+    pub fn giveaway_by_se_id(&self, channel: &str, se_id: &str) -> DbResult<Option<GiveawayRow>> {
+        Ok(self
+            .select_giveaways(
+                "WHERE channel = ?1 AND kind = 'streamelements'
+                     AND (url LIKE '%/giveaway/' || ?2 OR url LIKE '%/giveaway/' || ?2 || '/%' OR url LIKE '%/giveaway/' || ?2 || '?%')
+                 ORDER BY status = 'closed', detected_at DESC LIMIT 1",
+                [channel, se_id],
+            )?
+            .pop())
+    }
+
     pub fn se_giveaway_hidden(&self, se_id: &str) -> bool {
         self.conn()
             .query_row(
@@ -2183,7 +2252,7 @@ impl Db {
     /// Giveaway sans gagnant remis en route : ouvert (`live`) ou en pause, détecté à `at`
     pub fn restart_giveaway(&self, id: i64, live: bool, at: &str) -> DbResult<()> {
         self.conn().execute(
-            "UPDATE giveaways SET status = ?2, detected_at = ?3 WHERE id = ?1 AND winner IS NULL AND status <> 'closed'",
+            "UPDATE giveaways SET status = ?2, detected_at = ?3, first_at = NULL WHERE id = ?1 AND winner IS NULL AND status <> 'closed'",
             params![id, if live { "open" } else { "paused" }, at],
         )?;
         Ok(())
@@ -2196,7 +2265,7 @@ impl Db {
         self.conn().execute(
             &format!(
                 "UPDATE giveaways SET status = 'closed' WHERE status = 'open' AND {DRAW_NOT_AHEAD}
-                 AND ((detected_at < ?1 AND manual = 0 AND kind <> 'streamelements') OR detected_at < ?2)"
+                 AND ((detected_at < ?1 AND manual = 0 AND kind <> 'streamelements') OR COALESCE(first_at, detected_at) < ?2)"
             ),
             [before, long_before],
         )
@@ -2215,7 +2284,8 @@ impl Db {
     /// prochain live, ancienneté repartie de `at`
     pub fn reopen_closed_giveaway(&self, id: i64, live: bool, at: &str) -> DbResult<bool> {
         let n = self.conn().execute(
-            "UPDATE giveaways SET status = ?2, winner = NULL, winners = '[]', winner_chances = '{}', winner_chance = NULL, drawn_at = NULL, detected_at = ?3
+            "UPDATE giveaways SET status = ?2, winner = NULL, winners = '[]', winner_chances = '{}', winner_chance = NULL, drawn_at = NULL, detected_at = ?3,
+                 first_at = NULL
              WHERE id = ?1 AND status = 'closed'",
             params![id, if live { "open" } else { "paused" }, at],
         )?;
@@ -2315,13 +2385,16 @@ impl Db {
         rows.collect()
     }
 
-    /// Ajoute des cadeaux à un giveaway (ceux déjà rattachés restent) ; renvoie le nombre ajouté
+    /// Ajoute des cadeaux à un giveaway (ceux déjà rattachés restent, ceux retirés à la main ne
+    /// sont pas remis) ; renvoie le nombre ajouté
     pub fn attach_gifts(&self, giveaway_id: i64, gift_ids: &[i64]) -> DbResult<usize> {
         let conn = self.conn();
         let mut added = 0;
         for gift in gift_ids {
+            // Retiré à la main de ce giveaway : jamais remis
             added += conn.execute(
-                "INSERT OR IGNORE INTO giveaway_gifts (giveaway_id, gift_id) VALUES (?1, ?2)",
+                "INSERT OR IGNORE INTO giveaway_gifts (giveaway_id, gift_id) SELECT ?1, ?2
+                 WHERE NOT EXISTS (SELECT 1 FROM giveaway_gifts_rejected WHERE giveaway_id = ?1 AND gift_id = ?2)",
                 params![giveaway_id, gift],
             )?;
         }
@@ -2650,6 +2723,7 @@ mod tests {
             command: Some("!ticket".into()),
             url: None,
             gift_ids: vec![],
+            shown_gift_ids: None,
             details: GiveawayDetails {
                 ticket_unique: Some(false),
                 draw_at: Some("2026-11-01T21:00:00Z".into()),
@@ -2733,6 +2807,7 @@ mod tests {
             command: Some("!join".into()),
             url: None,
             gift_ids: vec![],
+            shown_gift_ids: None,
             details: GiveawayDetails { draw_at: Some("2099-01-01T20:00:00Z".into()), ..Default::default() },
         };
         db.update_giveaway(ahead, &input).unwrap();
@@ -2784,6 +2859,7 @@ mod tests {
             command: Some(if kind == "ticket" { "!join" } else { "!coffre" }.into()),
             url: None,
             gift_ids: vec![],
+            shown_gift_ids: None,
             details: GiveawayDetails { draw_at: draw_at.map(Into::into), ..Default::default() },
         };
         let now = "2026-11-01T10:00:00Z";
@@ -2838,7 +2914,10 @@ mod tests {
         assert_eq!(db.expire_paused_giveaways("2026-11-03T19:00:00Z", "2026-10-20T00:00:00Z").unwrap(), 0);
         assert_eq!(db.expire_paused_giveaways("2026-11-03T21:00:00Z", "2026-10-20T00:00:00Z").unwrap(), 1);
         assert_eq!(status(ahead), "closed");
-        assert_eq!(db.expire_paused_giveaways("2026-11-03T21:00:00Z", "2026-11-03T00:00:00Z").unwrap(), 2);
+        // Limite d'âge comptée depuis la première détection (10:00 le 1er), pas depuis la reprise
+        let first: Option<String> = db.conn().query_row("SELECT first_at FROM giveaways WHERE id = ?1", [se], |r| r.get(0)).unwrap();
+        assert_eq!(first.as_deref(), Some(now));
+        assert_eq!(db.expire_paused_giveaways("2026-11-03T21:00:00Z", "2026-11-01T12:00:00Z").unwrap(), 2);
         assert!(db.paused_giveaways(None).unwrap().is_empty());
 
         // Même commande en pause ou close sans gagnant, détectée depuis peu : à rouvrir
@@ -3003,6 +3082,45 @@ mod tests {
     }
 
     #[test]
+    fn removed_gifts_are_not_attached_again() {
+        let db = Db::memory().unwrap();
+        let gift = |title: &str| {
+            db.save_gift(&Gift { id: 0, title: title.into(), image: None, group_id: None, keywords: vec![], game_id: None, game_name: None, favorite: false })
+                .unwrap()
+        };
+        let (a, b, c) = (gift("A"), gift("B"), gift("C"));
+        let id = db
+            .insert_giveaway(&NewGiveaway {
+                channel: "lunarsea".into(),
+                kind: "command".into(),
+                command: None,
+                url: None,
+                evidence: None,
+                detected_at: "2026-11-01T10:00:00Z".into(),
+            })
+            .unwrap();
+        let gifts_of = || {
+            let mut ids = db.giveaway(id).unwrap().unwrap().gift_ids;
+            ids.sort();
+            ids
+        };
+        assert_eq!(db.attach_gifts(id, &[a, b]).unwrap(), 2);
+        // Formulaire ouvert avec A et B ; C rattaché pendant la saisie ; B décoché
+        db.attach_gifts(id, &[c]).unwrap();
+        db.edit_giveaway_gifts(id, &[a], Some(&[a, b])).unwrap();
+        assert_eq!(gifts_of(), vec![a, c]);
+        // B n'est plus jamais rattaché automatiquement
+        assert_eq!(db.attach_gifts(id, &[a, b, c]).unwrap(), 0);
+        assert_eq!(gifts_of(), vec![a, c]);
+        // Recoché à la main : de nouveau permis
+        db.edit_giveaway_gifts(id, &[a, b, c], None).unwrap();
+        db.edit_giveaway_gifts(id, &[a, c], None).unwrap();
+        assert_eq!(db.attach_gifts(id, &[b]).unwrap(), 0);
+        db.edit_giveaway_gifts(id, &[a, b, c], None).unwrap();
+        assert_eq!(gifts_of(), vec![a, b, c]);
+    }
+
+    #[test]
     fn gifts_found_in_text() {
         let gift = |id: i64, title: &str, keywords: &[&str]| Gift {
             id,
@@ -3025,6 +3143,10 @@ mod tests {
         let euro = vec![gift(5, "€-CARD", &[])];
         assert_eq!(gifts_in_text(&euro, "!DROPDEX !GIVEAWAY 20€-CARD on @schubenn1337 🎁 - REPLAY 2021-2025 - 🚨 NO DROPS 🚨"), vec![5]);
         assert!(gifts_in_text(&euro, "20€ card").is_empty());
+        // Termes trop courts (une lettre, symboles seuls) : ignorés
+        let short = vec![gift(6, "A", &["+", "-", "é"])];
+        assert!(gifts_in_text(&short, "A new giveaway + more - é").is_empty());
+        assert!(usable_term("€-card") && usable_term("20") && !usable_term("€-c"));
     }
 
     #[test]

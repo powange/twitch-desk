@@ -87,9 +87,15 @@ function compiled(gifts: Gift[]): Compiled {
   return c
 }
 
+// Terme utilisable pour le repérage : au moins 2 lettres ou chiffres (« a » ou « + » seraient
+// trouvés partout ; même règle que le cœur)
+export function usableTerm(term: string): boolean {
+  return (term.match(/[\p{L}\p{N}]/gu)?.length ?? 0) >= 2
+}
+
 function wordStart(term: string): RegExp | null {
   const words = term.trim().split(/\s+/).filter(Boolean)
-  if (!words.length) return null
+  if (!words.length || !usableTerm(term)) return null
   // Plusieurs mots : séparés par n'importe quels espaces dans le texte
   const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')
   // Terme commençant par un symbole (« €-card ») : trouvé où qu'il soit (« 20€-card »)

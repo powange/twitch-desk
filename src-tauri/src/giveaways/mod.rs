@@ -38,6 +38,8 @@ const REOPEN_WITHIN: chrono::Duration = chrono::Duration::days(7);
 const RECENT_GIVEAWAYS: usize = 60;
 // Statut live des chaînes surveillées : relu toutes les 2 min, 3 chaînes au plus toutes les 10 s
 const LIVE_CHECK_EVERY: Duration = Duration::from_secs(120);
+/// Annonce d'un gagnant sans giveaway trouvé : répétition ignorée pendant ce temps
+const UNTARGETED_WIN_MEMORY: Duration = Duration::from_secs(600);
 /// Rappel « reste présent » envoyé ce délai avant l'heure du tirage
 const PRESENCE_REMINDER: chrono::Duration = chrono::Duration::minutes(5);
 
@@ -75,7 +77,7 @@ pub struct GiveawayEntryView {
 }
 
 /// Identifiant StreamElements du giveaway, lu dans son lien (…/giveaway/<id>)
-fn se_giveaway_id(url: &str) -> Option<&str> {
+pub(crate) fn se_giveaway_id(url: &str) -> Option<&str> {
     let id = url.trim_end_matches('/').rsplit_once("/giveaway/")?.1;
     (!id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit())).then_some(id)
 }
@@ -257,6 +259,8 @@ struct Monitor {
     /// catalogue de cadeaux dernièrement passés au crible (repassés seulement quand ils
     /// changent : un cadeau retiré à la main le reste)
     gifts_scanned: HashMap<i64, u64>,
+    /// Gagnants annoncés sans giveaway trouvé (chaîne, pseudo en minuscules) : répétition ignorée
+    untargeted_wins: HashMap<(String, String), Instant>,
     view: Arc<RwLock<GiveawaysView>>,
     tap: TapSender,
     channels: Vec<GiveawayChannel>,
@@ -320,6 +324,7 @@ impl Monitor {
             se_busy: None,
             se_checked: HashMap::new(),
             gifts_scanned: HashMap::new(),
+            untargeted_wins: HashMap::new(),
             se_active_tx,
             se_active_rx: Some(se_active_rx),
             se_active_busy: None,
@@ -717,11 +722,9 @@ impl Monitor {
                 continue;
             }
             let url = format!("https://streamelements.com/{}/giveaway/{}", crate::streamelements::page_name(&channel), g.id);
-            // Déjà connu : par son lien, ou par l'identifiant StreamElements d'un giveaway ouvert
-            let open = self.open_giveaways(&channel);
-            let paused = self.app.db.paused_giveaways(Some(&channel)).unwrap_or_default();
-            let same_id = |r: &GiveawayRow| r.url.as_deref().and_then(se_giveaway_id).is_some_and(|id| id.eq_ignore_ascii_case(&g.id));
-            if open.iter().chain(paused.iter()).any(same_id) || !matches!(self.app.db.giveaway_by_url(&channel, &url), Ok(None)) {
+            // Déjà connu par son identifiant StreamElements, quel que soit son statut ou la forme
+            // de son lien
+            if !matches!(self.app.db.giveaway_by_se_id(&channel, &g.id), Ok(None)) {
                 continue;
             }
             self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway StreamElements en cours trouvé sur {channel}"));
@@ -1389,13 +1392,16 @@ impl Monitor {
     }
 
     fn on_streamelements_url(&mut self, channel: &str, url: &str) {
-        let open = self.open_giveaways(channel);
-        if open.iter().any(|g| g.url.as_deref().is_some_and(|u| u.eq_ignore_ascii_case(url))) {
-            return;
-        }
-        // Lien déjà vu (giveaway clos à la fin d'un live précédent) : rouvert, pas recréé ; tiré : rien
-        match self.app.db.giveaway_by_url(channel, url) {
-            Ok(Some(g)) if g.winner.is_some() => return,
+        // Même giveaway StreamElements déjà connu (identifiant, sinon lien exact), quelle que soit
+        // la forme du lien (pseudo Twitch ou vrai nom de page)
+        let known = match se_giveaway_id(url) {
+            Some(id) => self.app.db.giveaway_by_se_id(channel, id),
+            None => self.app.db.giveaway_by_url(channel, url),
+        };
+        // Lien déjà vu (giveaway clos à la fin d'un live précédent) : rouvert, pas recréé ; tiré
+        // ou encore suivi : rien
+        match known {
+            Ok(Some(g)) if g.winner.is_some() || g.status != "closed" => return,
             Ok(Some(g)) => {
                 if let Err(e) = self.app.db.reopen_giveaway(g.id, &now_rfc3339()) {
                     tracing::error!("giveaway StreamElements non rouvert : {e}");
@@ -1490,10 +1496,22 @@ impl Monitor {
         // Heure normalisée comme les autres (secondes, UTC)
         let drawn = drawn_at.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.with_timezone(&chrono::Utc));
         let at = drawn.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)).unwrap_or_else(now_rfc3339);
-        // Ajouté aux gagnants du giveaway ; déjà gagnant (annonce répétée) : rien de neuf
-        if let Some(g) = target {
-            if !self.app.db.set_giveaway_winner(g.id, winner, chance, &at).unwrap_or(false) {
-                return;
+        // Ajouté aux gagnants du giveaway ; déjà gagnant (annonce répétée) : rien de neuf.
+        // Sans giveaway : annonce répétée (bot puis modérateur) ignorée quelques minutes
+        match target {
+            Some(g) => {
+                if !self.app.db.set_giveaway_winner(g.id, winner, chance, &at).unwrap_or(false) {
+                    return;
+                }
+            }
+            None => {
+                let now = Instant::now();
+                self.untargeted_wins.retain(|_, at| now.duration_since(*at) < UNTARGETED_WIN_MEMORY);
+                let key = (channel.to_owned(), winner.to_lowercase());
+                if self.untargeted_wins.contains_key(&key) {
+                    return;
+                }
+                self.untargeted_wins.insert(key, now);
             }
         }
         let ours = self.accounts.iter().find(|(_, l)| l.eq_ignore_ascii_case(winner)).map(|(_, l)| l.clone());
@@ -1515,7 +1533,10 @@ impl Monitor {
             }
             None => {}
         }
-        self.publish();
+        // Rien d'écrit sans giveaway : vue inchangée
+        if target.is_some() {
+            self.publish();
+        }
     }
 
     /// Réponse au gain programmée (numéro, phrase, délai) : gagnant annoncé dans le chat, présence
@@ -1525,8 +1546,9 @@ impl Monitor {
     /// ce moment) : pas de réponse
     fn win_reply(&self, channel: &str, target: Option<&GiveawayRow>, login: &str, announced: bool, drawn: Option<chrono::DateTime<chrono::Utc>>) -> Option<(u64, String, u64)> {
         let target = target?;
-        // Même gagnant déjà noté (annonce répétée par le bot) : une seule réponse
-        if !announced || target.details.require_presence != Some(true) || target.winners.iter().any(|w| w.eq_ignore_ascii_case(login)) {
+        // Même gagnant déjà noté (annonce répétée par le bot) : une seule réponse ; giveaway
+        // masqué : rien
+        if !announced || target.hidden || target.details.require_presence != Some(true) || target.winners.iter().any(|w| w.eq_ignore_ascii_case(login)) {
             return None;
         }
         let streamer = self.app.db.streamer(channel).ok().flatten()?;
@@ -1534,7 +1556,7 @@ impl Monitor {
         let wanted = streamer.win_reply_delay.unwrap_or(crate::db::WIN_REPLY_DELAY).clamp(0, 600);
         let delay = reply_delay(wanted, drawn.map(|t| (chrono::Utc::now() - t).num_seconds()))?;
         let account_id = self.accounts.iter().find(|(_, l)| l == login).map(|(id, _)| *id)?;
-        let id = crate::win_reply::schedule(&self.app, account_id, login, channel, &text, delay);
+        let id = crate::win_reply::schedule(&self.app, account_id, target.id, login, channel, &text, delay);
         Some((id, text, delay))
     }
 
@@ -2192,6 +2214,7 @@ mod tests {
             command: Some(" Coffre ".into()),
             url: None,
             gift_ids: vec![],
+            shown_gift_ids: None,
             details: GiveawayDetails::default(),
         }
     }

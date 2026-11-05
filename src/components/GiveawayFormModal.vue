@@ -126,6 +126,9 @@ const form = ref({
   // Gagnants et leur chance de gagner (« 20.92% », vide : inconnue)
   winners: [] as { login: string, chance: string }[]
 })
+// Cadeaux affichés à l'ouverture : seuls ceux-là, décochés, comptent comme retirés (un cadeau
+// rattaché automatiquement pendant la saisie reste, et un cadeau retiré n'est plus remis)
+const shownGiftIds = ref<number[]>([])
 // Après `form` : la surveillance le lit dès sa création
 watch(() => [open.value, form.value.kind, form.value.url.trim(), seGiveawayId.value] as const, ([isOpen, kind, url, id]) => {
   if (seInfoTimer) clearTimeout(seInfoTimer)
@@ -256,6 +259,7 @@ watch(open, (isOpen) => {
   streamerLoaded.value = { discord: '', notes: '', ignored: '', winReply: '', winDelay: null, seName: '' }
   const g = props.giveaway
   const channel = g?.channel ?? props.channel ?? ''
+  shownGiftIds.value = [...(g?.giftIds ?? [])]
   // La chaîne remplie ici ne relance pas l'inspection retardée : elle est faite tout de suite, une fois
   skipChannel = channel
   form.value = {
@@ -443,6 +447,13 @@ async function inspect(login: string) {
 
 // `fresh` : relue à l'instant ; une fiche gardée ne pré-remplit pas le giveaway StreamElements
 // ni la commande du chat (ils changent d'un live à l'autre)
+// Identifiant StreamElements d'un lien (…/giveaway/<id>)
+const seIdOf = (url: string | null | undefined) => url?.replace(/\/+$/, '').match(/\/giveaway\/([0-9a-f]+)$/i)?.[1]?.toLowerCase() ?? null
+// Giveaway StreamElements en cours déjà suivi (trouvé tout seul) : pas proposé une 2e fois
+const seTracked = (url: string) => {
+  const id = seIdOf(url)
+  return !!id && (snapshot.value?.giveaways.giveaways ?? []).some(g => g.id !== editId.value && g.kind === 'streamelements' && g.status !== 'closed' && seIdOf(g.url) === id)
+}
 function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof formSnapshot>, fresh: boolean) {
   const f = form.value
   suggestion.value = found
@@ -477,7 +488,8 @@ function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof for
   // En modification (ou fiche du streamer), la fiche de la chaîne suffit : on ne remplace pas ce qui a été saisi
   // Ancien giveaway : ni le giveaway StreamElements du jour ni la commande vue dans le chat
   if (props.giveaway || props.streamerOnly || pastMode.value || !fresh) return
-  if (found.streamelements) {
+  // Giveaway StreamElements en cours déjà suivi : pas proposé une 2e fois
+  if (found.streamelements && !seTracked(found.streamelements.url)) {
     f.kind = 'streamelements'
     f.url = found.streamelements.url
     if (found.streamelements.command) f.command = found.streamelements.command
@@ -490,7 +502,7 @@ function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof for
 // cours sur la page StreamElements du streamer repris tout seul ; un lien déjà saisi est gardé
 watch(() => [open.value, form.value.kind, liveSe.value] as const, ([isOpen, kind, se]) => {
   const f = form.value
-  if (!isOpen || kind !== 'streamelements' || !se || f.url.trim() || props.streamerOnly || pastMode.value) return
+  if (!isOpen || kind !== 'streamelements' || !se || f.url.trim() || props.streamerOnly || pastMode.value || (editId.value === null && seTracked(se.url))) return
   f.url = se.url
   if (se.command && !f.command.trim()) f.command = se.command
   if (se.maxTickets && f.ticketMax == null) f.ticketMax = se.maxTickets
@@ -679,7 +691,7 @@ async function save() {
   try {
     const id = editId.value
     if (id !== null) {
-      await invoke('update_giveaway', { id, input })
+      await invoke('update_giveaway', { id, input: { ...input, shownGiftIds: props.giveaway?.id === id ? shownGiftIds.value : null } })
       updated = true
       // Rouvert : ouvert si la chaîne est en live, sinon en pause ; gagnant retiré
       if (reopen.value && closed.value) await invoke('reopen_giveaway', { id })

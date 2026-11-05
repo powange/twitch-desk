@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { useGiftCatalog, useKnownCategories } from '../composables/useGiftCatalog'
+import { usableTerm, useGiftCatalog, useKnownCategories } from '../composables/useGiftCatalog'
 import GiftGroupsModal from './GiftGroupsModal.vue'
 import { boxArt } from '../utils/format'
 import { firstImage, imageToDataUrl } from '../utils/images'
@@ -149,11 +149,17 @@ watch(open, (isOpen) => {
 })
 
 function addKeyword() {
+  const refused: string[] = []
   for (const raw of keywordInput.value.split(',')) {
     const k = raw.trim().toLowerCase()
-    if (k && !keywords.value.includes(k)) keywords.value.push(k)
+    if (!k) continue
+    // Moins de 2 lettres ou chiffres (« a », « + ») : trouvé dans presque tous les titres, ignoré
+    // par le repérage
+    if (!usableTerm(k)) refused.push(k)
+    else if (!keywords.value.includes(k)) keywords.value.push(k)
   }
   keywordInput.value = ''
+  if (refused.length) toast.add({ title: 'Mot-clé trop court', description: `${refused.join(', ')} : il faut au moins 2 lettres ou chiffres.`, color: 'warning' })
 }
 
 async function useFile(file: File | null) {

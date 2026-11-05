@@ -2430,6 +2430,7 @@ mod tests {
             command: Some("!join".into()),
             url: None,
             gift_ids: vec![gift],
+            shown_gift_ids: None,
             details: Default::default(),
         };
         a.insert_manual_giveaway(&input, "2026-11-01T10:00:00Z").unwrap();
@@ -2646,6 +2647,7 @@ mod tests {
             command: Some("!join".into()),
             url: None,
             gift_ids,
+            shown_gift_ids: None,
             details: Default::default(),
         }
     }

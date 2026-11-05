@@ -1344,6 +1344,14 @@ pub async fn create_giveaway(app: AppState<'_>, input: crate::db::GiveawayInput)
     let app: Arc<App> = app.inner().clone();
     let mut input = crate::giveaways::validate_input(input)?;
     input.gift_ids = known_gifts(&app, &input.gift_ids);
+    // Giveaway StreamElements déjà suivi (trouvé tout seul, ou ajouté avant) : pas de doublon
+    if input.kind == "streamelements" {
+        if let Some(se_id) = input.url.as_deref().and_then(crate::giveaways::se_giveaway_id) {
+            if let Some(g) = app.db.giveaway_by_se_id(&input.channel, se_id).map_err(db_err)?.filter(|g| g.status != "closed") {
+                return Err(format!("Ce giveaway StreamElements est déjà suivi (détecté le {}) : modifie-le plutôt", g.detected_at.get(..10).unwrap_or(&g.detected_at)));
+            }
+        }
+    }
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let id = app.db.insert_manual_giveaway(&input, &at).map_err(db_err)?;
     // Conditions qui diffèrent de la fiche du streamer (pré-remplies depuis elle) : fiche mise à jour

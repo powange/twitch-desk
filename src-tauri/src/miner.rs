@@ -126,6 +126,8 @@ struct ChannelRt {
     se_giveaway_at: Option<Instant>,
     /// Prochain achat automatique de ticket permis
     se_auto_buy_at: Option<Instant>,
+    /// Giveaway StreamElements réservé aux abonnés dont l'achat a été refusé : plus d'essai
+    se_auto_buy_stopped: Option<String>,
     se_my_tickets: Option<i64>,
 }
 
@@ -153,6 +155,7 @@ impl ChannelRt {
             se_giveaway: None,
             se_giveaway_at: None,
             se_auto_buy_at: None,
+            se_auto_buy_stopped: None,
             se_my_tickets: None,
         }
     }
@@ -825,8 +828,8 @@ impl Miner {
                 && Self::se_ready(c).is_some()
                 && c.se_auto_buy_at.is_none_or(|t| now >= t)
                 && c.se_giveaway.as_ref().is_some_and(|g| auto_buy_count(g.cost, c.ch.se_points, auto_buy_max(g.max_tickets, c.ch.se_auto_buy_max), c.se_my_tickets) > 0)
-                // Giveaway masqué sur ce PC : pas d'achat automatique
-                && !c.se_giveaway.as_ref().is_some_and(|g| self.app.db.se_giveaway_hidden(&g.id))
+                // Giveaway masqué sur ce PC, ou réservé aux abonnés et déjà refusé : pas d'achat automatique
+                && !c.se_giveaway.as_ref().is_some_and(|g| c.se_auto_buy_stopped.as_deref() == Some(g.id.as_str()) || self.app.db.se_giveaway_hidden(&g.id))
         }) else {
             return;
         };
@@ -859,6 +862,11 @@ impl Miner {
             Err(SeError::Unauthorized) => {
                 self.se_token_refused = true;
                 self.app.log(&self.account.login, EventKind::Error, "Jeton StreamElements expiré : reconnecte StreamElements dans Comptes");
+            }
+            // Réservé aux abonnés : le refus se répéterait jusqu'à la fin du giveaway
+            Err(e) if g.subscriber_only => {
+                self.channels[i].se_auto_buy_stopped = Some(g.id.clone());
+                self.app.log(&self.account.login, EventKind::Error, format!("Achat automatique sur {login} refusé : {e}. Giveaway réservé aux abonnés : achat automatique arrêté pour ce giveaway"));
             }
             Err(e) => {
                 self.channels[i].se_auto_buy_at = Some(now + SE_AUTO_BUY_RETRY);

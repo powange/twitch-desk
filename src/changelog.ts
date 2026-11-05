@@ -14,6 +14,23 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.31',
+    date: '2026-11-05',
+    title: 'Corrections de logique (audit)',
+    changes: [
+      { kind: 'fixed', text: 'Réponse automatique au gain : revérifiée juste avant l\'envoi. Si tu retires le gagnant, masques le giveaway ou mets l\'application en pause pendant le délai, elle ne part plus.' },
+      { kind: 'fixed', text: 'Un giveaway sur plusieurs lives (saisi à la main, StreamElements) finit bien par expirer : la limite de 14 jours compte depuis sa première détection, plus depuis la dernière reprise du live.' },
+      { kind: 'fixed', text: 'Plus de double « Tu as gagné ! » quand le gain est annoncé deux fois (bot puis modérateur) sur une chaîne sans giveaway trouvé.' },
+      { kind: 'fixed', text: 'Un cadeau que tu retires d\'un giveaway n\'y est plus jamais remis automatiquement (titre du live, réponses des bots, StreamElements). Un cadeau rattaché pendant que le formulaire est ouvert n\'est plus effacé à l\'enregistrement.' },
+      { kind: 'fixed', text: 'Mots-clés et noms de cadeau de moins de 2 lettres ou chiffres (« a », « + ») ignorés par le repérage, et refusés dans le formulaire du cadeau : ils rattachaient le cadeau à presque tous les giveaways.' },
+      { kind: 'fixed', text: 'Un même giveaway StreamElements n\'est plus créé deux fois quand son lien porte le pseudo Twitch d\'un côté et le vrai nom de la page StreamElements de l\'autre. Le formulaire ne propose plus un giveaway StreamElements déjà suivi, et refuse de le recréer.' },
+      { kind: 'fixed', text: 'Achat automatique de tickets StreamElements : arrêté pour un giveaway réservé aux abonnés après le premier refus, au lieu de réessayer toutes les 5 minutes.' },
+      { kind: 'fixed', text: 'Une erreur passagère de Twitch ou StreamElements n\'efface plus la description, le message épinglé et le giveaway StreamElements affichés pour une chaîne.' },
+      { kind: 'fixed', text: 'Drops : les drops terminés d\'une campagne ignorée sont quand même réclamés (ignorer arrête seulement le visionnage).' },
+      { kind: 'fixed', text: 'Statut live : avec plus de 50 chaînes, un lot en échec ne fait plus perdre les autres.' }
+    ]
+  },
+  {
     version: '0.48.30',
     date: '2026-11-05',
     title: 'Cadeaux au nom commençant par un symbole',

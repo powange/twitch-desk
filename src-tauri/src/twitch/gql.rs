@@ -762,24 +762,44 @@ pub struct StreamsBatch {
 pub async fn streams_info(http: &reqwest::Client, logins: &[String]) -> Result<StreamsBatch> {
     let mut out = StreamsBatch::default();
     let valid: Vec<&String> = logins.iter().filter(|l| is_login(l)).collect();
+    // Un lot en échec ne fait pas perdre les autres : ses chaînes seront relues une par une
+    let mut failed = None;
     for chunk in valid.chunks(STREAMS_BATCH) {
-        let list: Vec<String> = chunk.iter().map(|l| format!("\"{l}\"")).collect();
-        let query = format!(
-            "query {{ users(logins: [{}]) {{ login profileImageURL(width: 70) stream {{ id viewersCount }} \
-             broadcastSettings {{ title game {{ id displayName }} }} }} }}",
-            list.join(",")
-        );
-        let value = raw_query(http, &query).await?;
-        let found = parse_streams(&value).ok_or_else(|| {
-            let why = value.get("errors").map(Value::to_string).unwrap_or_else(|| "réponse sans données".into());
-            TwitchError::Gql(format!("statut live groupé : {why}"))
-        })?;
-        for login in chunk {
-            out.live.insert((*login).clone(), found.get(&login.to_lowercase()).cloned().flatten());
+        match streams_chunk(http, chunk).await {
+            Ok((live, avatars)) => {
+                out.live.extend(live);
+                out.avatars.extend(avatars);
+            }
+            Err(e) => {
+                tracing::debug!("statut live groupé : lot de {} chaînes en échec : {e}", chunk.len());
+                failed = Some(e);
+            }
         }
-        out.avatars.extend(parse_avatars(&value));
     }
-    Ok(out)
+    match failed {
+        Some(e) if out.live.is_empty() => Err(e),
+        _ => Ok(out),
+    }
+}
+
+/// Un lot du statut live groupé : login → live, et photos de profil
+async fn streams_chunk(http: &reqwest::Client, chunk: &[&String]) -> Result<(HashMap<String, Option<StreamInfo>>, HashMap<String, String>)> {
+    let mut live = HashMap::new();
+    let list: Vec<String> = chunk.iter().map(|l| format!("\"{l}\"")).collect();
+    let query = format!(
+        "query {{ users(logins: [{}]) {{ login profileImageURL(width: 70) stream {{ id viewersCount }} \
+         broadcastSettings {{ title game {{ id displayName }} }} }} }}",
+        list.join(",")
+    );
+    let value = raw_query(http, &query).await?;
+    let found = parse_streams(&value).ok_or_else(|| {
+        let why = value.get("errors").map(Value::to_string).unwrap_or_else(|| "réponse sans données".into());
+        TwitchError::Gql(format!("statut live groupé : {why}"))
+    })?;
+    for login in chunk {
+        live.insert((*login).clone(), found.get(&login.to_lowercase()).cloned().flatten());
+    }
+    Ok((live, parse_avatars(&value)))
 }
 
 /// login (minuscules) → photo de profil, adresse https seulement

@@ -123,7 +123,7 @@ void listen<{ id: number, login: string, channel: string, outcome: 'sent' | 'fai
   winToast.remove(`win-reply-${r.id}`)
   if (r.outcome === 'sent') winToast.add({ title: `Réponse envoyée sur ${r.channel}`, description: r.login, color: 'success', icon: 'i-lucide-check' })
   else if (r.outcome === 'failed') winToast.add({ title: `Réponse non envoyée sur ${r.channel}`, description: r.message ?? '', color: 'error' })
-  else winToast.add({ title: `Réponse annulée sur ${r.channel}`, color: 'neutral', icon: 'i-lucide-x' })
+  else winToast.add({ title: `Réponse annulée sur ${r.channel}`, description: r.message ?? undefined, color: 'neutral', icon: 'i-lucide-x' })
 })
 void invoke<string | null>('take_start_page').then(navigate)
 

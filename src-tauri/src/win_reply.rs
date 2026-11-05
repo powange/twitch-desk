@@ -16,6 +16,7 @@ use crate::app::{App, EventKind};
 struct Pending {
     login: String,
     channel: String,
+    giveaway_id: i64,
 }
 
 pub struct WinReplies {
@@ -56,9 +57,9 @@ struct WinReplyDone {
 }
 
 /// Programme la réponse de `account_id` dans le chat de `channel` ; renvoie son numéro
-pub fn schedule(app: &Arc<App>, account_id: i64, login: &str, channel: &str, text: &str, delay: u64) -> u64 {
+pub fn schedule(app: &Arc<App>, account_id: i64, giveaway_id: i64, login: &str, channel: &str, text: &str, delay: u64) -> u64 {
     let id = app.win_replies.next.fetch_add(1, Ordering::Relaxed) + 1;
-    app.win_replies.pending.lock().unwrap().insert(id, Pending { login: login.to_owned(), channel: channel.to_owned() });
+    app.win_replies.pending.lock().unwrap().insert(id, Pending { login: login.to_owned(), channel: channel.to_owned(), giveaway_id });
     let view = WinReplyView { id, login: login.to_owned(), channel: channel.to_owned(), text: text.to_owned(), delay };
     let _ = app.handle().emit_to("main", "win-reply", &view);
     app.log(login, EventKind::Giveaway, format!("Réponse au gain sur {channel} dans {delay} s : {text}"));
@@ -68,6 +69,14 @@ pub fn schedule(app: &Arc<App>, account_id: i64, login: &str, channel: &str, tex
         tokio::time::sleep(Duration::from_secs(delay)).await;
         // Annulée pendant le délai : plus en attente
         let Some(p) = app.win_replies.pending.lock().unwrap().remove(&id) else { return };
+        // Situation changée pendant le délai (gagnant retiré, giveaway masqué, application en
+        // pause) : pas de réponse
+        if let Some(why) = stale(&app, &p) {
+            app.log(&p.login, EventKind::Info, format!("Réponse au gain sur {} abandonnée : {why}", p.channel));
+            let done = WinReplyDone { id, login: p.login, channel: p.channel, outcome: "cancelled", message: Some(why.to_owned()) };
+            let _ = app.handle().emit_to("main", "win-reply-done", &done);
+            return;
+        }
         let account = app.db.accounts().ok().and_then(|list| list.into_iter().find(|a| a.id == account_id));
         let result = match account.and_then(|a| app.secrets.load(&a.user_id)) {
             None => Err("jeton introuvable : reconnecte ce compte".to_owned()),
@@ -87,6 +96,21 @@ pub fn schedule(app: &Arc<App>, account_id: i64, login: &str, channel: &str, tex
         let _ = app.handle().emit_to("main", "win-reply-done", &done);
     });
     id
+}
+
+/// Raison de ne plus envoyer une réponse programmée, relue juste avant l'envoi
+fn stale(app: &App, p: &Pending) -> Option<&'static str> {
+    if app.is_paused() {
+        return Some("application en pause");
+    }
+    match app.db.giveaway(p.giveaway_id) {
+        Ok(Some(g)) if g.hidden => Some("giveaway masqué"),
+        Ok(Some(g)) if !g.winners.iter().any(|w| w.eq_ignore_ascii_case(&p.login)) => Some("ce compte n'est plus noté gagnant"),
+        Ok(Some(_)) => None,
+        Ok(None) => Some("giveaway supprimé"),
+        // Base illisible : la réponse part, comme avant la vérification
+        Err(_) => None,
+    }
 }
 
 /// Annule une réponse encore en attente ; `false` : déjà partie (ou inconnue)

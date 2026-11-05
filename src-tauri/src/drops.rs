@@ -1032,7 +1032,7 @@ impl DropsEngine {
         let ready: Vec<(String, String, String)> = self
             .campaigns
             .iter()
-            .filter(|c| !self.ignored.contains(&c.id))
+            // Campagne ignorée : plus regardée, mais ses drops déjà terminés sont réclamés
             .flat_map(|c| {
                 c.drops
                     .iter()

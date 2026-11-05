@@ -98,11 +98,20 @@ async fn refresh(app: &Arc<App>) {
             .collect()
     };
     for login in due {
-        let mut insight = ChannelInsight::default();
-        if let Ok(Some(p)) = gql::channel_profile(&app.http, &login).await {
-            crate::commands::keep_pinned(app, &login, &p);
-            insight.description = p.description;
-            insight.pinned_message = p.pinned_message;
+        // Lecture en échec (réseau, Twitch ou StreamElements) : valeurs précédentes gardées, pas
+        // un encart vide pendant 5 min
+        let mut insight = app.insights.lock().unwrap().view.get(&login).cloned().unwrap_or_default();
+        match gql::channel_profile(&app.http, &login).await {
+            Ok(Some(p)) => {
+                crate::commands::keep_pinned(app, &login, &p);
+                insight.description = p.description;
+                insight.pinned_message = p.pinned_message;
+            }
+            Ok(None) => {
+                insight.description = None;
+                insight.pinned_message = None;
+            }
+            Err(e) => tracing::debug!("analyse de {login} : profil illisible : {e}"),
         }
         let known = app.insights.lock().unwrap().se_ids.get(&login).cloned();
         let se_id = match known {
@@ -112,20 +121,33 @@ async fn refresh(app: &Arc<App>) {
                     app.insights.lock().unwrap().se_ids.insert(login.clone(), id.clone());
                     id
                 }
-                Err(_) => None,
+                // Identifiant inconnu (erreur) : giveaway précédent gardé, recherche refaite au passage suivant
+                Err(_) => {
+                    finish(app, &login, &live, insight);
+                    continue;
+                }
             },
         };
-        if let Some(se_id) = se_id {
-            if let Ok(Some(g)) = crate::streamelements::active_giveaway(&app.http, &se_id).await {
-                insight.streamelements =
-                    Some(SeActive { title: g.title, description: g.description, command: g.command, cost: g.cost });
-            }
+        match se_id {
+            None => insight.streamelements = None,
+            Some(se_id) => match crate::streamelements::active_giveaway(&app.http, &se_id).await {
+                Ok(Some(g)) => {
+                    insight.streamelements = Some(SeActive { title: g.title, description: g.description, command: g.command, cost: g.cost })
+                }
+                Ok(None) => insight.streamelements = None,
+                Err(e) => tracing::debug!("analyse de {login} : giveaway StreamElements illisible : {e}"),
+            },
         }
-        insight.checked_at = Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-        let mut state = app.insights.lock().unwrap();
-        state.checked.insert(login.clone(), (live[&login].clone(), Instant::now()));
-        state.view.insert(login, insight);
-        drop(state);
-        app.touch_domain(crate::app::Domain::Insights);
+        finish(app, &login, &live, insight);
     }
+}
+
+/// Analyse d'une chaîne terminée : gardée et marquée relue pour ce live
+fn finish(app: &Arc<App>, login: &str, live: &HashMap<String, String>, mut insight: ChannelInsight) {
+    insight.checked_at = Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    let mut state = app.insights.lock().unwrap();
+    state.checked.insert(login.to_owned(), (live[login].clone(), Instant::now()));
+    state.view.insert(login.to_owned(), insight);
+    drop(state);
+    app.touch_domain(crate::app::Domain::Insights);
 }

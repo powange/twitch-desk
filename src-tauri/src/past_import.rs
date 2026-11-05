@@ -152,6 +152,7 @@ fn check(item: ImportItem, gifts: &[crate::db::Gift]) -> Result<Checked, String>
         command: item.command,
         url: item.url,
         gift_ids,
+        shown_gift_ids: None,
         details: GiveawayDetails {
             ticket_unique: item.ticket_unique,
             ticket_max: item.ticket_max,
