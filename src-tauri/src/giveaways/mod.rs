@@ -286,6 +286,9 @@ struct Monitor {
     gifts_scanned: HashMap<i64, u64>,
     /// Gagnants annoncés sans giveaway trouvé (chaîne, pseudo en minuscules) : répétition ignorée
     untargeted_wins: HashMap<(String, String), Instant>,
+    /// Réponses au gain déjà programmées (giveaway ou chaîne, compte) : une seule par gain, même
+    /// si le gagnant a d'abord été noté sans réponse possible (relecture StreamElements)
+    win_replied: HashMap<(String, String), Instant>,
     /// Traitement groupé en cours (relevé StreamElements) : publications reportées à la fin
     batching: bool,
     publish_pending: bool,
@@ -353,6 +356,7 @@ impl Monitor {
             se_checked: HashMap::new(),
             gifts_scanned: HashMap::new(),
             untargeted_wins: HashMap::new(),
+            win_replied: HashMap::new(),
             batching: false,
             publish_pending: false,
             se_active_tx,
@@ -877,8 +881,16 @@ impl Monitor {
                     // de l'annoncer
                     let drawn_at = outcome.drawn_at.get(n).cloned().flatten();
                     let just_announced = announced.iter().any(|w| w.eq_ignore_ascii_case(winner));
+                    // Annoncé par le bot dans le chat : le délai compte depuis cette annonce (pas
+                    // depuis l'heure de StreamElements, faussée par une relecture retardée ou
+                    // l'horloge du PC)
+                    let reply_from = just_announced
+                        .then(|| self.se_announced_at.get(&channel))
+                        .flatten()
+                        .and_then(|t| chrono::Duration::from_std(t.elapsed()).ok())
+                        .map(|ago| chrono::Utc::now() - ago);
                     self.app.log("giveaways", EventKind::Info, format!("Giveaway StreamElements de {channel} tiré : {winner}"));
-                    self.record_winner_at(&channel, Some(row), winner, None, drawn_at.is_some() || just_announced, drawn_at.as_deref());
+                    self.record_winner_at(&channel, Some(row), winner, None, drawn_at.is_some() || just_announced, drawn_at.as_deref(), reply_from);
                 }
             } else if outcome.finished() {
                 let _ = self.app.db.close_giveaway(g.id);
@@ -1586,20 +1598,48 @@ impl Monitor {
 
     /// `announced` : gagnant annoncé dans le chat à l'instant (réponse automatique possible)
     fn record_winner(&mut self, channel: &str, target: Option<GiveawayRow>, winner: &str, chance: Option<&str>, announced: bool) {
-        self.record_winner_at(channel, target, winner, chance, announced, None);
+        self.record_winner_at(channel, target, winner, chance, announced, None, None);
     }
 
     /// `drawn_at` : heure du tirage si on la connaît (StreamElements), sinon maintenant
-    fn record_winner_at(&mut self, channel: &str, target: Option<GiveawayRow>, winner: &str, chance: Option<&str>, announced: bool, drawn_at: Option<&str>) {
+    /// `reply_from` : moment d'où compte le délai de la réponse automatique (annonce du bot vue
+    /// dans le chat), sinon l'heure du tirage, sinon maintenant
+    #[allow(clippy::too_many_arguments)]
+    fn record_winner_at(
+        &mut self,
+        channel: &str,
+        target: Option<GiveawayRow>,
+        winner: &str,
+        chance: Option<&str>,
+        announced: bool,
+        drawn_at: Option<&str>,
+        reply_from: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
         let target = target.as_ref();
         // Heure normalisée comme les autres (secondes, UTC)
         let drawn = drawn_at.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.with_timezone(&chrono::Utc));
         let at = drawn.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)).unwrap_or_else(now_rfc3339);
         // Ajouté aux gagnants du giveaway ; déjà gagnant (annonce répétée) : rien de neuf.
         // Sans giveaway : annonce répétée (bot puis modérateur) ignorée quelques minutes
+        let ours = self.accounts.iter().find(|(_, l)| l.eq_ignore_ascii_case(winner)).map(|(_, l)| l.clone());
         match target {
             Some(g) => {
                 if !self.app.db.set_giveaway_winner(g.id, winner, chance, &at).unwrap_or(false) {
+                    // Déjà noté (relecture StreamElements avant l'annonce du bot, sans réponse
+                    // possible) : l'annonce peut encore déclencher la réponse, une seule fois
+                    // (tirage de moins de 10 min : pas une vieille annonce répétée après un redémarrage)
+                    let recent = g
+                        .drawn_at
+                        .as_deref()
+                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                        .is_some_and(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() < 600);
+                    if let Some(login) = ours.filter(|_| announced && recent) {
+                        if let Some((id, text, delay)) = self.win_reply(channel, target, &login, true, reply_from.or(drawn)) {
+                            let cancel = crate::win_reply::cancel_url(id);
+                            let body = format!("{login} a gagné le giveaway de {channel}. Réponse dans {delay} s : « {text} »");
+                            self.app.notify_full(Alert::Win, "Réponse au gain", &body, Alert::Win.page(), Some(("Annuler la réponse", &cancel)));
+                        }
+                    }
                     return;
                 }
             }
@@ -1613,12 +1653,11 @@ impl Monitor {
                 self.untargeted_wins.insert(key, now);
             }
         }
-        let ours = self.accounts.iter().find(|(_, l)| l.eq_ignore_ascii_case(winner)).map(|(_, l)| l.clone());
         match ours {
             Some(login) => {
                 self.app.log(&login, EventKind::Giveaway, format!("Tu as gagné le giveaway de {channel} !"));
                 let body = format!("{login} a gagné le giveaway de {channel}");
-                match self.win_reply(channel, target, &login, announced, drawn) {
+                match self.win_reply(channel, target, &login, announced, reply_from.or(drawn)) {
                     Some((id, text, delay)) => {
                         let body = format!("{body}. Réponse dans {delay} s : « {text} »");
                         let cancel = crate::win_reply::cancel_url(id);
@@ -1643,19 +1682,26 @@ impl Monitor {
     /// `drawn` : heure du tirage (StreamElements), sinon il vient d'être annoncé. La réponse part
     /// au tirage plus le délai de la fiche ; appris trop tard (au-delà de WIN_REPLY_SLACK après
     /// ce moment) : pas de réponse
-    fn win_reply(&self, channel: &str, target: Option<&GiveawayRow>, login: &str, announced: bool, drawn: Option<chrono::DateTime<chrono::Utc>>) -> Option<(u64, String, u64)> {
-        let target = target?;
-        // Même gagnant déjà noté (annonce répétée par le bot) : une seule réponse ; giveaway
-        // masqué : rien
-        if !announced || target.hidden || target.details.require_presence != Some(true) || target.winners.iter().any(|w| w.eq_ignore_ascii_case(login)) {
+    fn win_reply(&mut self, channel: &str, target: Option<&GiveawayRow>, login: &str, announced: bool, drawn: Option<chrono::DateTime<chrono::Utc>>) -> Option<(u64, String, u64)> {
+        // Giveaway masqué : rien ; réponse déjà programmée pour ce gain (annonce répétée) : une seule
+        let key = (target.map_or_else(|| channel.to_owned(), |t| t.id.to_string()), login.to_owned());
+        self.win_replied.retain(|_, at| at.elapsed() < Duration::from_secs(3600));
+        if !announced || target.is_some_and(|t| t.hidden) || self.win_replied.contains_key(&key) {
             return None;
         }
         let streamer = self.app.db.streamer(channel).ok().flatten()?;
+        // Présence requise : d'après le giveaway, sinon (inconnue sur le giveaway, ou gain sans
+        // giveaway trouvé) d'après la fiche du streamer, où la réponse est réglée
+        let presence = target.and_then(|t| t.details.require_presence).or(streamer.require_presence);
+        if presence != Some(true) {
+            return None;
+        }
         let text = streamer.win_reply.filter(|t| !t.trim().is_empty())?;
         let wanted = streamer.win_reply_delay.unwrap_or(crate::db::WIN_REPLY_DELAY).clamp(0, 600);
         let delay = reply_delay(wanted, drawn.map(|t| (chrono::Utc::now() - t).num_seconds()))?;
         let account_id = self.accounts.iter().find(|(_, l)| l == login).map(|(id, _)| *id)?;
-        let id = crate::win_reply::schedule(&self.app, account_id, target.id, login, channel, &text, delay);
+        let id = crate::win_reply::schedule(&self.app, account_id, target.map(|t| t.id), login, channel, &text, delay);
+        self.win_replied.insert(key, Instant::now());
         Some((id, text, delay))
     }
 

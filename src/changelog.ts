@@ -14,6 +14,17 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.34',
+    date: '2026-11-05',
+    title: 'Réponse au gain plus fiable',
+    changes: [
+      { kind: 'fixed', text: 'Réponse automatique si tu gagnes : elle part aussi quand la présence au tirage n\'est pas indiquée sur le giveaway (« ? ») mais l\'est dans la fiche du streamer, par exemple pour un giveaway détecté avant que tu remplisses la fiche.' },
+      { kind: 'fixed', text: 'Elle part aussi quand le gain est annoncé dans le chat sur une chaîne où aucun giveaway n\'a été trouvé, si la fiche du streamer demande la présence.' },
+      { kind: 'fixed', text: 'Giveaway StreamElements : le délai compte depuis l\'annonce du bot dans le chat. La réponse n\'est plus perdue quand StreamElements est relu en retard (erreur réseau) ou que l\'horloge du PC est décalée.' },
+      { kind: 'fixed', text: 'Si StreamElements a donné le gagnant juste avant l\'annonce du bot, sans réponse possible à ce moment-là, l\'annonce la déclenche quand même (une seule fois par gain).' }
+    ]
+  },
+  {
     version: '0.48.33',
     date: '2026-11-05',
     title: 'Mêmes règles partout',

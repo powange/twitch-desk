@@ -16,7 +16,8 @@ use crate::app::{App, EventKind};
 struct Pending {
     login: String,
     channel: String,
-    giveaway_id: i64,
+    /// Giveaway du gain (None : gain annoncé sans giveaway trouvé, d'après la fiche du streamer)
+    giveaway_id: Option<i64>,
 }
 
 pub struct WinReplies {
@@ -57,7 +58,7 @@ struct WinReplyDone {
 }
 
 /// Programme la réponse de `account_id` dans le chat de `channel` ; renvoie son numéro
-pub fn schedule(app: &Arc<App>, account_id: i64, giveaway_id: i64, login: &str, channel: &str, text: &str, delay: u64) -> u64 {
+pub fn schedule(app: &Arc<App>, account_id: i64, giveaway_id: Option<i64>, login: &str, channel: &str, text: &str, delay: u64) -> u64 {
     let id = app.win_replies.next.fetch_add(1, Ordering::Relaxed) + 1;
     app.win_replies.pending.lock().unwrap().insert(id, Pending { login: login.to_owned(), channel: channel.to_owned(), giveaway_id });
     let view = WinReplyView { id, login: login.to_owned(), channel: channel.to_owned(), text: text.to_owned(), delay };
@@ -103,7 +104,9 @@ fn stale(app: &App, p: &Pending) -> Option<&'static str> {
     if app.is_paused() {
         return Some("application en pause");
     }
-    match app.db.giveaway(p.giveaway_id) {
+    // Sans giveaway (gain annoncé hors giveaway connu) : rien d'autre à revérifier
+    let id = p.giveaway_id?;
+    match app.db.giveaway(id) {
         Ok(Some(g)) if g.hidden => Some("giveaway masqué"),
         Ok(Some(g)) if !g.winners.iter().any(|w| w.eq_ignore_ascii_case(&p.login)) => Some("ce compte n'est plus noté gagnant"),
         Ok(Some(_)) => None,
