@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.37',
+    date: '2026-11-05',
+    title: 'Heure du tirage facultative',
+    changes: [
+      { kind: 'improved', text: 'Formulaire d\'un giveaway : le tirage se saisit en deux champs, le jour et l\'heure. L\'heure est facultative : sans heure, le tirage compte pour toute la journée choisie (jusqu\'à 23 h 59), et seul le jour est affiché (pas de rappel « reste présent » dans ce cas).' }
+    ]
+  },
+  {
     version: '0.48.36',
     date: '2026-11-05',
     title: 'Gain offrable à quelqu\'un d\'autre',

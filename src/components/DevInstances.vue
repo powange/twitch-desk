@@ -5,7 +5,7 @@ import { timeAgo } from '../utils/format'
 
 // Applications connues du serveur de synchronisation : ouvertes ou fermées, comptes Twitch,
 // web apps associées et ouvertes
-interface Instance { id: string, name: string, online: boolean, lastSeen: string, accounts: string[], devices: number, devicesOnline: number, current: boolean }
+interface Instance { id: string, name: string, online: boolean, lastSeen: string, accounts: string[], version: string | null, devices: number, devicesOnline: number, current: boolean }
 const list = ref<Instance[] | null>(null)
 const error = ref<string | null>(null)
 const loading = ref(false)
@@ -43,6 +43,7 @@ onMounted(load)
           <tr>
             <th class="text-left px-3 py-2 font-medium">Application</th>
             <th class="text-left px-3 py-2 font-medium">État</th>
+            <th class="text-left px-3 py-2 font-medium">Version</th>
             <th class="text-left px-3 py-2 font-medium">Dernière activité</th>
             <th class="text-left px-3 py-2 font-medium">Comptes Twitch</th>
             <th class="text-right px-3 py-2 font-medium">Web apps associées</th>
@@ -61,6 +62,10 @@ onMounted(load)
                 {{ i.online ? 'Ouverte' : 'Fermée' }}
               </span>
             </td>
+            <td class="px-3 py-2 whitespace-nowrap tabular-nums">
+              <template v-if="i.version">v{{ i.version }}</template>
+              <span v-else class="text-muted">—</span>
+            </td>
             <td class="px-3 py-2 whitespace-nowrap text-muted">{{ timeAgo(i.lastSeen) }}</td>
             <td class="px-3 py-2">{{ i.accounts.length ? i.accounts.join(', ') : '—' }}</td>
             <td class="px-3 py-2 text-right tabular-nums">{{ i.devices }}</td>
@@ -69,6 +74,6 @@ onMounted(load)
         </tbody>
       </table>
     </div>
-    <p class="text-xs text-muted">« Ouverte » : son flux temps réel est connecté au serveur en ce moment (serveur 0.8.8 et application 0.48.35 ou plus). Comptes : ceux du dernier état publié par l'application.</p>
+    <p class="text-xs text-muted">« Ouverte » : son flux temps réel est connecté au serveur en ce moment (serveur 0.8.8 et application 0.48.35 ou plus). Comptes et version : ceux du dernier état publié par l'application (version : serveur 0.8.9 ou plus).</p>
   </div>
 </template>

@@ -55,6 +55,21 @@ function toLocalInput(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// Tirage : date (AAAA-MM-JJ) et heure facultative (HH:MM), en heure locale ; sans heure, 23 h 59
+// pour couvrir toute la journée (relue ensuite comme « date seulement »)
+const DAY_END = '23:59'
+function drawParts(iso: string | null): { date: string, time: string } {
+  const local = toLocalInput(iso)
+  if (!local) return { date: '', time: '' }
+  const [date = '', time = ''] = local.split('T')
+  return { date, time: time === DAY_END ? '' : time }
+}
+function drawIso(date: string, time: string): string | null {
+  if (!date) return null
+  const d = new Date(`${date}T${time || DAY_END}`)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
 // Identifiant StreamElements lu dans le lien (…/giveaway/<id>) : giveaway suivi par l'application
 const seGiveawayId = computed(() => /\/giveaway\/([0-9a-f]+)\/?$/i.exec(form.value.url.trim())?.[1] ?? null)
 
@@ -116,7 +131,8 @@ const form = ref({
   ticketMax: null as number | null,
   rewardName: '',
   rewardCost: null as number | null,
-  drawAt: '',
+  drawDate: '',
+  drawTime: '',
   follow: 'unknown' as TriState,
   presence: 'unknown' as TriState,
   discord: 'unknown' as TriState,
@@ -276,7 +292,8 @@ watch(open, (isOpen) => {
     ticketMax: g?.ticketMax ?? null,
     rewardName: g?.rewardName ?? '',
     rewardCost: g?.rewardCost ?? null,
-    drawAt: toLocalInput(g?.drawAt ?? null),
+    drawDate: drawParts(g?.drawAt ?? null).date,
+    drawTime: drawParts(g?.drawAt ?? null).time,
     follow: toTri(g?.requireFollow ?? null),
     presence: toTri(g?.requirePresence ?? null),
     discord: toTri(g?.requireDiscord ?? null),
@@ -650,7 +667,7 @@ async function save() {
     ticketMax: (f.kind === 'ticket' && f.ticket === 'multi') || f.kind === 'streamelements' ? f.ticketMax : null,
     rewardName: f.rewardName || null,
     rewardCost: f.rewardCost,
-    drawAt: f.drawAt ? new Date(f.drawAt).toISOString() : null,
+    drawAt: drawIso(f.drawDate, f.drawTime),
     requireFollow: fromTri(f.follow),
     requirePresence: fromTri(f.presence),
     requireDiscord: fromTri(f.discord),
@@ -910,8 +927,11 @@ async function save() {
                 <UFormField label="Tickets maximum par personne">
                   <UInputNumber id="gw-se-max" v-model="form.ticketMax" :min="1" :max="100000" placeholder="Inconnu" class="w-full" />
                 </UFormField>
-              <UFormField label="Tirage" :help="pastMode ? 'Facultatif : heure du tirage, sinon la date du giveaway' : 'Un rappel est envoyé 5 min avant si la présence est requise'">
-                <UInput id="gw-draw" v-model="form.drawAt" type="datetime-local" class="w-full" />
+              <UFormField label="Tirage" :help="pastMode ? 'Facultatif : jour du tirage, sinon la date du giveaway ; heure facultative' : 'Heure facultative : sans heure, toute la journée. Avec une heure, rappel 5 min avant si la présence est requise'">
+                <div class="flex gap-2">
+                  <UInput id="gw-draw" v-model="form.drawDate" type="date" class="flex-1 min-w-0" aria-label="Jour du tirage" />
+                  <UInput v-model="form.drawTime" type="time" class="w-28" :disabled="!form.drawDate" aria-label="Heure du tirage (facultative)" title="Facultative : sans heure, toute la journée (23 h 59)" />
+                </div>
               </UFormField>
               </div>
             <UFormField
@@ -972,8 +992,11 @@ async function save() {
             </div>
 
               <div class="max-w-xs">
-              <UFormField label="Tirage" :help="pastMode ? 'Facultatif : heure du tirage, sinon la date du giveaway' : 'Un rappel est envoyé 5 min avant si la présence est requise'">
-                <UInput id="gw-draw" v-model="form.drawAt" type="datetime-local" class="w-full" />
+              <UFormField label="Tirage" :help="pastMode ? 'Facultatif : jour du tirage, sinon la date du giveaway ; heure facultative' : 'Heure facultative : sans heure, toute la journée. Avec une heure, rappel 5 min avant si la présence est requise'">
+                <div class="flex gap-2">
+                  <UInput id="gw-draw" v-model="form.drawDate" type="date" class="flex-1 min-w-0" aria-label="Jour du tirage" />
+                  <UInput v-model="form.drawTime" type="time" class="w-28" :disabled="!form.drawDate" aria-label="Heure du tirage (facultative)" title="Facultative : sans heure, toute la journée (23 h 59)" />
+                </div>
               </UFormField>
               </div>
             </template>

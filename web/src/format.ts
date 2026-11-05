@@ -12,6 +12,14 @@ export function formatWhen(iso: string, now = new Date()): string {
   return d.toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 
+// Heure du tirage ; date seulement (heure inconnue, enregistrée à 23 h 59) : le jour, sans heure
+export function formatDraw(iso: string, now = new Date()): string {
+  const d = new Date(iso)
+  if (d.getHours() !== 23 || d.getMinutes() !== 59) return formatWhen(iso, now)
+  if (d.toDateString() === now.toDateString()) return 'aujourd\'hui'
+  return d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })
+}
+
 // « il y a 3 min », « il y a 2 h », sinon la date
 export function timeAgo(iso: string, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000))

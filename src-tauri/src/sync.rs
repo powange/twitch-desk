@@ -2278,6 +2278,9 @@ pub struct InstanceOverview {
     online: bool,
     last_seen: String,
     accounts: Vec<String>,
+    /// Version de l'application (serveur 0.8.9 et plus)
+    #[serde(default)]
+    version: Option<String>,
     devices: i64,
     devices_online: i64,
     /// Cette application

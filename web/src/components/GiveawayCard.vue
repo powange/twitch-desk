@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import type { ChannelLive, Giveaway, InstanceState } from '../types'
 import { chatUrl, conditions, copyText, GIVEAWAY_KIND, playerUrl, streamUrl } from '../giveaways'
-import { formatNumber, formatWhen } from '../format'
+import { formatDraw, formatNumber, formatWhen } from '../format'
 import GiftImage from './GiftImage.vue'
 
 const props = defineProps<{ giveaway: Giveaway, state: InstanceState | null }>()
@@ -99,7 +99,7 @@ async function copy() {
       <!-- Tirage et gagnant -->
       <div v-if="g.drawAt" class="flex items-center gap-2 text-sm">
         <UIcon name="i-lucide-alarm-clock" class="size-4 text-muted shrink-0" />
-        <span><span class="text-muted">Tirage :</span> {{ formatWhen(g.drawAt) }}</span>
+        <span><span class="text-muted">Tirage :</span> {{ formatDraw(g.drawAt) }}</span>
       </div>
       <div v-if="g.winner" class="flex items-center gap-2 text-sm">
         <UIcon name="i-lucide-trophy" class="size-4 text-amber-500 shrink-0" />

@@ -575,6 +575,8 @@ struct InstanceOverview {
     last_seen: String,
     /// Comptes Twitch de l'application (d'après son dernier état publié)
     accounts: Vec<String>,
+    /// Version de l'application (d'après son dernier état publié)
+    version: Option<String>,
     /// Appareils associés, et ceux dont la web app est ouverte en ce moment
     devices: i64,
     devices_online: i64,
@@ -604,14 +606,15 @@ async fn instances_overview(State(server): State<Shared>) -> Result<Json<Vec<Ins
         let mut out = vec![];
         for row in rows {
             let (id, name, last_seen, state, devices) = row?;
+            let state = state.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+            let version = state.as_ref().and_then(|v| v.pointer("/pc/version")?.as_str().map(|s| s.chars().take(40).collect()));
             let accounts = state
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                 .and_then(|v| v.get("accounts").and_then(|a| a.as_array()).cloned())
                 .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
                 .unwrap_or_default();
             let ids: Vec<String> = device_stmt.query_map([&id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
             let devices_online = ids.iter().filter(|d| devices_live.contains(*d)).count() as i64;
-            out.push(InstanceOverview { online: online.get(&id).is_some_and(|n| *n > 0), id, name, last_seen, accounts, devices, devices_online });
+            out.push(InstanceOverview { online: online.get(&id).is_some_and(|n| *n > 0), id, name, last_seen, accounts, version, devices, devices_online });
         }
         Ok(out)
     })
@@ -1498,13 +1501,14 @@ mod tests {
         let s = server(&["gifts"]);
         let put = |uri: String, body: &str| request("PUT", &uri, Some("code-secret"), "7.7.7.7", body);
         assert_eq!(status(&s, put(format!("/api/v1/instances/{INSTANCE}"), r#"{"name":"PC salon"}"#)).await, StatusCode::OK);
-        let state = r#"{"accounts":["alice","bob"],"giveaways":{},"live":{}}"#;
+        let state = r#"{"accounts":["alice","bob"],"giveaways":{},"live":{},"pc":{"version":"0.48.37"}}"#;
         assert_eq!(status(&s, put(format!("/api/v1/instances/{INSTANCE}/state"), state)).await, StatusCode::NO_CONTENT);
         let overview = || request("GET", "/api/v1/admin/instances", Some("code-secret"), "7.7.7.7", "");
         let (code, list) = json_of(&s, overview()).await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(list[0]["name"], "PC salon");
         assert_eq!(list[0]["accounts"], serde_json::json!(["alice", "bob"]));
+        assert_eq!(list[0]["version"], "0.48.37");
         assert_eq!((list[0]["online"].clone(), list[0]["devices"].clone()), (serde_json::json!(false), serde_json::json!(0)));
         // Flux temps réel ouvert par l'application : ouverte
         let res = app(s.clone()).oneshot(request("GET", &format!("/api/v1/events?instance={INSTANCE}"), Some("code-secret"), "7.7.7.7", "")).await.unwrap();

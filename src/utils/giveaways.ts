@@ -93,6 +93,9 @@ export function formatDrawAt(iso: string | null): string {
   if (!iso) return '—'
   const d = new Date(iso)
   const today = new Date()
+  const day = d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })
+  // Date seulement (heure inconnue, enregistrée à 23 h 59) : le jour, sans heure
+  if (d.getHours() === 23 && d.getMinutes() === 59) return d.toDateString() === today.toDateString() ? 'aujourd\'hui' : day
   const time = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
-  return d.toDateString() === today.toDateString() ? time : `${d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })} ${time}`
+  return d.toDateString() === today.toDateString() ? time : `${day} ${time}`
 }

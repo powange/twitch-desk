@@ -40,6 +40,13 @@ const RECENT_GIVEAWAYS: usize = 60;
 const LIVE_CHECK_EVERY: Duration = Duration::from_secs(120);
 /// Annonce d'un gagnant sans giveaway trouvé : répétition ignorée pendant ce temps
 const UNTARGETED_WIN_MEMORY: Duration = Duration::from_secs(600);
+/// Tirage saisi avec sa date seulement : enregistré à 23 h 59 (heure locale), toute la journée
+pub(crate) fn day_only(at: chrono::DateTime<chrono::Utc>) -> bool {
+    use chrono::Timelike;
+    let local = at.with_timezone(&chrono::Local);
+    local.hour() == 23 && local.minute() == 59
+}
+
 /// Rappel « reste présent » envoyé ce délai avant l'heure du tirage
 const PRESENCE_REMINDER: chrono::Duration = chrono::Duration::minutes(5);
 
@@ -530,6 +537,10 @@ impl Monitor {
             .cloned()
             .filter_map(|g| {
                 let at = chrono::DateTime::parse_from_rfc3339(g.details.draw_at.as_deref()?).ok()?.with_timezone(&chrono::Utc);
+                // Jour du tirage seulement (heure inconnue) : pas de rappel
+                if day_only(at) {
+                    return None;
+                }
                 let left = at - now;
                 (left <= PRESENCE_REMINDER && left > -chrono::Duration::minutes(1)).then(|| (g, left.num_minutes().max(0)))
             })
