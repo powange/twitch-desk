@@ -21,6 +21,8 @@ const HERMES_URL: &str = "wss://hermes.twitch.tv/v1";
 /// Silence toléré au-delà du keepalive annoncé par Hermes (welcome.keepaliveSec)
 const HERMES_SILENCE_MARGIN: Duration = Duration::from_secs(10);
 const HERMES_HANDSHAKE: Duration = Duration::from_secs(15);
+// 50 par connexion : limite de PubSub ; Hermes en accepte 150 (au-delà : SUB006, « too many
+// subscriptions »)
 const TOPICS_PER_CONNECTION: usize = 50;
 const PING_EVERY: Duration = Duration::from_secs(180);
 const PONG_TIMEOUT: Duration = Duration::from_secs(10);
