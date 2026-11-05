@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.38',
+    date: '2026-11-05',
+    title: 'Conditions reprises de la fiche',
+    changes: [
+      { kind: 'new', text: 'Modifier un giveaway, même clos, section Conditions : si la fiche du streamer a d\'autres conditions, un bouton « Reprendre celles de la fiche » les recopie toutes d\'un coup (celles que la fiche ne connaît pas restent comme elles sont).' },
+      { kind: 'fixed', text: 'Drops : plus de notification pour les drops d\'une campagne ignorée. Ils sont toujours réclamés et notés dans le journal.' }
+    ]
+  },
+  {
     version: '0.48.37',
     date: '2026-11-05',
     title: 'Heure du tirage facultative',

@@ -317,6 +317,37 @@ watch(open, (isOpen) => {
 
 const channelItems = computed(() => (snapshot.value?.giveaways.channels ?? []).map(c => c.login))
 
+// Conditions de la fiche du streamer (celles qu'elle connaît), sous la forme du formulaire ;
+// différentes de celles du giveaway : bouton pour les reprendre d'un coup (giveaway en cours ou clos)
+const sheetConditions = computed(() => {
+  const st = suggestion.value?.streamer
+  if (!st || st.login.toLowerCase() !== form.value.channel.trim().toLowerCase()) return null
+  const out: Partial<{ follow: TriState, followDuration: string, presence: TriState, discord: TriState, greeting: TriState, chatTime: TriState, chatMinutes: number | null, canGift: TriState }> = {}
+  if (st.requireFollow !== null) {
+    out.follow = toTri(st.requireFollow)
+    out.followDuration = st.requireFollow && st.followMinSecs ? formatDuration(st.followMinSecs) : ''
+  }
+  if (st.requirePresence !== null) out.presence = toTri(st.requirePresence)
+  if (st.requireDiscord !== null) out.discord = toTri(st.requireDiscord)
+  if (st.requireGreeting !== null) out.greeting = toTri(st.requireGreeting)
+  if (st.minChatMinutes !== null) {
+    out.chatTime = st.minChatMinutes > 0 ? 'yes' : 'no'
+    out.chatMinutes = st.minChatMinutes > 0 ? st.minChatMinutes : null
+  }
+  if (st.canGift !== null) out.canGift = toTri(st.canGift)
+  return out
+})
+const sheetDiffers = computed(() => {
+  const c = sheetConditions.value
+  if (!c || props.streamerOnly) return false
+  const f = form.value as Record<string, unknown>
+  return Object.entries(c).some(([k, v]) => f[k] !== v)
+})
+function applySheetConditions() {
+  const c = sheetConditions.value
+  if (c) Object.assign(form.value, c)
+}
+
 // --- Pré-remplissage à la création : giveaway StreamElements actif, commande détectée dans le chat ---
 interface ChannelSuggestion {
   streamelements: { url: string, title: string, description: string, command: string | null, cost: number, maxTickets: number | null } | null
@@ -1089,6 +1120,10 @@ async function save() {
               <template v-if="streamerOnly">Ses conditions habituelles : elles pré-remplissent ses nouveaux giveaways (chacun garde ensuite les siennes). « ? » : on ne sait pas.</template>
               <template v-else>Ce qu'il faut pour participer. « ? » : on ne sait pas.</template>
             </p>
+            <div v-if="sheetDiffers" class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-elevated px-4 py-2.5 text-sm">
+              <span class="text-muted">La fiche de {{ form.channel }} a d'autres conditions que ce giveaway.</span>
+              <UButton label="Reprendre celles de la fiche" icon="i-lucide-clipboard-copy" size="sm" color="primary" variant="soft" @click="applySheetConditions" />
+            </div>
             <div v-for="c in CONDITIONS" :key="c.key" class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border border-default rounded-lg px-4 py-3">
               <span class="inline-flex items-center gap-2.5">
                 <UIcon :name="c.icon" class="size-5 text-muted" />{{ c.label }}

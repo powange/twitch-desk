@@ -5339,7 +5339,7 @@ dependencies = [
 
 [[package]]
 name = "twitch-desk"
-version = "0.48.37"
+version = "0.48.38"
 dependencies = [
  "base64 0.22.1",
  "chrono",

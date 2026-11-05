@@ -1045,24 +1045,29 @@ impl DropsEngine {
     /// Réclame les drops terminés (au plus une tentative par heure et par drop)
     async fn claim_ready(&mut self, app: &App, account: &Account, gql: &Gql) -> Result<()> {
         let now = Instant::now();
-        let ready: Vec<(String, String, String)> = self
+        let ignored = &self.ignored;
+        let ready: Vec<(String, String, String, bool)> = self
             .campaigns
             .iter()
-            // Campagne ignorée : plus regardée, mais ses drops déjà terminés sont réclamés
+            // Campagne ignorée : plus regardée, mais ses drops déjà terminés sont réclamés (sans
+            // notification)
             .flat_map(|c| {
+                let quiet = ignored.contains(&c.id);
                 c.drops
                     .iter()
                     .filter(|d| d.claimable())
-                    .map(move |d| (d.instance_id.clone().unwrap_or_default(), d.name.clone(), c.game.name.clone()))
+                    .map(move |d| (d.instance_id.clone().unwrap_or_default(), d.name.clone(), c.game.name.clone(), quiet))
             })
-            .filter(|(id, _, _)| self.claim_attempts.get(id).is_none_or(|t| now.duration_since(*t) >= CLAIM_RETRY))
+            .filter(|(id, ..)| self.claim_attempts.get(id).is_none_or(|t| now.duration_since(*t) >= CLAIM_RETRY))
             .collect();
-        for (instance_id, name, game) in ready {
+        for (instance_id, name, game, quiet) in ready {
             self.claim_attempts.insert(instance_id.clone(), now);
             match gql.claim_drop(&instance_id).await {
                 Ok(ClaimOutcome::Claimed) => {
                     app.log(&account.login, EventKind::Drop, format!("Drop réclamé : {name} ({game})"));
-                    app.notify(crate::app::Alert::Drop, &format!("Drop obtenu : {name}"), &format!("{game}, sur le compte {}", account.login));
+                    if !quiet {
+                        app.notify(crate::app::Alert::Drop, &format!("Drop obtenu : {name}"), &format!("{game}, sur le compte {}", account.login));
+                    }
                     self.mark_claimed(&instance_id);
                 }
                 // Déjà réclamé (sur le site, ou avant un redémarrage) : rien de nouveau à annoncer
