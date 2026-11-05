@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.42',
+    date: '2026-11-05',
+    title: 'Connexion temps réel stable',
+    changes: [
+      { kind: 'fixed', text: 'Temps réel : les débuts et fins de live, les spectateurs et les raids passent aussi par la nouvelle connexion de Twitch. L\'ancienne coupait toutes les quelques secondes, avec des erreurs dans le journal. Elle ne sert plus qu\'en secours.' }
+    ]
+  },
+  {
     version: '0.48.41',
     date: '2026-11-05',
     title: 'Points de chaîne : connexion temps réel rétablie',
