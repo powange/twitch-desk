@@ -14,6 +14,12 @@ use tokio::time::{interval, sleep, timeout, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
 const PUBSUB_URL: &str = "wss://pubsub-edge.twitch.tv/v1";
+/// Sujets liés au compte (points, bonus, drops) : Hermes, comme le site de Twitch (depuis le
+/// 4 novembre 2026, PubSub ferme aussitôt les connexions qui les demandent avec un jeton)
+const HERMES_URL: &str = "wss://hermes.twitch.tv/v1";
+/// Silence toléré au-delà du keepalive annoncé par Hermes (welcome.keepaliveSec)
+const HERMES_SILENCE_MARGIN: Duration = Duration::from_secs(10);
+const HERMES_HANDSHAKE: Duration = Duration::from_secs(15);
 const TOPICS_PER_CONNECTION: usize = 50;
 const PING_EVERY: Duration = Duration::from_secs(180);
 const PONG_TIMEOUT: Duration = Duration::from_secs(10);
@@ -69,30 +75,50 @@ impl Presence {
 enum Failure {
     /// Jeton refusé : inutile de réessayer avec le même
     Auth,
+    /// Hermes refuse l'authentification ou un abonnement : essai suivant par PubSub
+    Refused(String),
     Other(String),
 }
 
 /// Garde les connexions ouvertes jusqu'à ce que `events` soit fermé côté réception.
 /// Les connexions sont des tâches filles d'un JoinSet : arrêter `run` les arrête toutes
 pub async fn run(token: String, topics: Vec<String>, events: mpsc::Sender<PubSubEvent>) {
-    let chunks: Vec<Vec<String>> = topics.chunks(TOPICS_PER_CONNECTION).map(<[String]>::to_vec).collect();
-    let presence = Arc::new(Presence { up: AtomicUsize::new(0), total: chunks.len() });
+    // Sujets du compte : Hermes (jeton) ; sujets des chaînes : PubSub, sans jeton (publics)
+    let (user, channels): (Vec<String>, Vec<String>) = topics.into_iter().partition(|t| is_user_topic(t));
+    let chunks: Vec<Vec<String>> = channels.chunks(TOPICS_PER_CONNECTION).map(<[String]>::to_vec).collect();
+    let presence = Arc::new(Presence { up: AtomicUsize::new(0), total: chunks.len() + usize::from(!user.is_empty()) });
     let mut tasks = JoinSet::new();
-    for chunk in chunks {
-        let token = token.clone();
+    if !user.is_empty() {
         let events = events.clone();
         let presence = presence.clone();
-        tasks.spawn(async move { connection_loop(token, chunk, events, presence).await });
+        tasks.spawn(async move { connection_loop(Some(token), user, events, presence, true).await });
+    }
+    for chunk in chunks {
+        let events = events.clone();
+        let presence = presence.clone();
+        tasks.spawn(async move { connection_loop(None, chunk, events, presence, false).await });
     }
     while tasks.join_next().await.is_some() {}
 }
 
-async fn connection_loop(token: String, topics: Vec<String>, events: mpsc::Sender<PubSubEvent>, presence: Arc<Presence>) {
+fn is_user_topic(topic: &str) -> bool {
+    topic.starts_with("community-points-user-v1.") || topic.starts_with("user-drop-events.")
+}
+
+/// `hermes` : sujets du compte par Hermes ; refusé par Hermes, essai suivant par PubSub avec le
+/// jeton (ancienne méthode), puis de nouveau Hermes
+async fn connection_loop(token: Option<String>, topics: Vec<String>, events: mpsc::Sender<PubSubEvent>, presence: Arc<Presence>, hermes: bool) {
     let mut backoff = Duration::from_secs(2);
     let mut up = false;
+    let mut legacy_next = false;
     loop {
         let started = Instant::now();
-        let result = connect_once(&token, &topics, &events, &presence, &mut up).await;
+        let via_hermes = hermes && !legacy_next;
+        let result = match (via_hermes, token.as_deref()) {
+            (true, Some(t)) => hermes_once(t, &topics, &events, &presence, &mut up).await,
+            _ => connect_once(token.as_deref(), &topics, &events, &presence, &mut up).await,
+        };
+        legacy_next = via_hermes && matches!(&result, Err(Failure::Refused(_)));
         if events.is_closed() {
             return;
         }
@@ -103,7 +129,8 @@ async fn connection_loop(token: String, topics: Vec<String>, events: mpsc::Sende
                 let _ = events.send(PubSubEvent::AuthFailed).await;
                 return;
             }
-            Err(Failure::Other(e)) => tracing::warn!("PubSub : {e}"),
+            Err(Failure::Other(e)) => tracing::warn!("{} : {e}", if via_hermes { "Hermes" } else { "PubSub" }),
+            Err(Failure::Refused(e)) => tracing::warn!("Hermes : {e}, essai par PubSub"),
             Ok(()) => {}
         }
         // Connexion restée stable un moment : on repart du délai minimal
@@ -135,7 +162,7 @@ fn listen_response(envelope: &Value, nonce: &str) -> Option<Result<(), Failure>>
 }
 
 async fn connect_once(
-    token: &str,
+    token: Option<&str>,
     topics: &[String],
     events: &mpsc::Sender<PubSubEvent>,
     presence: &Presence,
@@ -144,11 +171,10 @@ async fn connect_once(
     let other = |e: tokio_tungstenite::tungstenite::Error| Failure::Other(e.to_string());
     let (mut ws, _) = tokio_tungstenite::connect_async(PUBSUB_URL).await.map_err(other)?;
     let nonce = uuid::Uuid::new_v4().simple().to_string();
-    let listen = json!({
-        "type": "LISTEN",
-        "nonce": nonce,
-        "data": { "topics": topics, "auth_token": token }
-    });
+    let listen = match token {
+        Some(token) => json!({ "type": "LISTEN", "nonce": nonce, "data": { "topics": topics, "auth_token": token } }),
+        None => json!({ "type": "LISTEN", "nonce": nonce, "data": { "topics": topics } }),
+    };
     ws.send(Message::text(listen.to_string())).await.map_err(other)?;
 
     let mut ping = interval(PING_EVERY);
@@ -196,6 +222,122 @@ async fn connect_once(
         }
         if events.is_closed() {
             return Ok(());
+        }
+    }
+}
+
+/// Trame Hermes à envoyer : `kind` est aussi le nom du champ qui porte `body`
+fn hermes_frame(kind: &str, id: &str, body: Value) -> Message {
+    let mut frame = json!({ "type": kind, "id": id, "timestamp": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true) });
+    frame[kind] = body;
+    Message::text(frame.to_string())
+}
+
+/// Réponse d'Hermes à la trame `id` : Ok accepté, Err(code) refusé ; None pour une autre trame
+fn hermes_result(frame: &Value, field: &str, id: &str) -> Option<Result<(), String>> {
+    if frame.get("type").and_then(Value::as_str) != Some(field) || frame.get("parentId").and_then(Value::as_str) != Some(id) {
+        return None;
+    }
+    let response = frame.get(field)?;
+    Some(match response.get("result").and_then(Value::as_str) {
+        Some("ok") => Ok(()),
+        other => Err(response.get("errorCode").and_then(Value::as_str).or(other).unwrap_or("refus").chars().take(40).collect()),
+    })
+}
+
+/// Notification Hermes d'un abonnement : sujet et message (même contenu que PubSub), sous la
+/// forme d'une enveloppe PubSub pour `parse_message`
+fn hermes_notification(frame: &Value, subscriptions: &std::collections::HashMap<String, String>) -> Option<Value> {
+    if frame.get("type").and_then(Value::as_str) != Some("notification") {
+        return None;
+    }
+    let n = frame.get("notification")?;
+    let topic = subscriptions.get(str_at(n, "/subscription/id")?)?;
+    let message = str_at(n, "/pubsub")?;
+    Some(json!({ "type": "MESSAGE", "data": { "topic": topic, "message": message } }))
+}
+
+/// Une connexion Hermes : bienvenue, authentification avec le jeton, un abonnement par sujet ;
+/// « temps réel » une fois tous les abonnements acceptés
+async fn hermes_once(
+    token: &str,
+    topics: &[String],
+    events: &mpsc::Sender<PubSubEvent>,
+    presence: &Presence,
+    up: &mut bool,
+) -> Result<(), Failure> {
+    let other = |e: tokio_tungstenite::tungstenite::Error| Failure::Other(e.to_string());
+    let url = format!("{HERMES_URL}?clientId={}", super::CLIENT_ID);
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.map_err(other)?;
+    let auth_id = uuid::Uuid::new_v4().to_string();
+    // Identifiant de la trame d'abonnement -> (identifiant de l'abonnement, sujet)
+    let mut pending: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+    // Abonnements acceptés : identifiant -> sujet
+    let mut subscriptions: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut keepalive = Duration::from_secs(15);
+    let mut welcomed = false;
+    let opened = Instant::now();
+    loop {
+        let wait = if welcomed && *up { keepalive + HERMES_SILENCE_MARGIN } else { HERMES_HANDSHAKE.saturating_sub(opened.elapsed()).max(Duration::from_secs(1)) };
+        let msg = tokio::select! {
+            _ = events.closed() => return Ok(()),
+            msg = timeout(wait, ws.next()) => msg,
+        };
+        let msg = match msg {
+            Err(_) if *up => return Err(Failure::Other("connexion muette".into())),
+            Err(_) => return Err(Failure::Other("pas de réponse à la connexion".into())),
+            Ok(None) => return Err(Failure::Other("connexion fermée".into())),
+            Ok(Some(Err(e))) => return Err(other(e)),
+            Ok(Some(Ok(m))) => m,
+        };
+        let Message::Text(text) = msg else { continue };
+        let Ok(frame) = serde_json::from_str::<Value>(&text) else { continue };
+        match frame.get("type").and_then(Value::as_str) {
+            Some("welcome") => {
+                welcomed = true;
+                if let Some(s) = frame.pointer("/welcome/keepaliveSec").and_then(Value::as_u64).filter(|s| (1..=600).contains(s)) {
+                    keepalive = Duration::from_secs(s);
+                }
+                ws.send(hermes_frame("authenticate", &auth_id, json!({ "token": token }))).await.map_err(other)?;
+                continue;
+            }
+            Some("keepalive") => continue,
+            Some("reconnect") => return Err(Failure::Other("Twitch demande une reconnexion".into())),
+            _ => {}
+        }
+        if let Some(result) = hermes_result(&frame, "authenticateResponse", &auth_id) {
+            result.map_err(|code| Failure::Refused(format!("authentification refusée ({code})")))?;
+            for topic in topics {
+                let (frame_id, sub_id) = (uuid::Uuid::new_v4().to_string(), uuid::Uuid::new_v4().to_string());
+                let body = json!({ "id": sub_id, "type": "pubsub", "pubsub": { "topic": topic } });
+                ws.send(hermes_frame("subscribe", &frame_id, body)).await.map_err(other)?;
+                pending.insert(frame_id, (sub_id, topic.clone()));
+            }
+            continue;
+        }
+        let answered = pending.keys().find(|id| hermes_result(&frame, "subscribeResponse", id).is_some()).cloned();
+        if let Some(frame_id) = answered {
+            let (sub_id, topic) = pending.remove(&frame_id).expect("abonnement en attente");
+            if let Some(Err(code)) = hermes_result(&frame, "subscribeResponse", &frame_id) {
+                return Err(Failure::Refused(format!("abonnement à {} refusé ({code})", topic.split('.').next().unwrap_or(""))));
+            }
+            subscriptions.insert(sub_id, topic);
+            if pending.is_empty() {
+                tracing::info!("Hermes : connecté ({} sujet(s) du compte)", subscriptions.len());
+                presence.set(up, true, events).await;
+            }
+            continue;
+        }
+        // Abonnement retiré par Hermes : reconnexion (tous les sujets de nouveau)
+        if frame.get("type").and_then(Value::as_str) == Some("subscriptionRevocation") {
+            return Err(Failure::Other("abonnement retiré par Twitch".into()));
+        }
+        if let Some(envelope) = hermes_notification(&frame, &subscriptions) {
+            for event in parse_message(&envelope) {
+                if events.send(event).await.is_err() {
+                    return Ok(());
+                }
+            }
         }
     }
 }
@@ -331,6 +473,30 @@ mod tests {
         // Réponse à une autre demande, ou message ordinaire
         assert!(listen_response(&json!({"type":"RESPONSE","nonce":"x","error":""}), "n1").is_none());
         assert!(listen_response(&json!({"type":"PONG"}), "n1").is_none());
+    }
+
+    #[test]
+    fn hermes_frames() {
+        // Réponses à nos trames : acceptée, refusée avec son code, ou réponse à une autre trame
+        let ok = json!({"type":"authenticateResponse","parentId":"a1","authenticateResponse":{"result":"ok"}});
+        assert_eq!(hermes_result(&ok, "authenticateResponse", "a1"), Some(Ok(())));
+        let bad = json!({"type":"authenticateResponse","parentId":"a1","authenticateResponse":{"result":"error","errorCode":"AUTH002"}});
+        assert_eq!(hermes_result(&bad, "authenticateResponse", "a1"), Some(Err("AUTH002".into())));
+        assert_eq!(hermes_result(&ok, "authenticateResponse", "a2"), None);
+        assert_eq!(hermes_result(&ok, "subscribeResponse", "a1"), None);
+        // Notification : enveloppe PubSub du sujet de l'abonnement, lue comme avant
+        let subs = std::collections::HashMap::from([("s1".to_owned(), "community-points-user-v1.42".to_owned())]);
+        let inner = json!({"type":"points-earned","data":{"channel_id":"7","point_gain":{"total_points":10,"reason_code":"WATCH"},"balance":{"balance":110}}});
+        let frame = json!({"type":"notification","notification":{"subscription":{"id":"s1"},"type":"pubsub","pubsub":inner.to_string()}});
+        let envelope = hermes_notification(&frame, &subs).unwrap();
+        assert_eq!(
+            parse_message(&envelope),
+            vec![PubSubEvent::PointsEarned { channel_id: "7".into(), gain: 10, reason: "WATCH".into(), balance: Some(110) }]
+        );
+        // Abonnement inconnu : ignorée
+        let unknown = json!({"type":"notification","notification":{"subscription":{"id":"zz"},"pubsub":inner.to_string()}});
+        assert!(hermes_notification(&unknown, &subs).is_none());
+        assert!(is_user_topic("user-drop-events.1") && !is_user_topic("raid.1"));
     }
 
     #[tokio::test]

@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.41',
+    date: '2026-11-05',
+    title: 'Points de chaîne : connexion temps réel rétablie',
+    changes: [
+      { kind: 'fixed', text: 'Points de chaîne : depuis le 4 novembre, Twitch coupait la connexion temps réel qui annonce les points gagnés, les bonus à cliquer et la progression des drops. Les gains du jour restaient à 0 et le statut « temps réel » ne tenait pas. L\'application utilise maintenant la même connexion que le site de Twitch.' }
+    ]
+  },
+  {
     version: '0.48.40',
     date: '2026-11-05',
     title: 'Ligne survolée surlignée',
