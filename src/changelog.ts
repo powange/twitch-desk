@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.45',
+    date: '2026-11-06',
+    title: 'Participer depuis la fenêtre des streams',
+    changes: [
+      { kind: 'new', text: 'Fenêtre des streams : quand un giveaway ouvert attend ta participation sur un stream affiché, un bouton « Participer » apparaît à droite du pseudo, dans l\'en-tête du stream, avec la commande à côté. « Participer » envoie la commande avec tes comptes qui n\'y sont pas encore. Un clic sur la commande la copie dans le presse-papiers.' }
+    ]
+  },
+  {
     version: '0.48.44',
     date: '2026-11-05',
     title: 'Type et commande réunis',

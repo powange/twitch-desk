@@ -140,7 +140,10 @@ function createTile(channel) {
   close.textContent = '✕'
   close.title = 'Retirer ce stream'
   close.setAttribute('aria-label', `Retirer ${channel}`)
-  bar.append(name, star, ficheButton, videoButton, chatButton, close)
+  // Giveaway à rejoindre (envoyé par Twitch Desk) : « Participer » et la commande, à droite du pseudo
+  const giveaway = document.createElement('span')
+  giveaway.className = 'giveaway'
+  bar.append(name, giveaway, star, ficheButton, videoButton, chatButton, close)
 
   const body = document.createElement('div')
   body.className = 'body'
@@ -207,7 +210,8 @@ function createTile(channel) {
   })
   close.addEventListener('click', () => removeChannel(channel))
 
-  tiles.set(channel, { el, player, star })
+  tiles.set(channel, { el, player, star, giveaway })
+  renderGiveaway(channel)
   // Ajouté pendant une mise en avant avec l'option : en pause dès qu'il démarre
   // (une seule fois : un stream relancé à la main n'est pas remis en pause)
   let started = false
@@ -332,6 +336,68 @@ pauseButton.addEventListener('click', () => {
 
 // Twitch Desk ajoute un stream sans recharger les autres
 window.twitchDeskAdd = addChannel
+
+// Giveaways à rejoindre, par chaîne ({ id, command, accounts }), envoyés par Twitch Desk
+let toJoin = {}
+const sending = new Set()
+function renderGiveaway(channel) {
+  const t = tiles.get(channel)
+  if (!t) return
+  const g = toJoin[channel]
+  t.giveaway.replaceChildren()
+  if (!g) return
+  const join = document.createElement('button')
+  join.className = 'join'
+  join.textContent = sending.has(g.id) ? 'Envoi…' : 'Participer'
+  join.disabled = sending.has(g.id)
+  join.title = `Envoyer ${g.command} avec ${g.accounts.join(', ')}`
+  // Envoyée par l'application (adresse convenue interceptée, la page ne se recharge pas)
+  join.addEventListener('click', () => {
+    sending.add(g.id)
+    renderGiveaway(channel)
+    location.href = `${location.pathname}?participer=${g.id}`
+  })
+  const command = document.createElement('button')
+  command.className = 'command'
+  command.textContent = g.command
+  command.title = 'Copier la commande'
+  command.addEventListener('click', () => copyCommand(g.command, command))
+  t.giveaway.append(join, command)
+}
+async function copyCommand(text, button) {
+  let ok = false
+  try {
+    await navigator.clipboard.writeText(text)
+    ok = true
+  } catch {
+    // Repli : copie par une zone de texte sélectionnée
+    const area = document.createElement('textarea')
+    area.value = text
+    document.body.append(area)
+    area.select()
+    try { ok = document.execCommand('copy') } catch { ok = false }
+    area.remove()
+  }
+  button.textContent = ok ? 'Copié' : 'Copie impossible'
+  setTimeout(() => { button.textContent = text }, 1200)
+}
+window.twitchDeskGiveaways = (map) => {
+  toJoin = map && typeof map === 'object' ? map : {}
+  for (const c of tiles.keys()) renderGiveaway(c)
+}
+// Résultat de « Participer » : affiché sur le bouton un instant
+window.twitchDeskParticipated = ({ id, ok, message }) => {
+  sending.delete(id)
+  for (const [c, t] of tiles) {
+    if (toJoin[c]?.id !== id) continue
+    renderGiveaway(c)
+    const join = t.giveaway.querySelector('.join')
+    if (!join) continue
+    join.textContent = ok ? 'Envoyé' : 'Échec'
+    join.title = message
+    join.classList.add(ok ? 'done' : 'failed')
+  }
+}
 
 // Volume, son et qualité choisis dans chaque lecteur : relevés régulièrement pour l'adresse
 setInterval(() => {

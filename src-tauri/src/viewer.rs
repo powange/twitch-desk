@@ -240,11 +240,19 @@ fn open_window(app: &App, query: &str) -> Result<(), String> {
         .inner_size(1280.0, 760.0)
         .min_inner_size(480.0, 320.0)
         .menu(menu(handle).map_err(|e| format!("menu : {e}"))?)
-        // Adresses convenues de la page : « Fermer la page » (…?close=1) et fiche d'un streamer
-        // (…?fiche=<chaîne>), ouverte dans la fenêtre principale
+        // Adresses convenues de la page : « Fermer la page » (…?close=1), fiche d'un streamer
+        // (…?fiche=<chaîne>), ouverte dans la fenêtre principale, et participation à un giveaway
+        // (…?participer=<identifiant>) avec les comptes qui n'y sont pas encore
         .on_navigation({
             let handle = handle.clone();
             move |url| {
+                if let Some(id) = url.query().and_then(|q| q.strip_prefix("participer=")).and_then(|i| i.parse::<i64>().ok()) {
+                    if let Some(app) = handle.try_state::<Arc<App>>() {
+                        let app: Arc<App> = app.inner().clone();
+                        tauri::async_runtime::spawn(async move { participate_from_page(&app, id).await });
+                    }
+                    return false;
+                }
                 if let Some(login) = url.query().and_then(|q| q.strip_prefix("fiche=")).filter(|l| valid_login(l)) {
                     let _ = handle.emit_to("main", "open-streamer", login.to_owned());
                     if let Some(main) = handle.get_webview_window("main") {
@@ -314,6 +322,7 @@ fn open_window(app: &App, query: &str) -> Result<(), String> {
         }
         _ => {}
     });
+    spawn_giveaway_push(handle.clone());
     // Fermée par l'utilisateur : ne pas la rouvrir au prochain lancement
     let handle = handle.clone();
     window.on_window_event(move |event| {
@@ -324,6 +333,75 @@ fn open_window(app: &App, query: &str) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+/// Giveaways ouverts à rejoindre à la main, par chaîne (le plus récent) : commande, comptes qui
+/// n'y sont pas encore ; envoyés à la page pour le bouton « Participer » de chaque stream
+fn giveaways_to_join(app: &App) -> serde_json::Map<String, serde_json::Value> {
+    let accounts = app.db.accounts().unwrap_or_default();
+    let mut out = serde_json::Map::new();
+    let view = app.giveaways.view();
+    let mut list: Vec<_> = view.giveaways.iter().collect();
+    list.sort_by(|a, b| b.row.detected_at.cmp(&a.row.detected_at));
+    for g in list {
+        let r = &g.row;
+        let Some(command) = r.command.as_deref().filter(|c| !c.trim().is_empty()) else { continue };
+        if r.status != "open" || r.hidden || !matches!(r.kind.as_str(), "command" | "ticket") || out.contains_key(&r.channel) {
+            continue;
+        }
+        let missing: Vec<&str> =
+            accounts.iter().filter(|a| !g.entries_view.iter().any(|e| e.account_id == a.id)).map(|a| a.login.as_str()).collect();
+        if missing.is_empty() {
+            continue;
+        }
+        out.insert(r.channel.clone(), serde_json::json!({ "id": r.id, "command": command, "accounts": missing }));
+    }
+    out
+}
+
+/// Tant que la fenêtre des streams est ouverte : giveaways à rejoindre envoyés à la page quand ils
+/// changent (et toutes les 20 s, pour une page rechargée)
+fn spawn_giveaway_push(handle: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut last: Option<(String, std::time::Instant)> = None;
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let Some(window) = handle.get_webview_window(LABEL) else { return };
+            let Some(app) = handle.try_state::<Arc<App>>() else { return };
+            let json = serde_json::Value::Object(giveaways_to_join(&app)).to_string();
+            if last.as_ref().is_some_and(|(j, at)| *j == json && at.elapsed() < Duration::from_secs(20)) {
+                continue;
+            }
+            let script = format!("typeof window.twitchDeskGiveaways === 'function' && window.twitchDeskGiveaways({json})");
+            if window.eval(script).is_ok() {
+                last = Some((json, std::time::Instant::now()));
+            }
+        }
+    });
+}
+
+/// « Participer » d'un stream : commande envoyée avec les comptes qui n'y sont pas encore ;
+/// résultat affiché sur le stream
+async fn participate_from_page(app: &Arc<App>, id: i64) {
+    let entered: Vec<i64> = app
+        .giveaways
+        .view()
+        .giveaways
+        .iter()
+        .find(|g| g.row.id == id)
+        .map(|g| g.entries_view.iter().map(|e| e.account_id).collect())
+        .unwrap_or_default();
+    let ids: Vec<i64> = app.db.accounts().unwrap_or_default().into_iter().map(|a| a.id).filter(|a| !entered.contains(a)).collect();
+    let (ok, message) = match crate::giveaways::participate(app, id, &ids, false).await {
+        _ if ids.is_empty() => (true, "Tous tes comptes participent déjà".to_owned()),
+        Ok(results) if results.iter().all(|r| r.ok) => (true, format!("Envoyé avec {}", results.iter().map(|r| r.login.as_str()).collect::<Vec<_>>().join(", "))),
+        Ok(results) => (false, results.iter().filter(|r| !r.ok).map(|r| format!("{} : {}", r.login, r.message)).collect::<Vec<_>>().join(" · ")),
+        Err(e) => (false, e),
+    };
+    if let Some(window) = app.handle().get_webview_window(LABEL) {
+        let detail = serde_json::json!({ "id": id, "ok": ok, "message": message });
+        let _ = window.eval(format!("typeof window.twitchDeskParticipated === 'function' && window.twitchDeskParticipated({detail})"));
+    }
 }
 
 /// Windows : protection contre le pistage du navigateur intégré désactivée pour l'application.
