@@ -615,10 +615,12 @@ fn fold(text: &str) -> String {
 pub(crate) fn starts_word(text: &str, term: &str) -> bool {
     let words: Vec<&str> = term.split_whitespace().collect();
     let Some(first) = words.first() else { return false };
+    // Terme commençant par un symbole (« €-card ») : trouvé où qu'il soit (« 20€-card »)
+    let symbol_start = first.chars().next().is_some_and(|c| !c.is_alphanumeric());
     let mut from = 0;
     while let Some(pos) = text[from..].find(first) {
         let start = from + pos;
-        let before_ok = text[..start].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+        let before_ok = symbol_start || text[..start].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
         if before_ok {
             // Mots suivants, séparés par des espaces
             let mut rest = &text[start + first.len()..];
@@ -3019,6 +3021,10 @@ mod tests {
         // Titre de live typique : symboles et barres autour du nom du cadeau
         let cards = vec![gift(4, "Gift Card", &[])];
         assert_eq!(gifts_in_text(&cards, "24/7 @Beardageddon | £50 Gift Card Giveaway | Sea of Thieves"), vec![4]);
+        // Nom commençant par un symbole : collé à un chiffre ou une lettre
+        let euro = vec![gift(5, "€-CARD", &[])];
+        assert_eq!(gifts_in_text(&euro, "!DROPDEX !GIVEAWAY 20€-CARD on @schubenn1337 🎁 - REPLAY 2021-2025 - 🚨 NO DROPS 🚨"), vec![5]);
+        assert!(gifts_in_text(&euro, "20€ card").is_empty());
     }
 
     #[test]

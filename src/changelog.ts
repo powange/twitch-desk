@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.30',
+    date: '2026-11-05',
+    title: 'Cadeaux au nom commençant par un symbole',
+    changes: [
+      { kind: 'fixed', text: 'Un cadeau dont le nom ou un mot-clé commence par un symbole (« €-CARD ») est repéré même collé à un chiffre ou une lettre (« 20€-CARD » dans le titre du live).' }
+    ]
+  },
+  {
     version: '0.48.29',
     date: '2026-11-05',
     title: 'Cadeaux du live rattachés tout seuls',

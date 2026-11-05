@@ -48,7 +48,7 @@ export function useKnownCategories() {
 
 // Cadeaux dont le titre ou un mot-clé apparaît dans le texte (titre d'un live, description…),
 // sans tenir compte des majuscules ni des accents, au début d'un mot (« key » trouve « keys »,
-// pas « monkey »)
+// pas « monkey » ; un terme qui commence par un symbole, comme « €-card », n'importe où)
 export function suggestGifts(gifts: Gift[], text: string | null | undefined): Gift[] {
   if (!text) return []
   const cache = compiled(gifts)
@@ -92,7 +92,9 @@ function wordStart(term: string): RegExp | null {
   if (!words.length) return null
   // Plusieurs mots : séparés par n'importe quels espaces dans le texte
   const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')
-  return new RegExp(`(?<![\\p{L}\\p{N}])${pattern}`, 'u')
+  // Terme commençant par un symbole (« €-card ») : trouvé où qu'il soit (« 20€-card »)
+  const before = /^[\p{L}\p{N}]/u.test(words[0]!) ? '(?<![\\p{L}\\p{N}])' : ''
+  return new RegExp(`${before}${pattern}`, 'u')
 }
 
 function normalize(s: string) {
