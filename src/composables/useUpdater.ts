@@ -3,8 +3,9 @@ import { check, type Update } from '@tauri-apps/plugin-updater'
 import { invoke } from '@tauri-apps/api/core'
 import { relaunch } from '@tauri-apps/plugin-process'
 
-// Mise à jour automatique : vérification au démarrage puis toutes les 6 h ; installation sans
-// confirmation (réglage) : vérification toutes les N minutes, mise à jour installée dès trouvée.
+// Mise à jour automatique : vérification au démarrage (mise à jour trouvée installée tout de suite)
+// puis toutes les 6 h ; installation sans confirmation (réglage) : vérification toutes les N
+// minutes, mise à jour installée dès trouvée.
 // Le paquet est signé ; l'updater refuse tout fichier qui ne porte pas notre signature.
 const CHECK_EVERY = 6 * 3600 * 1000
 
@@ -95,8 +96,9 @@ function startAutoCheck(autoInstall = false, minutes = 360) {
   const first = !timer
   if (timer) clearInterval(timer)
   timerKey = key
-  // Premier lancement, ou installation automatique cochée : vérification tout de suite
-  if (first || autoInstall) void checkAndMaybeInstall(autoInstall)
+  // Premier lancement : vérification tout de suite, installée sans attendre ; installation
+  // automatique cochée ensuite : vérification tout de suite aussi
+  if (first || autoInstall) void checkAndMaybeInstall(true)
   timer = setInterval(() => void checkAndMaybeInstall(autoInstall), every)
 }
 

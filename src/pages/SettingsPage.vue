@@ -159,14 +159,14 @@ async function checkUpdates() {
             <div class="flex items-center justify-between gap-4 px-4 py-3">
               <div>
                 <div class="font-medium">Chercher les mises à jour automatiquement</div>
-                <div class="text-sm text-muted">Au démarrage puis toutes les 6 heures (ou au délai choisi ci-dessous). Sans installation automatique, elle se lance quand tu la confirmes.</div>
+                <div class="text-sm text-muted">Au démarrage, une nouvelle version est installée tout de suite (l'application redémarre seule). Ensuite, toutes les 6 heures (ou au délai choisi ci-dessous) : sans installation automatique, elle se lance quand tu la confirmes.</div>
               </div>
               <USwitch v-model="settings.autoUpdate" aria-label="Mises à jour automatiques" />
             </div>
             <div v-if="settings.autoUpdate" class="flex items-center justify-between gap-4 px-4 py-3 pl-8">
               <div>
                 <div class="font-medium">Installer automatiquement</div>
-                <div class="text-sm text-muted">Une nouvelle version est installée dès qu'elle est trouvée, sans cliquer : l'application redémarre seule.</div>
+                <div class="text-sm text-muted">Aussi pendant que l'application tourne : une nouvelle version est installée dès qu'elle est trouvée, sans cliquer, et l'application redémarre seule.</div>
               </div>
               <USwitch v-model="settings.autoInstall" aria-label="Installer les mises à jour automatiquement" />
             </div>

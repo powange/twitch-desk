@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.39',
+    date: '2026-11-05',
+    title: 'Mise à jour installée au démarrage',
+    changes: [
+      { kind: 'improved', text: 'Au lancement de l\'application, une nouvelle version trouvée est installée tout de suite, sans cliquer : l\'application redémarre seule à jour. Pendant qu\'elle tourne, rien ne change : la mise à jour attend ta confirmation, sauf si « Installer automatiquement » est coché. Il suffit de désactiver « Chercher les mises à jour automatiquement » pour garder la main.' }
+    ]
+  },
+  {
     version: '0.48.38',
     date: '2026-11-05',
     title: 'Conditions reprises de la fiche',
