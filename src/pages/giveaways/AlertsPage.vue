@@ -9,14 +9,14 @@ import { useSnapshot } from '../../composables/useSnapshot'
 import { useOpenExternal } from '../../utils/external'
 import { useWatchStream } from '../../utils/viewer'
 import { channelUrl, formatNumber, timeAgo } from '../../utils/format'
-import type { GiveawayKind, GiveawayView, ParticipationResult } from '../../types'
+import type { Gift, GiveawayKind, GiveawayView, ParticipationResult } from '../../types'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayConditions from '../../components/GiveawayConditions.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import ImportPastModal from '../../components/ImportPastModal.vue'
 import StreamerSelect from '../../components/StreamerSelect.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
-import { useGiftCatalog } from '../../composables/useGiftCatalog'
+import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, GIVEAWAY_KIND_ITEMS, formatDrawAt, isLingoEcho } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
 import GiftThumb from '../../components/GiftThumb.vue'
@@ -310,8 +310,26 @@ function evidenceText(g: GiveawayView) {
 }
 
 const { byId: giftById, gifts: catalogGifts } = useGiftCatalog()
+// Cadeaux rattachés au giveaway puis, s'il est en cours, ceux repérés dans le titre du live,
+// la description, le message épinglé, le giveaway StreamElements actif et les réponses des
+// bots (comme sur la page Chaînes) ; giveaway passé : rien d'après le live actuel
+function giftsOf(g: GiveawayView): { gift: Gift, attached: boolean }[] {
+  const attached = g.giftIds.map(id => giftById.value.get(id)).filter((x): x is Gift => !!x)
+  let found: Gift[] = []
+  if (g.status !== 'closed') {
+    const live = view.value?.channels.find(c => c.login === g.channel)?.live
+    const i = live ? snapshot.value?.insights[g.channel] : undefined
+    const replies = (view.value?.botReplies[g.channel] ?? []).map(r => r.message)
+    const text = [live?.title, i?.description, i?.pinnedMessage, i?.streamelements?.title, i?.streamelements?.description, ...replies].filter(Boolean).join('\n')
+    found = suggestGifts(catalogGifts.value, text).filter(x => !attached.some(a => a.id === x.id))
+  }
+  return [...attached.map(gift => ({ gift, attached: true })), ...found.map(gift => ({ gift, attached: false }))]
+}
+// Calculés une fois par mise à jour pour les giveaways en cours, à la demande pour les passés
+const currentGifts = computed(() => new Map(current.value.map(g => [g.id, giftsOf(g)])))
+const giveawayGifts = (g: GiveawayView) => (g.status !== 'closed' && currentGifts.value.get(g.id)) || giftsOf(g)
 // Un cadeau favori parmi ceux du giveaway : ligne mise en avant (bordure violette), comme sur la page Chaînes
-const hasFavorite = (g: GiveawayView) => g.giftIds.some(id => giftById.value.get(id)?.favorite)
+const hasFavorite = (g: GiveawayView) => giveawayGifts(g).some(x => x.gift.favorite)
 const { openGift } = useGiftPreview()
 
 // Formulaire : null = nouveau giveaway
@@ -635,13 +653,14 @@ function share(g: GiveawayView) {
               </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
-                  <UTooltip v-for="id in g.giftIds" :key="id" :text="`${giftById.get(id)?.title ?? ''}${giftById.get(id)?.favorite ? ' (favori)' : ''}`">
-                    <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${giftById.get(id)?.title ?? 'le cadeau'} en grand`" @click="openGift(id)">
-                      <GiftThumb :src="giftById.get(id)?.image" class="size-8" />
-                      <SolidIcon v-if="giftById.get(id)?.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
+                  <UTooltip v-for="x in giveawayGifts(g)" :key="x.gift.id" :text="`${x.gift.title} (${x.attached ? 'rattaché au giveaway' : 'repéré dans le live'}${x.gift.favorite ? ', favori' : ''})`">
+                    <button type="button" class="relative cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Voir ${x.gift.title} en grand`" @click="openGift(x.gift.id)">
+                      <GiftThumb :src="x.gift.image" class="size-8" />
+                      <UIcon v-if="!x.attached" name="i-lucide-sparkles" class="absolute -top-1 -right-1 size-3 text-primary" />
+                      <SolidIcon v-if="x.gift.favorite" name="star" class="absolute -bottom-1 -right-1 size-3 text-warning" />
                     </button>
                   </UTooltip>
-                  <span v-if="g.giftIds.length === 0" class="text-muted">—</span>
+                  <span v-if="giveawayGifts(g).length === 0" class="text-muted">—</span>
                 </div>
               </td>
               <ConditionCells :target="g" :actions="cond" />

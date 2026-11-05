@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.28',
+    date: '2026-11-05',
+    title: 'Cadeaux repérés sur les giveaways en cours',
+    changes: [
+      { kind: 'improved', text: 'Giveaways en cours, colonne Cadeaux : en plus des cadeaux rattachés, ceux repérés dans le titre du live, la description, le message épinglé, le giveaway StreamElements et les réponses des bots s\'affichent (marqués d\'une petite étincelle), comme sur la page Chaînes. Un cadeau favori repéré met aussi la ligne en avant.' }
+    ]
+  },
+  {
     version: '0.48.27',
     date: '2026-11-05',
     title: 'Icône pour les cadeaux sans image',
