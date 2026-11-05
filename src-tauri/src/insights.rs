@@ -42,16 +42,9 @@ pub struct InsightsState {
     view: HashMap<String, ChannelInsight>,
     /// Live relu : identifiant de diffusion et moment du relevé
     checked: HashMap<String, (String, Instant)>,
-    /// Identifiant StreamElements par chaîne (None : pas de StreamElements)
-    se_ids: HashMap<String, Option<String>>,
 }
 
 impl InsightsState {
-    /// Pseudo StreamElements de la chaîne changé : identifiant à retrouver
-    pub fn forget_se(&mut self, login: &str) {
-        self.se_ids.remove(login);
-    }
-
     pub fn view(&self) -> HashMap<String, ChannelInsight> {
         self.view.clone()
     }
@@ -114,20 +107,13 @@ async fn refresh(app: &Arc<App>) {
             }
             Err(e) => tracing::debug!("analyse de {login} : profil illisible : {e}"),
         }
-        let known = app.insights.lock().unwrap().se_ids.get(&login).cloned();
-        let se_id = match known {
-            Some(id) => id,
-            None => match crate::streamelements::channel_id(&app.http, &login).await {
-                Ok(id) => {
-                    app.insights.lock().unwrap().se_ids.insert(login.clone(), id.clone());
-                    id
-                }
-                // Identifiant inconnu (erreur) : giveaway précédent gardé, recherche refaite au passage suivant
-                Err(_) => {
-                    finish(app, &login, &live, insight);
-                    continue;
-                }
-            },
+        let se_id = match crate::streamelements::channel_id_cached(app, &login).await {
+            Ok(id) => id,
+            // Identifiant inconnu (erreur) : giveaway précédent gardé, recherche refaite au passage suivant
+            Err(_) => {
+                finish(app, &login, &live, insight);
+                continue;
+            }
         };
         match se_id {
             None => insight.streamelements = None,

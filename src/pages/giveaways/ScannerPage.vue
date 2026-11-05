@@ -8,7 +8,7 @@ import { useOpenExternal } from '../../utils/external'
 import { useWatchStream } from '../../utils/viewer'
 import { boxArt, formatNumber, timeAgo } from '../../utils/format'
 import { LANGUAGES } from '../../utils/languages'
-import { suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
+import { FAVORITE_ROW, hasFavoriteGift, suggestGifts, useGiftCatalog } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import type { Gift, ScanMatch } from '../../types'
 import GiftBadge from '../../components/GiftBadge.vue'
@@ -189,22 +189,42 @@ async function ignore(m: ScanMatch, value: boolean) {
   }
 }
 
-// Titre découpé pour surligner les mots-clés trouvés (début de mot, sans tenir compte de la casse)
+// Titre découpé pour surligner les mots-clés trouvés, avec la règle du cœur : début de mot, sans
+// tenir compte des majuscules ni des accents, mots d'un mot-clé séparés par n'importe quels
+// signes (« free key » surligne « FREE-KEYS », « cle » surligne « CLÉ »). Calculé une fois par
+// mise à jour pour chaque stream
+const fold = (t: string) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
 function titleParts(m: ScanMatch): { text: string, hit: boolean }[] {
-  const keys = m.keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).filter(Boolean)
+  const keys = m.keywords
+    .map(k => fold(k).trim().split(/[^\p{L}\p{N}]+/u).filter(Boolean).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^\\p{L}\\p{N}]+'))
+    .filter(Boolean)
   if (!keys.length) return [{ text: m.title, hit: false }]
-  const re = new RegExp(`(?<![\\p{L}\\p{N}])(${keys.join('|')})[\\p{L}\\p{N}]*`, 'giu')
+  // Titre replié, et pour chaque position du titre replié celle du titre d'origine
+  let folded = ''
+  const origin: number[] = []
+  let at = 0
+  for (const ch of m.title) {
+    const f = fold(ch)
+    for (let k = 0; k < f.length; k++) origin.push(at)
+    folded += f
+    at += ch.length
+  }
+  origin.push(m.title.length)
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])(${keys.join('|')})[\\p{L}\\p{N}]*`, 'gu')
   const parts: { text: string, hit: boolean }[] = []
   let last = 0
-  for (const match of m.title.matchAll(re)) {
-    const i = match.index ?? 0
+  for (const match of folded.matchAll(re)) {
+    const i = origin[match.index ?? 0]!
+    const j = origin[(match.index ?? 0) + match[0].length]!
     if (i > last) parts.push({ text: m.title.slice(last, i), hit: false })
-    parts.push({ text: match[0], hit: true })
-    last = i + match[0].length
+    parts.push({ text: m.title.slice(i, j), hit: true })
+    last = j
   }
   if (last < m.title.length) parts.push({ text: m.title.slice(last), hit: false })
   return parts
 }
+const partsByMatch = computed(() => new Map((scanner.value?.matches ?? []).map(m => [m, titleParts(m)])))
+const titleOf = (m: ScanMatch) => partsByMatch.value.get(m) ?? titleParts(m)
 
 function liveFor(iso: string | null) {
   if (!iso) return '—'
@@ -350,7 +370,7 @@ function liveFor(iso: string | null) {
               :id="`scan-${m.login}`"
               :key="m.login"
               class="border-t border-default transition-colors duration-700"
-              :class="[m.ignored ? 'opacity-50' : '', highlighted === m.login ? 'bg-primary/15 outline-2 outline-primary -outline-offset-2' : '']"
+              :class="[m.ignored ? 'opacity-50' : '', highlighted === m.login ? 'bg-primary/15 outline-2 outline-primary -outline-offset-2' : hasFavoriteGift(giftsOf(m)) ? FAVORITE_ROW : '']"
             >
               <td class="px-2 py-2">
                 <UButton icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${m.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(m.login)" />
@@ -362,7 +382,7 @@ function liveFor(iso: string | null) {
                 <span class="inline-flex items-center gap-1.5"><img :src="boxArt(null, m.gameId)" alt="" class="w-4 h-5 rounded-sm object-cover">{{ m.gameName }}</span>
               </td>
               <td class="px-3 py-2 min-w-[300px]">
-                <template v-for="(p, i) in titleParts(m)" :key="i"><mark v-if="p.hit" class="bg-primary/20 text-primary rounded px-0.5">{{ p.text }}</mark><template v-else>{{ p.text }}</template></template>
+                <template v-for="(p, i) in titleOf(m)" :key="i"><mark v-if="p.hit" class="bg-primary/20 text-primary rounded px-0.5">{{ p.text }}</mark><template v-else>{{ p.text }}</template></template>
               </td>
               <td class="px-3 py-2 whitespace-nowrap">
                 <template v-if="m.giveawayKind">

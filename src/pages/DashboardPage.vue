@@ -7,13 +7,14 @@ const { accounts, events, channels } = useSnapshot()
 
 const earnedToday = computed(() => channels.value.reduce((sum, c) => sum + c.channel.earnedToday, 0))
 const seEarnedToday = computed(() => channels.value.reduce((sum, c) => sum + c.channel.seEarnedToday, 0))
-const watching = computed(() => channels.value.filter(c => c.channel.state === 'watching'))
-const live = computed(() => channels.value.filter(c => c.channel.live).length)
+// Chaînes distinctes (suivies par plusieurs comptes : comptées une fois) de la liste des points
+// de chaîne (une chaîne seulement sur la page StreamElements n'est jamais regardée)
+const pointChannels = computed(() => channels.value.filter(c => c.channel.inPoints))
+const watching = computed(() => new Set(pointChannels.value.filter(c => c.channel.state === 'watching').map(c => c.channel.login)))
+const live = computed(() => new Set(pointChannels.value.filter(c => c.channel.live).map(c => c.channel.login)).size)
 const attention = computed(() => accounts.value.filter(a => a.status === 'expired' || a.status === 'error').length)
-const bonusesToday = computed(() => {
-  const today = new Date().toDateString()
-  return events.value.filter(e => e.kind === 'bonus' && new Date(e.at).toDateString() === today).length
-})
+// Comptés par le cœur depuis les gains enregistrés (le fil d'événements est limité à 300)
+const bonusesToday = computed(() => channels.value.reduce((sum, c) => sum + c.channel.bonusesToday, 0))
 </script>
 
 <template>
@@ -31,7 +32,7 @@ const bonusesToday = computed(() => {
         <div class="text-sm text-muted">points StreamElements gagnés aujourd'hui</div>
       </UCard>
       <UCard>
-        <div class="text-2xl font-semibold">{{ watching.length }} / {{ live }}</div>
+        <div class="text-2xl font-semibold">{{ watching.size }} / {{ live }}</div>
         <div class="text-sm text-muted">chaînes regardées / en live</div>
       </UCard>
       <UCard>

@@ -104,8 +104,6 @@ pub struct ScannerState {
     alerted: HashSet<(String, Option<String>)>,
     last_scan: Option<Instant>,
     profiles: ProfileCache,
-    /// Identifiant StreamElements par chaîne (None : la chaîne n'utilise pas StreamElements)
-    se_ids: HashMap<String, Option<String>>,
     /// Streams de toutes les catégories au dernier relevé : un changement de filtre les
     /// trie à nouveau sans tout relire
     streams: Vec<CategoryStream>,
@@ -116,11 +114,6 @@ pub struct ScannerState {
 }
 
 impl ScannerState {
-    /// Pseudo StreamElements de la chaîne changé : identifiant à retrouver
-    pub fn forget_se(&mut self, login: &str) {
-        self.se_ids.remove(login);
-    }
-
     pub fn view(&self) -> ScannerView {
         self.view.clone()
     }
@@ -128,19 +121,7 @@ impl ScannerState {
 
 /// Titre sans accents ni majuscules, découpé en mots
 fn words(text: &str) -> Vec<String> {
-    let folded: String = text
-        .to_lowercase()
-        .chars()
-        .map(|c| match c {
-            'à' | 'â' | 'ä' | 'á' => 'a',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'î' | 'ï' | 'í' => 'i',
-            'ô' | 'ö' | 'ó' => 'o',
-            'ù' | 'û' | 'ü' | 'ú' => 'u',
-            'ç' => 'c',
-            c => c,
-        })
-        .collect();
+    let folded = crate::db::fold(text);
     folded.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_owned).collect()
 }
 
@@ -254,7 +235,6 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
 
     // Type du giveaway : giveaway ouvert (ou en pause) connu de la chaîne, sinon StreamElements actif
     let open = app.db.giveaways(200).unwrap_or_default();
-    let mut se_ids = app.scanner.lock().unwrap().se_ids.clone();
     // Chaîne → (type, commande, texte du giveaway StreamElements : titre et description)
     let mut kinds: HashMap<String, (String, Option<String>, Option<String>)> = HashMap::new();
     for (s, _) in &found {
@@ -265,16 +245,7 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
     let to_check: Vec<String> =
         found.iter().map(|(s, _)| s.login.clone()).filter(|l| !kinds.contains_key(l)).take(MAX_SE_CHECKS).collect();
     for login in to_check {
-        let se_id = match se_ids.get(&login) {
-            Some(id) => id.clone(),
-            None => match crate::streamelements::channel_id(&app.http, &login).await {
-                Ok(id) => {
-                    se_ids.insert(login.clone(), id.clone());
-                    id
-                }
-                Err(_) => continue,
-            },
-        };
+        let Ok(se_id) = crate::streamelements::channel_id_cached(app, &login).await else { continue };
         let Some(se_id) = se_id else { continue };
         if let Ok(Some(g)) = crate::streamelements::active_giveaway_cached(app, &se_id, crate::lives::SE_SHARED_MAX_AGE).await {
             let text = format!("{}\n{}", g.title, g.description);
@@ -332,7 +303,6 @@ async fn scan_once(app: &Arc<App>, notify: bool, fetch: bool) {
             })
             .collect();
         state.profiles = profiles;
-        state.se_ids = se_ids;
         for m in &matches {
             let key = (m.stream.login.clone(), m.stream.started_at.clone());
             if !m.monitored && !m.ignored && !state.alerted.contains(&key) {

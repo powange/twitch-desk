@@ -16,7 +16,7 @@ import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import ImportPastModal from '../../components/ImportPastModal.vue'
 import StreamerSelect from '../../components/StreamerSelect.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
-import { giftHits, useGiftCatalog } from '../../composables/useGiftCatalog'
+import { FAVORITE_ROW, detectionText, giftHits, hasFavoriteGift, useGiftCatalog } from '../../composables/useGiftCatalog'
 import type { GiftHit } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND, GIVEAWAY_KIND_ITEMS, formatDrawAt, isLingoEcho } from '../../utils/giveaways'
 import SolidIcon from '../../components/SolidIcon.vue'
@@ -319,14 +319,7 @@ const { byId: giftById, gifts: catalogGifts } = useGiftCatalog()
 // la description, le message épinglé, le giveaway StreamElements actif et les réponses des
 // bots (comme sur la page Chaînes) ; giveaway passé : rien d'après le live actuel
 function giftsOf(g: GiveawayView): GiftHit[] {
-  let text = ''
-  if (g.status !== 'closed') {
-    const live = liveOf(g.channel)
-    const i = live ? snapshot.value?.insights[g.channel] : undefined
-    const replies = (view.value?.botReplies[g.channel] ?? []).map(r => r.message)
-    text = [live?.title, i?.description, i?.pinnedMessage, i?.streamelements?.title, i?.streamelements?.description, ...replies].filter(Boolean).join('\n')
-  }
-  return giftHits(giftById.value, catalogGifts.value, g.giftIds, text)
+  return giftHits(giftById.value, catalogGifts.value, g.giftIds, g.status !== 'closed' ? detectionText(snapshot.value, g.channel) : '')
 }
 // Calculés une fois par mise à jour pour tous les giveaways affichés (en cours, récents et page
 // des passés), et la mise en avant avec
@@ -337,7 +330,7 @@ const giftsById = computed(() => {
 })
 const giveawayGifts = (g: GiveawayView) => giftsById.value.get(g.id) ?? giftsOf(g)
 // Un cadeau favori parmi ceux du giveaway : ligne mise en avant (bordure violette), comme sur la page Chaînes
-const favoriteIds = computed(() => new Set([...giftsById.value].filter(([, hits]) => hits.some(x => x.gift.favorite)).map(([id]) => id)))
+const favoriteIds = computed(() => new Set([...giftsById.value].filter(([, hits]) => hasFavoriteGift(hits)).map(([id]) => id)))
 const hasFavorite = (g: GiveawayView) => favoriteIds.value.has(g.id)
 
 // Formulaire : null = nouveau giveaway
@@ -611,7 +604,7 @@ function share(g: GiveawayView) {
               v-for="g in group.list"
               :key="g.id"
               class="border-t border-default"
-              :class="[g.winnerOurs ? 'bg-success/10' : hasFavorite(g) ? 'bg-primary/5' : '', hasFavorite(g) ? 'shadow-[inset_3px_0_0_var(--ui-primary)]' : '', g.hidden && g.status !== 'closed' ? 'opacity-50' : '']"
+              :class="[hasFavorite(g) ? FAVORITE_ROW : '', g.winnerOurs ? 'bg-success/10!' : '', g.hidden && g.status !== 'closed' ? 'opacity-50' : '']"
             >
               <td class="px-3 py-2 whitespace-nowrap text-muted">{{ timeAgo(g.detectedAt, now) }}</td>
               <td class="px-2 py-2">
@@ -661,7 +654,7 @@ function share(g: GiveawayView) {
               </td>
               <td class="px-3 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
-                  <GiftBadge v-for="x in giveawayGifts(g)" :key="x.gift.id" :gift="x.gift" :attached="x.attached" found-label="repéré dans le live" />
+                  <GiftBadge v-for="x in giveawayGifts(g)" :key="x.gift.id" :gift="x.gift" :attached="x.attached" />
                   <span v-if="giveawayGifts(g).length === 0" class="text-muted">—</span>
                 </div>
               </td>

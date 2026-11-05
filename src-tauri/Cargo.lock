@@ -5339,7 +5339,7 @@ dependencies = [
 
 [[package]]
 name = "twitch-desk"
-version = "0.48.32"
+version = "0.48.33"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -5368,6 +5368,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "unicode-normalization",
  "url",
  "uuid",
  "webview2-com",
@@ -5410,6 +5411,15 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

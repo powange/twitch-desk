@@ -143,6 +143,8 @@ export interface DropProgress {
   requiredMinutes: number
   currentMinutes: number
   claimed: boolean
+  // Réclamable selon le cœur du PC (absent : PC plus ancien)
+  claimable?: boolean
 }
 
 export interface DropCampaign {

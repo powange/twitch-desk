@@ -9,7 +9,7 @@ import { useGiftPreview } from '../composables/useGiftPreview'
 // repéré (`attached` à false ; absent : pas de notion de rattachement), aperçu en grand au clic
 const props = withDefaults(defineProps<{ gift: Gift, attached?: boolean, foundLabel?: string, lazy?: boolean }>(), {
   attached: undefined,
-  foundLabel: 'repéré',
+  foundLabel: 'repéré dans le live',
   lazy: false
 })
 const { openGift } = useGiftPreview()

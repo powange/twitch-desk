@@ -1,6 +1,6 @@
 [package]
 name = "twitch-desk"
-version = "0.48.32"
+version = "0.48.33"
 description = "Giveaways, points de chaîne et drops Twitch, sur plusieurs comptes"
 authors = ["powange"]
 license = "MIT"
@@ -44,6 +44,8 @@ tracing-appender = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.9"
 url = "2"
+# Accents retirés comme l’interface (décomposition Unicode)
+unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4"] }
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 

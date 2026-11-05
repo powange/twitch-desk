@@ -210,6 +210,10 @@ pub struct Lives {
     pub se_loyalty: SharedCache<Option<Loyalty>>,
     /// Identifiant StreamElements → giveaway en cours
     pub se_giveaway: SharedCache<Option<Giveaway>>,
+    /// login → identifiant StreamElements (None : pas de StreamElements), revérifié chaque jour
+    /// et oublié quand le pseudo StreamElements de la fiche change ; partagé par les analyses,
+    /// le scanner, le formulaire et la recherche des giveaways en cours
+    pub se_ids: SharedCache<Option<String>>,
     /// login (minuscules) → photo de profil, relevée avec le statut live
     avatars: RwLock<HashMap<String, String>>,
 }

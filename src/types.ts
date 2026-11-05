@@ -20,6 +20,8 @@ export interface ChannelView {
   autoClaim: boolean
   balance: number | null
   earnedToday: number
+  // Bonus récupérés aujourd'hui
+  bonusesToday: number
   live: StreamInfo | null
   state: ChannelState
   error: string | null
@@ -267,6 +269,8 @@ export interface TimedDrop {
   requiredMinutes: number
   currentMinutes: number
   claimed: boolean
+  // Réclamable selon le cœur (temps atteint, drop commencé) : il sera réclamé tout seul
+  claimable: boolean
   startsAt: string
   endsAt: string
   rewards: DropReward[]

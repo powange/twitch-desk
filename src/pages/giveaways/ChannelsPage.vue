@@ -10,7 +10,7 @@ import { boxArt, formatNumber } from '../../utils/format'
 import type { Gift, GiveawayChannelView, GiveawayView } from '../../types'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
 import ChatLogModal from '../../components/ChatLogModal.vue'
-import { giftHits, useGiftCatalog, useKnownCategories } from '../../composables/useGiftCatalog'
+import { FAVORITE_ROW, detectionText, giftHits, hasFavoriteGift, useGiftCatalog, useKnownCategories } from '../../composables/useGiftCatalog'
 import type { GiftHit } from '../../composables/useGiftCatalog'
 import { GIVEAWAY_KIND } from '../../utils/giveaways'
 import GiftThumb from '../../components/GiftThumb.vue'
@@ -61,10 +61,7 @@ const currentKind = (c: GiveawayChannelView) => kindByLogin.value.get(c.login) ?
 // Cadeaux du giveaway ouvert, puis ceux repérés dans le titre du live, la description,
 // le message épinglé et le giveaway StreamElements actif
 function giftsOf(c: GiveawayChannelView): GiftHit[] {
-  const i = insightOf(c)
-  const replies = (view.value?.botReplies[c.login] ?? []).map(r => r.message)
-  const text = c.live ? [c.live.title, i?.description, i?.pinnedMessage, i?.streamelements?.title, i?.streamelements?.description, ...replies].filter(Boolean).join('\n') : ''
-  return giftHits(byId.value, gifts.value, openGiveaway(c)?.giftIds ?? [], text)
+  return giftHits(byId.value, gifts.value, openGiveaway(c)?.giftIds ?? [], detectionText(snapshot.value, c.login))
 }
 // Cadeaux de chaque chaîne, calculés une fois par mise à jour
 const giftsByLogin = computed(() => new Map((view.value?.channels ?? []).map(c => [c.login, giftsOf(c)])))
@@ -338,7 +335,7 @@ async function confirmRemove() {
             v-for="c in channels"
             :key="c.id"
             class="border-t border-default"
-            :class="[c.live && !c.inCategory ? 'opacity-70' : '', interesting(c) ? 'bg-primary/5 shadow-[inset_3px_0_0_var(--ui-primary)]' : '']"
+            :class="[c.live && !c.inCategory ? 'opacity-70' : '', hasFavoriteGift(channelGifts(c)) ? FAVORITE_ROW : '']"
           >
             <td class="px-2 py-2">
               <UButton v-if="c.live" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${c.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(c.login)" />

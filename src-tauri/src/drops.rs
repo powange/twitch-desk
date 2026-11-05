@@ -57,8 +57,7 @@ pub struct Reward {
     pub image: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TimedDrop {
     pub id: String,
     pub name: String,
@@ -66,14 +65,31 @@ pub struct TimedDrop {
     pub current_minutes: i64,
     pub claimed: bool,
     /// Identifiant à envoyer pour réclamer le drop (présent une fois commencé)
-    #[serde(skip_serializing)]
     pub instance_id: Option<String>,
     pub starts_at: String,
     pub ends_at: String,
     pub rewards: Vec<Reward>,
     /// Drops à obtenir avant celui-ci
-    #[serde(skip_serializing)]
     pub preconditions: Vec<String>,
+}
+
+/// Envoyé à l'interface avec `claimable`, la règle du cœur (l'identifiant de réclamation, lui,
+/// reste ici) : « À réclamer » affiché exactement quand le drop sera réclamé
+impl Serialize for TimedDrop {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("TimedDrop", 9)?;
+        st.serialize_field("id", &self.id)?;
+        st.serialize_field("name", &self.name)?;
+        st.serialize_field("requiredMinutes", &self.required_minutes)?;
+        st.serialize_field("currentMinutes", &self.current_minutes)?;
+        st.serialize_field("claimed", &self.claimed)?;
+        st.serialize_field("claimable", &self.claimable())?;
+        st.serialize_field("startsAt", &self.starts_at)?;
+        st.serialize_field("endsAt", &self.ends_at)?;
+        st.serialize_field("rewards", &self.rewards)?;
+        st.end()
+    }
 }
 
 impl TimedDrop {

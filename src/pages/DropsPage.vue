@@ -96,7 +96,7 @@ function categoryUrl(slug: string | null) {
 
 function dropState(campaign: DropCampaign, drop: TimedDrop): { label: string, color: 'success' | 'warning' | 'neutral' | 'info' | 'error' } {
   if (drop.claimed) return { label: 'Obtenu', color: 'success' }
-  if (drop.currentMinutes >= drop.requiredMinutes && drop.requiredMinutes > 0) {
+  if (drop.claimable) {
     return campaign.accountLinked ? { label: 'À réclamer', color: 'info' } : { label: 'Compte du jeu à lier', color: 'error' }
   }
   if (drop.currentMinutes > 0) return { label: 'En cours', color: 'warning' }

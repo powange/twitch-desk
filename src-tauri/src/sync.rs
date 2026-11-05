@@ -434,6 +434,10 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                 "SELECT gi.sync_id FROM giveaway_gifts gg JOIN gifts gi ON gi.id = gg.gift_id
                  WHERE gg.giveaway_id = ?1 AND gi.sync_id IS NOT NULL ORDER BY gi.sync_id",
             )?;
+            let mut removed = conn.prepare_cached(
+                "SELECT gi.sync_id FROM giveaway_gifts_rejected gr JOIN gifts gi ON gi.id = gr.gift_id
+                 WHERE gr.giveaway_id = ?1 AND gi.sync_id IS NOT NULL ORDER BY gi.sync_id",
+            )?;
             let rows: Vec<(i64, String, bool, Value, String, String)> = conn
                 .prepare_cached(&format!(
                     "SELECT id, sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance, drawn_at,
@@ -491,6 +495,12 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                     }
                     let list: Vec<String> = gifts.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
                     data["gifts"] = json!(list);
+                    // Cadeaux retirés à la main : champ ajouté seulement s'il y en a (empreinte
+                    // des autres inchangée)
+                    let gone: Vec<String> = removed.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+                    if !gone.is_empty() {
+                        data["giftsRemoved"] = json!(gone);
+                    }
                     // En pause : champ ajouté seulement là (empreinte des autres inchangée) ;
                     // une version plus ancienne n'y voit qu'un giveaway clos
                     if paused {
@@ -839,6 +849,10 @@ fn unresolved(conn: &Connection, collection: &str, data: &Value) -> rusqlite::Re
 }
 
 /// Applique un document reçu ; faux s'il a été ignoré (doublon gardé sous notre identifiant)
+/// Streamers dont le pseudo StreamElements a changé par la synchronisation : identifiant
+/// StreamElements oublié partout une fois les modifications enregistrées
+static SE_RENAMED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) -> rusqlite::Result<bool> {
     let Some(data) = data else {
         let sql = match collection {
@@ -911,7 +925,7 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                     None => None,
                 },
             };
-            let keywords = serde_json::to_string(&strings_of(data, "keywords")).expect("liste sérialisable");
+            let keywords = serde_json::to_string(&crate::db::clean_keywords(&title, &strings_of(data, "keywords"))).expect("liste sérialisable");
             let image = safe_image(str_of(data, "image"));
             let game_id = str_of(data, "gameId");
             let game_name = str_of(data, "gameName");
@@ -1006,10 +1020,22 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
             if data.get("gifts").is_none() {
                 return Ok(true);
             }
-            conn.execute("DELETE FROM giveaway_gifts WHERE giveaway_id = ?1", [giveaway])?;
+            // Fusion plutôt que remplacement : un cadeau rattaché ici (live vu par ce PC) reste ;
+            // ceux retirés à la main sur l'autre PC sont retirés ici aussi et plus remis, ceux
+            // retirés ici ne reviennent pas
+            for gift in strings_of(data, "giftsRemoved") {
+                if let Some(gift) = local_id(conn, "gifts", &gift)? {
+                    conn.execute("INSERT OR IGNORE INTO giveaway_gifts_rejected (giveaway_id, gift_id) VALUES (?1, ?2)", params![giveaway, gift])?;
+                    conn.execute("DELETE FROM giveaway_gifts WHERE giveaway_id = ?1 AND gift_id = ?2", params![giveaway, gift])?;
+                }
+            }
             for gift in strings_of(data, "gifts") {
                 if let Some(gift) = local_id(conn, "gifts", &gift)? {
-                    conn.execute("INSERT OR IGNORE INTO giveaway_gifts (giveaway_id, gift_id) VALUES (?1, ?2)", params![giveaway, gift])?;
+                    conn.execute(
+                        "INSERT OR IGNORE INTO giveaway_gifts (giveaway_id, gift_id) SELECT ?1, ?2
+                         WHERE NOT EXISTS (SELECT 1 FROM giveaway_gifts_rejected WHERE giveaway_id = ?1 AND gift_id = ?2)",
+                        params![giveaway, gift],
+                    )?;
                 }
             }
         }
@@ -1062,6 +1088,9 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                 )?;
                 if changed > 0 {
                     conn.execute("UPDATE channels SET se_channel_id = NULL WHERE login = ?1", [id])?;
+                    // Identifiant à oublier aussi par les comptes, les analyses et le scanner
+                    // (après l'enregistrement de la synchronisation)
+                    SE_RENAMED.lock().unwrap().push(id.to_owned());
                 }
             }
             if data.get("ignoredCommands").is_some() {
@@ -1330,6 +1359,9 @@ async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
     // Collections notées en entier : oubliées une fois tous les envois reçus
     clear_whole(&app.db.conn(), &whole).map_err(db_err)?;
 
+    for login in std::mem::take(&mut *SE_RENAMED.lock().unwrap()) {
+        crate::commands::refresh_se_names(app, &login);
+    }
     if !touched.is_empty() {
         app.giveaways.send(MonitorCmd::Reload);
     }
@@ -1727,7 +1759,7 @@ fn instance_state(view: &crate::giveaways::GiveawaysView, sync_ids: &HashMap<i64
             continue;
         }
         let info = match &c.live {
-            Some(s) => json!({ "live": true, "viewers": s.viewers, "category": s.game_name, "title": s.title }),
+            Some(s) => json!({ "live": true, "viewers": round_viewers(s.viewers), "category": s.game_name, "title": s.title }),
             None => json!({ "live": false }),
         };
         live.insert(login.to_owned(), info);
@@ -1880,6 +1912,7 @@ fn phone_drops(views: &[crate::app::AccountView]) -> Value {
                                 "requiredMinutes": t.required_minutes,
                                 "currentMinutes": t.current_minutes.min(t.required_minutes),
                                 "claimed": t.claimed,
+                                "claimable": t.claimable(),
                             })
                         }).collect::<Vec<_>>(),
                     })

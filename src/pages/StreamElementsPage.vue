@@ -10,7 +10,7 @@ import { useOpenExternal } from '../utils/external'
 import { useWatchStream } from '../utils/viewer'
 import { formatNumber } from '../utils/format'
 import type { ChannelView, GiveawayView } from '../types'
-import { giftHits, useGiftCatalog } from '../composables/useGiftCatalog'
+import { FAVORITE_ROW, detectionText, giftHits, hasFavoriteGift, useGiftCatalog } from '../composables/useGiftCatalog'
 import GiftBadge from '../components/GiftBadge.vue'
 import AccountPicker from '../components/AccountPicker.vue'
 import { useSelectedAccount } from '../composables/useSelectedAccount'
@@ -94,7 +94,9 @@ function knownGiveaway(channel: ChannelView): GiveawayView | null {
 // du giveaway StreamElements en cours (calculés une fois par mise à jour)
 const { byId: giftById, gifts: catalogGifts } = useGiftCatalog()
 const giftsByLogin = computed(() => new Map(channels.value.map((c) => {
-  const text = [c.seGiveaway?.title, c.seGiveaway?.description].filter(Boolean).join('\n')
+  // Texte habituel de la chaîne (si elle est surveillée pour les giveaways), plus le giveaway
+  // StreamElements relevé par les points (chaîne suivie seulement ici)
+  const text = [detectionText(snapshot.value, c.login), c.seGiveaway?.title, c.seGiveaway?.description].filter(Boolean).join('\n')
   return [c.login, giftHits(giftById.value, catalogGifts.value, known.value.get(c.login)?.giftIds ?? [], text)] as const
 })))
 const channelGifts = (c: ChannelView) => giftsByLogin.value.get(c.login) ?? []
@@ -326,7 +328,7 @@ function affordable(channel: ChannelView): number | null {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="channel in shown" :key="channel.id" class="border-t border-default" :class="channel.seGiveaway ? 'bg-primary/5' : ''">
+            <tr v-for="channel in shown" :key="channel.id" class="border-t border-default" :class="hasFavoriteGift(channelGifts(channel)) ? FAVORITE_ROW : channel.seGiveaway ? 'bg-primary/5' : ''">
               <td class="px-1.5 py-2">
                 <UButton v-if="channel.live" icon="i-lucide-tv" size="xs" color="neutral" variant="ghost" :aria-label="`Regarder ${channel.login}`" title="Regarder (fenêtre multi-stream)" @click="watchStream(channel.login)" />
               </td>
@@ -418,7 +420,7 @@ function affordable(channel: ChannelView): number | null {
               </td>
               <td class="px-1.5 py-2">
                 <div class="flex flex-wrap items-center gap-1 min-w-24 max-w-64">
-                  <GiftBadge v-for="x in channelGifts(channel)" :key="x.gift.id" :gift="x.gift" :attached="x.attached" found-label="repéré dans le titre ou la description" lazy />
+                  <GiftBadge v-for="x in channelGifts(channel)" :key="x.gift.id" :gift="x.gift" :attached="x.attached" lazy />
                   <span v-if="channelGifts(channel).length === 0" class="text-muted">—</span>
                 </div>
               </td>

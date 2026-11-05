@@ -1,7 +1,7 @@
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSnapshot } from './useSnapshot'
-import type { Gift, GiftCatalog } from '../types'
+import type { Gift, GiftCatalog, Snapshot } from '../types'
 
 // Catalogue de cadeaux, partagé par les pages (chargé à la demande : les images
 // ne passent pas par l'état envoyé 4 fois par seconde)
@@ -47,6 +47,21 @@ export function useKnownCategories() {
 }
 
 export interface GiftHit { gift: Gift, attached: boolean }
+
+// Règle commune de mise en avant (bordure violette) : un cadeau favori rattaché ou repéré
+export const FAVORITE_ROW = 'bg-primary/5 shadow-[inset_3px_0_0_var(--ui-primary)]'
+export const hasFavoriteGift = (gifts: readonly (Gift | GiftHit)[]) => gifts.some(x => ('gift' in x ? x.gift : x).favorite)
+
+// Texte où chercher les cadeaux d'une chaîne surveillée, le même que celui du cœur pour le
+// rattachement automatique : en live seulement, titre du live, description, message épinglé,
+// titre et description du giveaway StreamElements en cours, réponses des bots
+export function detectionText(snap: Snapshot | null | undefined, login: string): string {
+  const live = snap?.giveaways.channels.find(c => c.login === login)?.live
+  if (!live) return ''
+  const i = snap?.insights[login]
+  const replies = (snap?.giveaways.botReplies[login] ?? []).map(r => r.message)
+  return [live.title, i?.description, i?.pinnedMessage, i?.streamelements?.title, i?.streamelements?.description, ...replies].filter(Boolean).join('\n')
+}
 
 // Colonne Cadeaux : cadeaux rattachés (dans leur ordre) puis ceux repérés dans le texte, sans
 // doublon ; même calcul pour toutes les pages

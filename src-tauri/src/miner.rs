@@ -12,7 +12,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::TimeZone;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
@@ -115,6 +114,7 @@ struct ChannelRt {
     cooldown_until: Option<Instant>,
     error: Option<String>,
     earned_today: i64,
+    bonuses_today: i64,
     last_bonus_at: Option<String>,
     in_chat: bool,
     se_polled: Option<Instant>,
@@ -128,9 +128,23 @@ struct ChannelRt {
     se_auto_buy_at: Option<Instant>,
     /// Giveaway StreamElements réservé aux abonnés dont l'achat a été refusé : plus d'essai
     se_auto_buy_stopped: Option<String>,
+    /// Dernière lecture du giveaway en cours en échec : affiché tel quel, mais pas d'achat
+    /// automatique sur une information peut-être périmée
+    se_giveaway_stale: bool,
     se_my_tickets: Option<i64>,
 }
 
+
+/// Début de la journée locale (minuit), en UTC au format RFC 3339 : gains et bonus du jour
+fn today_start() -> String {
+    use chrono::TimeZone;
+    let midnight = chrono::Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
+    chrono::Local
+        .from_local_datetime(&midnight)
+        .earliest()
+        .map(|d| d.with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_default()
+}
 impl ChannelRt {
     fn new(ch: Channel) -> Self {
         Self {
@@ -145,6 +159,7 @@ impl ChannelRt {
             cooldown_until: None,
             error: None,
             earned_today: 0,
+            bonuses_today: 0,
             last_bonus_at: None,
             in_chat: false,
             se_polled: None,
@@ -156,6 +171,7 @@ impl ChannelRt {
             se_giveaway_at: None,
             se_auto_buy_at: None,
             se_auto_buy_stopped: None,
+            se_giveaway_stale: false,
             se_my_tickets: None,
         }
     }
@@ -533,6 +549,7 @@ impl Miner {
         let mut old: Vec<ChannelRt> = std::mem::take(&mut self.channels);
         let gains = self.today_gains(TWITCH);
         let se_gains = self.today_gains(STREAMELEMENTS);
+        let claims = self.app.db.claims_since(self.account.id, &today_start()).unwrap_or_default();
         for ch in fresh {
             let rt = match old.iter().position(|o| o.ch.id == ch.id) {
                 Some(i) => {
@@ -544,6 +561,7 @@ impl Miner {
                     let mut rt = ChannelRt::new(ch);
                     rt.earned_today = gains.iter().find(|(l, _)| *l == rt.ch.login).map_or(0, |(_, g)| *g);
                     rt.se_earned_today = se_gains.iter().find(|(l, _)| *l == rt.ch.login).map_or(0, |(_, g)| *g);
+                    rt.bonuses_today = claims.iter().find(|(l, _)| *l == rt.ch.login).map_or(0, |(_, n)| *n);
                     rt
                 }
             };
@@ -552,13 +570,7 @@ impl Miner {
     }
 
     fn today_gains(&self, currency: &str) -> Vec<(String, i64)> {
-        let midnight = chrono::Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
-        let since = chrono::Local
-            .from_local_datetime(&midnight)
-            .earliest()
-            .map(|d| d.with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-            .unwrap_or_default();
-        self.app.db.gains_since(self.account.id, currency, &since).unwrap_or_default()
+        self.app.db.gains_since(self.account.id, currency, &today_start()).unwrap_or_default()
     }
 
     /// Relance PubSub seul : la présence dans le chat n'est pas touchée
@@ -771,9 +783,11 @@ impl Miner {
             Ok(g) => g,
             Err(e) => {
                 tracing::warn!("StreamElements ({login}) : {e}");
+                self.channels[i].se_giveaway_stale = true;
                 return true;
             }
         };
+        self.channels[i].se_giveaway_stale = false;
         let previous = self.channels[i].se_giveaway.as_ref().map(|g| g.id.clone());
         let current = giveaway.as_ref().map(|g| g.id.clone());
         if previous != current {
@@ -827,9 +841,11 @@ impl Miner {
             c.ch.se_auto_buy
                 && Self::se_ready(c).is_some()
                 && c.se_auto_buy_at.is_none_or(|t| now >= t)
+                && !c.se_giveaway_stale
                 && c.se_giveaway.as_ref().is_some_and(|g| auto_buy_count(g.cost, c.ch.se_points, auto_buy_max(g.max_tickets, c.ch.se_auto_buy_max), c.se_my_tickets) > 0)
-                // Giveaway masqué sur ce PC, ou réservé aux abonnés et déjà refusé : pas d'achat automatique
-                && !c.se_giveaway.as_ref().is_some_and(|g| c.se_auto_buy_stopped.as_deref() == Some(g.id.as_str()) || self.app.db.se_giveaway_hidden(&g.id))
+                // Giveaway masqué ou clos à la main sur ce PC, ou réservé aux abonnés et déjà
+                // refusé : pas d'achat automatique
+                && !c.se_giveaway.as_ref().is_some_and(|g| c.se_auto_buy_stopped.as_deref() == Some(g.id.as_str()) || self.app.db.se_giveaway_no_auto_buy(&g.id))
         }) else {
             return;
         };
@@ -950,6 +966,7 @@ impl Miner {
             for ch in &mut self.channels {
                 ch.earned_today = 0;
                 ch.se_earned_today = 0;
+                ch.bonuses_today = 0;
             }
         }
 
@@ -1210,6 +1227,9 @@ impl Miner {
                 }
                 let login = self.channels[i].ch.login.clone();
                 self.channels[i].earned_today += gain;
+                if reason == "CLAIM" {
+                    self.channels[i].bonuses_today += 1;
+                }
                 let _ = self.app.db.record_gain(self.account.id, &login, TWITCH, gain, &reason);
                 // Les gains de visionnage (toutes les 5 min) gonfleraient le fil pour rien
                 if reason != "WATCH" {
@@ -1287,6 +1307,7 @@ impl Miner {
                 auto_claim: c.ch.auto_claim,
                 balance: c.ch.balance,
                 earned_today: c.earned_today,
+                bonuses_today: c.bonuses_today,
                 live: c.live.clone(),
                 in_points: c.ch.in_points,
                 in_se: c.ch.in_se,

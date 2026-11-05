@@ -731,7 +731,7 @@ impl Monitor {
             for channel in due {
                 let se_id = match known.get(&channel) {
                     Some(id) => id.clone(),
-                    None => match crate::streamelements::channel_id(&app.http, &channel).await {
+                    None => match crate::streamelements::channel_id_cached(&app, &channel).await {
                         Ok(id) => {
                             channel_ids.push((channel.clone(), id.clone()));
                             id
@@ -762,23 +762,63 @@ impl Monitor {
         self.se_active_busy = None;
         self.se_channels.extend(report.channel_ids);
         for (channel, g) in report.results {
-            if !self.monitored(&channel) || !self.detection_active(&channel) {
+            if !self.monitored(&channel) {
                 continue;
             }
             let url = format!("https://streamelements.com/{}/giveaway/{}", crate::streamelements::page_name(&channel), g.id);
-            // Déjà connu par son identifiant StreamElements, quel que soit son statut ou la forme
-            // de son lien
-            if !matches!(self.app.db.giveaway_by_se_id(&channel, &g.id), Ok(None)) {
-                continue;
-            }
-            self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway StreamElements en cours trouvé sur {channel}"));
-            if let Some(id) = self.create_se_giveaway(&channel, &url, g.command.as_deref()) {
-                if let Some(max) = g.max_tickets {
-                    let _ = self.app.db.set_ticket_max_if_unknown(id, max);
-                }
-                self.publish();
-            }
+            self.se_giveaway_seen(&channel, &url, g.command.as_deref(), g.max_tickets, "toujours en cours");
         }
+    }
+
+    /// Giveaway StreamElements vu sur une chaîne (lien posté par un bot, ou giveaway en cours sur
+    /// sa page) : même règle par les deux chemins. Reconnu par son identifiant StreamElements
+    /// (quelle que soit la forme du lien) : suivi, il est complété (commande, maximum) ; clos
+    /// sans gagnant automatiquement, il est rouvert ; tiré ou clos à la main, rien. Inconnu :
+    /// créé, seulement dans une catégorie suivie
+    fn se_giveaway_seen(&mut self, channel: &str, url: &str, command: Option<&str>, max: Option<i64>, why: &str) {
+        if !self.detection_active(channel) {
+            return;
+        }
+        let known = match se_giveaway_id(url) {
+            Some(id) => self.app.db.giveaway_by_se_id(channel, id),
+            None => self.app.db.giveaway_by_url(channel, url),
+        };
+        let (id, fresh) = match known {
+            Ok(Some(g)) if g.status != "closed" => (g.id, false),
+            Ok(Some(g)) if g.winner.is_some() || self.app.db.closed_by_user(g.id) => return,
+            Ok(Some(g)) => {
+                if let Err(e) = self.app.db.reopen_giveaway(g.id, &now_rfc3339()) {
+                    tracing::error!("giveaway StreamElements non rouvert : {e}");
+                    return;
+                }
+                self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway StreamElements sur {channel} rouvert ({why})"));
+                (g.id, true)
+            }
+            Ok(None) => match self.create_se_giveaway(channel, url, command) {
+                Some(id) => (id, true),
+                None => return,
+            },
+            Err(e) => {
+                tracing::error!("giveaway StreamElements : {e}");
+                return;
+            }
+        };
+        // Vue republiée seulement si quelque chose a changé (relevé toutes les 3 min)
+        if self.complete_se_giveaway(id, command, max) || fresh {
+            self.publish();
+        }
+    }
+
+    /// Commande et maximum de tickets d'un giveaway StreamElements complétés s'ils sont inconnus
+    fn complete_se_giveaway(&self, id: i64, command: Option<&str>, max: Option<i64>) -> bool {
+        let mut changed = false;
+        if let Some(c) = command.filter(|c| !c.is_empty()) {
+            changed |= self.app.db.fill_command_if_unknown(id, c).unwrap_or(false);
+        }
+        if let Some(m) = max {
+            changed |= self.app.db.set_ticket_max_if_unknown(id, m).unwrap_or(false);
+        }
+        changed
     }
 
     /// Giveaway StreamElements tiré (un gagnant, même s'il n'est pas encore terminé) : gagnant noté
@@ -815,8 +855,13 @@ impl Monitor {
             if g.status == "closed" {
                 continue;
             }
-            // Titre et description du giveaway StreamElements : cadeaux du catalogue repérés dedans
+            // Titre et description du giveaway StreamElements : cadeaux du catalogue repérés dedans ;
+            // commande et maximum complétés (giveaway créé depuis le lien du bot)
             self.gifts_from_se_giveaway(&g, &format!("{}\n{}", outcome.title, outcome.description));
+            let command = crate::streamelements::extract_command(&outcome.description);
+            if self.complete_se_giveaway(g.id, command.as_deref(), outcome.max_tickets) {
+                self.publish();
+            }
             // Tous les gagnants tirés, dans l'ordre (déjà notés : ignorés)
             if !outcome.winners.is_empty() {
                 drawn_channels.insert(g.channel.clone());
@@ -1030,7 +1075,7 @@ impl Monitor {
                 self.publish();
             }
             MonitorCmd::Close(id) => {
-                let _ = self.app.db.close_giveaway(id);
+                let _ = self.app.db.close_giveaway_by_user(id);
                 self.publish();
             }
             MonitorCmd::Refresh => {
@@ -1185,11 +1230,22 @@ impl Monitor {
         for g in open {
             let Some(info) = self.live.get(&g.channel).and_then(|l| l.info.as_ref()) else { continue };
             let insight = self.app.insights.lock().unwrap().get(&g.channel).cloned().unwrap_or_default();
-            let text = [Some(info.title.as_str()), insight.description.as_deref(), insight.pinned_message.as_deref()]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join("\n");
+            // Même texte que l'interface (detectionText) : titre du live, description, message
+            // épinglé, titre et description du giveaway StreamElements en cours (les réponses des
+            // bots sont passées au crible à leur arrivée)
+            let se = insight.streamelements.as_ref();
+            let text = [
+                Some(info.title.as_str()),
+                insight.description.as_deref(),
+                insight.pinned_message.as_deref(),
+                se.map(|g| g.title.as_str()),
+                se.map(|g| g.description.as_str()),
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
             let mut h = catalog.clone();
             text.hash(&mut h);
             let print = h.finish();
@@ -1451,32 +1507,7 @@ impl Monitor {
     }
 
     fn on_streamelements_url(&mut self, channel: &str, url: &str) {
-        // Même giveaway StreamElements déjà connu (identifiant, sinon lien exact), quelle que soit
-        // la forme du lien (pseudo Twitch ou vrai nom de page)
-        let known = match se_giveaway_id(url) {
-            Some(id) => self.app.db.giveaway_by_se_id(channel, id),
-            None => self.app.db.giveaway_by_url(channel, url),
-        };
-        // Lien déjà vu (giveaway clos à la fin d'un live précédent) : rouvert, pas recréé ; tiré
-        // ou encore suivi : rien
-        match known {
-            Ok(Some(g)) if g.winner.is_some() || g.status != "closed" => return,
-            Ok(Some(g)) => {
-                if let Err(e) = self.app.db.reopen_giveaway(g.id, &now_rfc3339()) {
-                    tracing::error!("giveaway StreamElements non rouvert : {e}");
-                    return;
-                }
-                self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway StreamElements sur {channel} rouvert (lien reposté)"));
-                self.publish();
-                return;
-            }
-            Ok(None) => {}
-            Err(e) => {
-                tracing::error!("giveaway StreamElements : {e}");
-                return;
-            }
-        }
-        self.create_se_giveaway(channel, url, None);
+        self.se_giveaway_seen(channel, url, None, None, "lien posté par le bot");
     }
 
     /// Nouveau giveaway StreamElements (lien posté par un bot, ou trouvé en cours) : conditions

@@ -53,6 +53,8 @@ pub struct ChannelView {
     pub auto_claim: bool,
     pub balance: Option<i64>,
     pub earned_today: i64,
+    /// Bonus récupérés aujourd'hui (gains « CLAIM » enregistrés)
+    pub bonuses_today: i64,
     pub live: Option<StreamInfo>,
     pub state: ChannelState,
     pub error: Option<String>,

@@ -24,7 +24,7 @@ function formatMinutes(m: number) {
 // Même logique que la page Drops du PC
 function dropState(c: DropCampaign, d: DropProgress): { label: string, color: 'success' | 'warning' | 'neutral' | 'info' | 'error' } {
   if (d.claimed) return { label: 'Obtenu', color: 'success' }
-  if (d.requiredMinutes > 0 && d.currentMinutes >= d.requiredMinutes) {
+  if (d.claimable ?? (d.requiredMinutes > 0 && d.currentMinutes >= d.requiredMinutes)) {
     return c.accountLinked ? { label: 'À réclamer', color: 'info' } : { label: 'Compte du jeu à lier', color: 'error' }
   }
   if (d.currentMinutes > 0) return { label: 'En cours', color: 'warning' }

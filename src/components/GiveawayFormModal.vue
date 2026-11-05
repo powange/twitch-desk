@@ -490,10 +490,11 @@ function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof for
   if (props.giveaway || props.streamerOnly || pastMode.value || !fresh) return
   // Giveaway StreamElements en cours déjà suivi : pas proposé une 2e fois
   if (found.streamelements && !seTracked(found.streamelements.url)) {
+    // Ce qui a été tapé pendant le chargement est gardé : seuls les champs vides sont remplis
     f.kind = 'streamelements'
-    f.url = found.streamelements.url
-    if (found.streamelements.command) f.command = found.streamelements.command
-    if (found.streamelements.maxTickets) f.ticketMax = found.streamelements.maxTickets
+    if (!f.url.trim()) f.url = found.streamelements.url
+    if (found.streamelements.command && !f.command.trim()) f.command = found.streamelements.command
+    if (found.streamelements.maxTickets && f.ticketMax == null) f.ticketMax = found.streamelements.maxTickets
   } else if (found.detectedCommand && !f.command) {
     f.command = found.detectedCommand
   }

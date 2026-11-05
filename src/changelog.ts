@@ -14,6 +14,27 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.33',
+    date: '2026-11-05',
+    title: 'Mêmes règles partout',
+    changes: [
+      { kind: 'fixed', text: 'Accents : le rattachement automatique des cadeaux et le scanner retirent tous les accents, comme l\'affichage (« Wiedźmin », « São », accent tapé à part sur Mac ou iPhone). Un cadeau affiché comme repéré est donc bien rattaché.' },
+      { kind: 'improved', text: 'Cadeaux repérés : mêmes textes partout et pour le rattachement automatique (titre du live, description, message épinglé, giveaway StreamElements en cours, réponses des bots), seulement pendant le live. La page StreamElements y ajoute le giveaway relevé par les points.' },
+      { kind: 'fixed', text: 'Synchronisation : les cadeaux d\'un giveaway sont fusionnés entre les PC au lieu d\'être remplacés par ceux du dernier PC, et un cadeau retiré à la main sur un PC l\'est aussi sur les autres.' },
+      { kind: 'improved', text: 'Mise en avant (bordure violette) : une seule règle, un cadeau favori rattaché ou repéré, sur les pages Chaînes, Alertes, StreamElements et Scanner.' },
+      { kind: 'improved', text: 'Mots-clés des cadeaux nettoyés pareil dans le formulaire, l\'import et la synchronisation : doublons sans tenir compte des accents (« épée » et « epee »), mot-clé identique au titre retiré, longueur et nombre limités.' },
+      { kind: 'fixed', text: 'StreamElements : le lien posté par le bot et le giveaway en cours trouvé sur la page suivent la même règle. Un giveaway clos à la main n\'est plus jamais rouvert tout seul (commande reprise dans le chat, lien reposté), un giveaway clos automatiquement qui tourne encore est rouvert, et rien n\'est créé hors des catégories suivies.' },
+      { kind: 'fixed', text: 'StreamElements : la commande et le maximum de tickets d\'un giveaway créé depuis le lien du bot sont complétés à la relecture suivante.' },
+      { kind: 'fixed', text: 'Achat automatique de tickets : rien n\'est acheté pour un giveaway clos à la main dans l\'application, ni après une lecture StreamElements en échec.' },
+      { kind: 'fixed', text: 'Identifiant StreamElements d\'une chaîne : un seul cache pour toute l\'application, revérifié chaque jour, et oublié partout (points, analyses, scanner) quand le pseudo StreamElements change par la synchronisation.' },
+      { kind: 'fixed', text: 'Formulaire : le giveaway StreamElements en cours ne remplace plus la commande ou le maximum que tu as tapés pendant le chargement.' },
+      { kind: 'improved', text: 'Spectateurs arrondis aussi dans l\'état envoyé au téléphone : moins d\'envois au serveur.' },
+      { kind: 'fixed', text: 'Tableau de bord : nombre de bonus du jour exact même en fin de journée chargée, et une chaîne suivie par deux comptes n\'est comptée qu\'une fois dans « regardées / en live ».' },
+      { kind: 'fixed', text: 'Scanner : les mots-clés trouvés sont surlignés même avec un accent ou un tiret (« CLÉ », « FREE-KEYS »).' },
+      { kind: 'fixed', text: 'Drops : « À réclamer » s\'affiche exactement quand l\'application va réclamer le drop (sur le PC et le téléphone).' }
+    ]
+  },
+  {
     version: '0.48.32',
     date: '2026-11-05',
     title: 'Application plus légère',

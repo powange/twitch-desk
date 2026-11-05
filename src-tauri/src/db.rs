@@ -464,6 +464,19 @@ const MIGRATIONS: &[&str] = &[r#"
         gift_id INTEGER NOT NULL REFERENCES gifts(id) ON DELETE CASCADE,
         PRIMARY KEY (giveaway_id, gift_id)
     );
+"#, r#"
+    -- Cadeaux retirés à la main : envoyés avec le giveaway (« giftsRemoved ») pour que les autres
+    -- PC les retirent aussi au lieu de les remettre
+    CREATE TRIGGER sync_giveaway_gifts_rejected_insert AFTER INSERT ON giveaway_gifts_rejected BEGIN
+        INSERT INTO sync_touch SELECT 'giveaways', sync_id FROM giveaways WHERE id = NEW.giveaway_id;
+    END;
+    CREATE TRIGGER sync_giveaway_gifts_rejected_delete AFTER DELETE ON giveaway_gifts_rejected BEGIN
+        INSERT INTO sync_touch SELECT 'giveaways', sync_id FROM giveaways WHERE id = OLD.giveaway_id;
+    END;
+"#, r#"
+    -- Clos à la main sur ce PC : jamais rouvert automatiquement (commande reprise dans le chat,
+    -- lien StreamElements reposté ou toujours en cours) ; « Rouvrir » le remet à 0
+    ALTER TABLE giveaways ADD COLUMN closed_by_user INTEGER NOT NULL DEFAULT 0;
 "#];
 
 /// Message épinglé gardé ; `current` : relu sur Twitch à l'instant (sinon dernière version vue)
@@ -607,20 +620,12 @@ pub struct Gift {
 }
 
 /// Texte sans accents ni majuscules (repérage des cadeaux)
-fn fold(text: &str) -> String {
-    text.to_lowercase()
-        .chars()
-        .map(|c| match c {
-            'à' | 'â' | 'ä' | 'á' | 'ã' => 'a',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'î' | 'ï' | 'í' => 'i',
-            'ô' | 'ö' | 'ó' | 'õ' => 'o',
-            'ù' | 'û' | 'ü' | 'ú' => 'u',
-            'ç' => 'c',
-            'ñ' => 'n',
-            c => c,
-        })
-        .collect()
+/// Même règle que l'interface (`normalize('NFD')` puis retrait des accents), partagée par le
+/// repérage des cadeaux et le scanner : toutes les lettres accentuées, et les accents tapés en
+/// caractère séparé (Mac, iPhone)
+pub(crate) fn fold(text: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    text.to_lowercase().nfd().filter(|c| !('\u{300}'..='\u{36f}').contains(c)).collect()
 }
 
 /// `term` présent au début d'un mot de `text` (mots séparés par n'importe quels espaces)
@@ -652,6 +657,29 @@ pub(crate) fn starts_word(text: &str, term: &str) -> bool {
         from = start + first.len().max(1);
     }
     false
+}
+
+/// Mots-clés d'un cadeau nettoyés, partout où ils entrent (formulaire, import, synchronisation) :
+/// espaces et majuscules retirés, termes trop courts écartés, doublons et répétition du titre
+/// retirés sans tenir compte des accents (« épée » et « epee »), longueur et nombre limités
+pub fn clean_keywords(title: &str, keywords: &[String]) -> Vec<String> {
+    const MAX_LEN: usize = 60;
+    const MAX_COUNT: usize = 30;
+    let mut seen = vec![fold(title.trim())];
+    let mut out = vec![];
+    for k in keywords {
+        let k: String = k.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase().chars().take(MAX_LEN).collect();
+        let key = fold(&k);
+        if !usable_term(&k) || seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        out.push(k);
+        if out.len() == MAX_COUNT {
+            break;
+        }
+    }
+    out
 }
 
 /// Terme utilisable pour le repérage : au moins 2 lettres ou chiffres (« a » ou « + » seraient
@@ -1411,6 +1439,17 @@ impl Db {
         Ok(())
     }
 
+    /// Bonus récupérés par chaîne depuis `since` (gains de points de chaîne « CLAIM »)
+    pub fn claims_since(&self, account_id: i64, since: &str) -> DbResult<Vec<(String, i64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT channel_login, COUNT(*) FROM points_events
+             WHERE account_id = ?1 AND currency = 'twitch' AND reason = 'CLAIM' AND at >= ?2 GROUP BY channel_login",
+        )?;
+        let rows = stmt.query_map(params![account_id, since], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
     /// Gains par chaîne dans une monnaie depuis `since` (date UTC au format RFC 3339)
     pub fn gains_since(&self, account_id: i64, currency: &str, since: &str) -> DbResult<Vec<(String, i64)>> {
         let conn = self.conn();
@@ -1622,7 +1661,7 @@ impl Db {
     pub fn reopenable_command_giveaway(&self, channel: &str, command: &str, since: &str) -> DbResult<Option<GiveawayRow>> {
         Ok(self
             .select_giveaways(
-                "WHERE channel = ?1 AND kind = 'command' AND status IN ('paused', 'closed') AND winner IS NULL
+                "WHERE channel = ?1 AND kind = 'command' AND status IN ('paused', 'closed') AND winner IS NULL AND closed_by_user = 0
                      AND command = ?2 COLLATE NOCASE AND COALESCE(first_at, detected_at) >= ?3 ORDER BY detected_at DESC LIMIT 1",
                 [channel, command, since],
             )?
@@ -2139,6 +2178,13 @@ impl Db {
     }
 
     /// Maximum de tickets annoncé par le bot, s'il n'est pas déjà renseigné
+    /// Commande d'un giveaway StreamElements lue dans sa description, s'il n'en a pas encore
+    /// (file d'alertes inchangée)
+    pub fn fill_command_if_unknown(&self, id: i64, command: &str) -> DbResult<bool> {
+        let n = self.conn().execute("UPDATE giveaways SET command = ?2 WHERE id = ?1 AND (command IS NULL OR command = '')", params![id, command])?;
+        Ok(n > 0)
+    }
+
     pub fn set_ticket_max_if_unknown(&self, id: i64, max: i64) -> DbResult<bool> {
         let n = self.conn().execute(
             "UPDATE giveaways SET ticket_max = ?2, ticket_unique = CASE WHEN ?2 = 1 THEN 1 ELSE 0 END
@@ -2189,10 +2235,11 @@ impl Db {
             .pop())
     }
 
-    pub fn se_giveaway_hidden(&self, se_id: &str) -> bool {
+    /// Giveaway StreamElements masqué ou clos à la main sur ce PC : pas d'achat automatique
+    pub fn se_giveaway_no_auto_buy(&self, se_id: &str) -> bool {
         self.conn()
             .query_row(
-                "SELECT 1 FROM giveaways WHERE hidden = 1 AND kind = 'streamelements'
+                "SELECT 1 FROM giveaways WHERE (hidden = 1 OR closed_by_user = 1) AND kind = 'streamelements'
                      AND (url LIKE '%/giveaway/' || ?1 OR url LIKE '%/giveaway/' || ?1 || '/%' OR url LIKE '%/giveaway/' || ?1 || '?%')",
                 [se_id],
                 |_| Ok(()),
@@ -2208,6 +2255,16 @@ impl Db {
     pub fn close_giveaway(&self, id: i64) -> DbResult<()> {
         self.conn().execute("UPDATE giveaways SET status = 'closed', handled = 1 WHERE id = ?1", [id])?;
         Ok(())
+    }
+
+    /// Clos à la main : plus jamais rouvert automatiquement
+    pub fn close_giveaway_by_user(&self, id: i64) -> DbResult<()> {
+        self.conn().execute("UPDATE giveaways SET status = 'closed', handled = 1, closed_by_user = 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn closed_by_user(&self, id: i64) -> bool {
+        self.conn().query_row("SELECT closed_by_user FROM giveaways WHERE id = ?1", [id], |r| r.get(0)).unwrap_or(false)
     }
 
     /// Gagnant ajouté aux gagnants du giveaway, qui est clos ; `false` : déjà gagnant (ou giveaway
@@ -2263,7 +2320,7 @@ impl Db {
     /// Giveaway sans gagnant remis en route : ouvert (`live`) ou en pause, détecté à `at`
     pub fn restart_giveaway(&self, id: i64, live: bool, at: &str) -> DbResult<()> {
         self.conn().execute(
-            "UPDATE giveaways SET status = ?2, detected_at = ?3, first_at = NULL WHERE id = ?1 AND winner IS NULL AND status <> 'closed'",
+            "UPDATE giveaways SET status = ?2, detected_at = ?3, first_at = NULL, closed_by_user = 0 WHERE id = ?1 AND winner IS NULL AND status <> 'closed'",
             params![id, if live { "open" } else { "paused" }, at],
         )?;
         Ok(())
@@ -2296,7 +2353,7 @@ impl Db {
     pub fn reopen_closed_giveaway(&self, id: i64, live: bool, at: &str) -> DbResult<bool> {
         let n = self.conn().execute(
             "UPDATE giveaways SET status = ?2, winner = NULL, winners = '[]', winner_chances = '{}', winner_chance = NULL, drawn_at = NULL, detected_at = ?3,
-                 first_at = NULL
+                 first_at = NULL, closed_by_user = 0
              WHERE id = ?1 AND status = 'closed'",
             params![id, if live { "open" } else { "paused" }, at],
         )?;
@@ -2999,10 +3056,10 @@ mod tests {
                 detected_at: "2026-11-04T10:00:00Z".into(),
             })
             .unwrap();
-        assert!(!db.giveaway_hidden(g) && !db.se_giveaway_hidden("abc123"));
+        assert!(!db.giveaway_hidden(g) && !db.se_giveaway_no_auto_buy("abc123"));
         assert!(db.set_giveaway_hidden(g, true).unwrap());
         assert!(db.giveaway(g).unwrap().unwrap().hidden);
-        assert!(db.se_giveaway_hidden("abc123") && !db.se_giveaway_hidden("abc"));
+        assert!(db.se_giveaway_no_auto_buy("abc123") && !db.se_giveaway_no_auto_buy("abc"));
         assert!(db.set_giveaway_hidden(g, false).unwrap());
         assert!(!db.giveaway_hidden(g));
         assert!(!db.set_giveaway_hidden(999, true).unwrap());
@@ -3158,6 +3215,13 @@ mod tests {
         let short = vec![gift(6, "A", &["+", "-", "é"])];
         assert!(gifts_in_text(&short, "A new giveaway + more - é").is_empty());
         assert!(usable_term("€-card") && usable_term("20") && !usable_term("€-c"));
+        // Accents : toutes les lettres, et l'accent tapé à part (e + U+0301), comme l'interface
+        let witcher = vec![gift(7, "wiedzmin", &["sao", "epee"])];
+        assert_eq!(gifts_in_text(&witcher, "Wiedźmin 3 giveaway"), vec![7]);
+        assert_eq!(gifts_in_text(&witcher, "São Paulo"), vec![7]);
+        assert_eq!(gifts_in_text(&witcher, "une e\u{301}pe\u{301}e"), vec![7]);
+        let k = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(clean_keywords("Épée", &k(&[" Navire  Pirate ", "épée", "EPEE", "a", "+", "epées", "navire pirate"])), k(&["navire pirate", "epées"]));
     }
 
     #[test]

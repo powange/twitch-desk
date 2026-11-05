@@ -564,7 +564,14 @@ pub fn set_manual_winner(app: AppState, channel: String, winner: String, giveawa
 #[tauri::command]
 pub async fn se_giveaway_info(app: AppState<'_>, url: String) -> CmdResult<Option<crate::streamelements::GiveawayOutcome>> {
     let (channel, id) = crate::streamelements::parse_giveaway_url(&url).ok_or("Lien de giveaway StreamElements invalide")?;
-    let se_channel = crate::streamelements::channel_id(&app.http, &channel)
+    // Nom de la page StreamElements du lien (pas un pseudo Twitch), identifiant gardé avec les autres
+    let http = &app.http;
+    let se_channel = app
+        .lives
+        .se_ids
+        .get(&format!("page:{channel}"), crate::lives::since(std::time::Duration::from_secs(24 * 3600)), || {
+            crate::streamelements::channel_id_of_page(http, &channel)
+        })
         .await
         .map_err(|e| format!("StreamElements injoignable : {e}"))?
         .ok_or_else(|| format!("{channel} n'utilise pas StreamElements"))?;
@@ -1188,7 +1195,7 @@ pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdRe
         keep_pinned(&app, &login, p);
     }
     // Meilleur effort : StreamElements injoignable = pas de suggestion
-    let streamelements = match streamelements::channel_id(&app.http, &login).await {
+    let streamelements = match streamelements::channel_id_cached(&app, &login).await {
         Ok(Some(se_id)) => streamelements::active_giveaway_cached(&app, &se_id, std::time::Duration::from_secs(60)).await.ok().flatten().map(|g| SeSuggestion {
             url: format!("https://streamelements.com/{}/giveaway/{}", streamelements::page_name(&login), g.id),
             title: g.title,
@@ -1276,8 +1283,7 @@ pub(crate) fn refresh_se_names(app: &App, login: &str) {
     for account in app.db.forget_se_channel(login).unwrap_or_default() {
         app.send(account, MinerCommand::Reload);
     }
-    app.insights.lock().unwrap().forget_se(login);
-    app.scanner.lock().unwrap().forget_se(login);
+    app.lives.se_ids.invalidate(login);
 }
 
 /// Conditions habituelles d'une fiche de streamer, sous la forme de celles d'un giveaway
@@ -1431,14 +1437,7 @@ pub fn save_gift(app: AppState, mut gift: crate::db::Gift) -> CmdResult<i64> {
     if gift.game_id.is_none() {
         gift.game_name = None;
     }
-    let mut keywords: Vec<String> = vec![];
-    for k in &gift.keywords {
-        let k = k.trim().to_lowercase();
-        if !k.is_empty() && !keywords.contains(&k) {
-            keywords.push(k);
-        }
-    }
-    gift.keywords = keywords;
+    gift.keywords = crate::db::clean_keywords(&gift.title, &gift.keywords);
     if let Some(group_id) = gift.group_id {
         let groups = app.db.gift_groups().map_err(db_err)?;
         let group = groups.iter().find(|g| g.id == group_id).ok_or("Ce groupe n'existe plus")?;
@@ -1685,12 +1684,13 @@ fn import_gifts_from(app: &App, path: &str) -> CmdResult<GiftImportResult> {
             None => None,
         };
         let same = existing.iter().find(|g| g.title.eq_ignore_ascii_case(&title) && g.game_id == game_id);
+        let keywords = crate::db::clean_keywords(&title, &item.keywords);
         let gift = crate::db::Gift {
             id: same.map_or(0, |g| g.id),
             title,
             image: item.image,
             group_id,
-            keywords: item.keywords.into_iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect(),
+            keywords,
             game_name: if game_id.is_some() { item.game_name } else { None },
             favorite: false,
             game_id,

@@ -341,6 +341,14 @@ pub fn page_name(login: &str) -> String {
     PAGE_NAMES.read().unwrap().get(&login).cloned().unwrap_or(login)
 }
 
+/// Identifiant StreamElements d'une chaîne Twitch, lu au plus une fois par jour pour toute
+/// l'application (voir `Lives::se_ids`)
+pub async fn channel_id_cached(app: &crate::app::App, login: &str) -> Result<Option<String>, reqwest::Error> {
+    const RECHECK: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+    let http = &app.http;
+    app.lives.se_ids.get(login, crate::lives::since(RECHECK), || channel_id(http, login)).await
+}
+
 /// Identifiant StreamElements d'une chaîne Twitch (None : la chaîne n'utilise pas StreamElements)
 pub async fn channel_id(http: &reqwest::Client, login: &str) -> Result<Option<String>, reqwest::Error> {
     channel_id_of_page(http, &page_name(login)).await
