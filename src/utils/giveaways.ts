@@ -43,7 +43,7 @@ export function participationConditions(d: GiveawayDetails, kind: GiveawayKind):
           suffix: d.ticketMax ? `×${d.ticketMax}` : undefined
         })
   }
-  // Dans l'ordre des colonnes des tableaux : présence, Discord, follow, bonjour, temps dans le chat
+  // Dans l'ordre des colonnes des tableaux : présence, Discord, follow, bonjour, temps dans le chat, gain offrable
   if (d.requirePresence !== null) {
     out.push(d.requirePresence
       ? { key: 'presence', icon: 'i-lucide-user-check', label: 'Présence requise au moment du tirage', colorClass: 'text-emerald-600 dark:text-emerald-400', strike: false }
@@ -79,6 +79,11 @@ export function participationConditions(d: GiveawayDetails, kind: GiveawayKind):
     out.push(d.minChatMinutes > 0
       ? { key: 'chat', icon: 'i-lucide-timer', label: `Présent dans le chat depuis au moins ${d.minChatMinutes} min`, colorClass: 'text-sky-600 dark:text-sky-400', strike: false, suffix: `${d.minChatMinutes} min` }
       : { key: 'chat', icon: 'i-lucide-timer-off', label: 'Pas de temps de présence minimum', colorClass: 'text-muted', strike: false })
+  }
+  if (d.canGift != null) {
+    out.push(d.canGift
+      ? { key: 'gift', icon: 'i-lucide-hand-heart', label: 'Gain offrable à quelqu\'un d\'autre', colorClass: 'text-rose-600 dark:text-rose-400', strike: false }
+      : { key: 'gift', icon: 'i-lucide-hand-heart', label: 'Gain non offrable à quelqu\'un d\'autre', colorClass: 'text-muted', strike: true })
   }
   return out
 }

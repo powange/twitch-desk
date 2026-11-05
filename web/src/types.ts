@@ -35,6 +35,8 @@ export interface Giveaway {
   requireDiscord?: boolean | null
   requireGreeting?: boolean | null
   minChatMinutes?: number | null
+  // Gain offrable à quelqu'un d'autre
+  canGift?: boolean | null
   gifts: Gift[]
 }
 

@@ -35,4 +35,11 @@
       </UTooltip>
     </div>
   </th>
+  <th class="px-2 py-2">
+    <div class="flex justify-center">
+      <UTooltip text="Gain offrable à quelqu'un d'autre">
+        <UIcon name="i-lucide-hand-heart" class="size-4 block" aria-label="Gain offrable à quelqu'un d'autre" />
+      </UTooltip>
+    </div>
+  </th>
 </template>

@@ -117,4 +117,23 @@ defineProps<{ target: ConditionTarget, actions: ConditionActions }>()
       </UTooltip>
     </div>
   </td>
+  <!-- Gain offrable : une information plutôt qu'une condition, affichée dans les deux cas -->
+  <td class="px-2 py-2">
+    <div class="flex justify-center items-center">
+      <UTooltip v-if="target.canGift == null" text="Gain offrable à quelqu'un d'autre : on ne sait pas">
+        <span class="text-muted rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Gain offrable à quelqu'un d'autre : on ne sait pas">?</span>
+      </UTooltip>
+      <UTooltip v-else-if="target.canGift" text="Le gain peut être offert à quelqu'un d'autre">
+        <span class="inline-flex rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Le gain peut être offert à quelqu'un d'autre">
+          <UIcon name="i-lucide-hand-heart" class="size-4 block text-rose-600 dark:text-rose-400" />
+        </span>
+      </UTooltip>
+      <UTooltip v-else text="Le gain ne peut pas être offert à quelqu'un d'autre">
+        <span class="relative inline-flex text-muted rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Le gain ne peut pas être offert à quelqu'un d'autre">
+          <UIcon name="i-lucide-hand-heart" class="size-4 block" />
+          <UIcon name="i-lucide-x" class="absolute -bottom-1 -right-1.5 size-3 bg-default rounded-full text-error" />
+        </span>
+      </UTooltip>
+    </div>
+  </td>
 </template>

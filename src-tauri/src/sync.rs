@@ -446,7 +446,7 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                     "SELECT id, sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance, drawn_at,
                             ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                             require_follow, require_presence, require_discord, notes,
-                            require_greeting, min_chat_minutes, follow_min_secs, winners, winner_chances
+                            require_greeting, min_chat_minutes, follow_min_secs, winners, winner_chances, can_gift
                      FROM giveaways WHERE sync_id IS NOT NULL
                          AND {} AND (?3 = 0 OR status IN ('open', 'paused') OR detected_at >= ?1 OR manual = 1)",
                     one("sync_id", 2)
@@ -485,6 +485,14 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                         r.get::<_, String>(24)?,
                         r.get::<_, String>(25)?,
                     ))
+                    .map(|(id, sync_id, paused, mut data, winners, chances)| {
+                        // Gain offrable ou non : champ ajouté seulement s'il est connu (empreinte
+                        // des autres inchangée)
+                        if let Ok(Some(can)) = r.get::<_, Option<bool>>(26) {
+                            data["canGift"] = json!(can);
+                        }
+                        (id, sync_id, paused, data, winners, chances)
+                    })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
             rows.into_iter()
@@ -520,15 +528,13 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
         "streamers" => conn
             .prepare_cached(&format!(
                 "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_secs, require_presence,
-                        require_discord, require_greeting, min_chat_minutes, se_name
+                        require_discord, require_greeting, min_chat_minutes, se_name, can_gift
                  FROM streamers WHERE {}",
                 one("login", 1)
             ))?
             .query_map([only], |r| {
                 let ignored: Vec<String> = serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default();
-                Ok((
-                    r.get(0)?,
-                    json!({
+                let mut doc = json!({
                         "discordUrl": r.get::<_, Option<String>>(1)?,
                         "notes": r.get::<_, Option<String>>(2)?,
                         "ignoredCommands": ignored,
@@ -542,8 +548,12 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                             "requireGreeting": r.get::<_, Option<bool>>(8)?,
                             "minChatMinutes": r.get::<_, Option<i64>>(9)?,
                         },
-                    }),
-                ))
+                    });
+                // Gain offrable : seulement s'il est connu (empreinte des autres fiches inchangée)
+                if let Some(can) = r.get::<_, Option<bool>>(11)? {
+                    doc["conditions"]["canGift"] = json!(can);
+                }
+                Ok((r.get(0)?, doc))
             })?
             .collect(),
         "detection" => Ok(rules(conn)?.into_iter().filter(|(id, _)| only.is_none_or(|o| o == id)).collect()),
@@ -977,6 +987,7 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                 bool_of(data, "requireGreeting"),
                 int_of(data, "minChatMinutes"),
                 follow_secs_of(data),
+                bool_of(data, "canGift"),
             ];
             if local_id(conn, "giveaways", id)?.is_some() {
                 conn.execute(
@@ -984,7 +995,7 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                          winner = ?9, winner_chance = ?10, drawn_at = ?11, ticket_unique = ?12, ticket_max = ?13,
                          reward_name = ?14, reward_cost = ?15, draw_at = ?16, require_follow = ?17, require_presence = ?18,
                          require_discord = ?19, notes = ?20, require_greeting = ?21, min_chat_minutes = ?22, follow_min_secs = ?23,
-                         reminded = CASE WHEN draw_at IS ?16 THEN reminded ELSE 0 END
+                         can_gift = ?24, reminded = CASE WHEN draw_at IS ?16 THEN reminded ELSE 0 END
                      WHERE sync_id = ?1",
                     values,
                 )?;
@@ -994,9 +1005,9 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                 conn.execute(
                     "INSERT INTO giveaways (sync_id, channel, kind, command, url, detected_at, status, manual, winner, winner_chance,
                          drawn_at, ticket_unique, ticket_max, reward_name, reward_cost, draw_at, require_follow, require_presence,
-                         require_discord, notes, require_greeting, min_chat_minutes, follow_min_secs, handled)
+                         require_discord, notes, require_greeting, min_chat_minutes, follow_min_secs, can_gift, handled)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                         ?21, ?22, ?23, ?7 = 'closed')",
+                         ?21, ?22, ?23, ?24, ?7 = 'closed')",
                     values,
                 )?;
             }
@@ -1069,7 +1080,7 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
             if let Some(c) = data.get("conditions") {
                 conn.execute(
                     "UPDATE streamers SET require_follow = ?2, follow_min_secs = ?3, require_presence = ?4, require_discord = ?5,
-                         require_greeting = ?6, min_chat_minutes = ?7 WHERE login = ?1",
+                         require_greeting = ?6, min_chat_minutes = ?7, can_gift = ?8 WHERE login = ?1",
                     params![
                         id,
                         bool_of(c, "requireFollow"),
@@ -1078,6 +1089,7 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                         bool_of(c, "requireDiscord"),
                         bool_of(c, "requireGreeting"),
                         int_of(c, "minChatMinutes"),
+                        bool_of(c, "canGift"),
                     ],
                 )?;
             }
@@ -2513,11 +2525,18 @@ mod tests {
             url: None,
             gift_ids: vec![gift],
             shown_gift_ids: None,
-            details: Default::default(),
+            details: crate::db::GiveawayDetails { can_gift: Some(true), ..Default::default() },
         };
         a.insert_manual_giveaway(&input, "2026-11-01T10:00:00Z").unwrap();
         a.add_giveaway_channel("lunarsea", "123").unwrap();
-        a.save_streamer(&crate::db::Streamer { login: "lunarsea".into(), discord_url: Some("https://discord.gg/x".into()), notes: None, ignored_commands: vec!["!points".into()], ..Default::default() })
+        a.save_streamer(&crate::db::Streamer {
+            login: "lunarsea".into(),
+            discord_url: Some("https://discord.gg/x".into()),
+            notes: None,
+            ignored_commands: vec!["!points".into()],
+            can_gift: Some(false),
+            ..Default::default()
+        })
             .unwrap();
         assign_ids(&a.conn()).unwrap();
         for c in COLLECTIONS {
@@ -2530,6 +2549,8 @@ mod tests {
         let giveaways = b.giveaways(10).unwrap();
         assert_eq!((giveaways[0].command.as_deref(), giveaways[0].gift_ids.clone()), (Some("!join"), vec![gifts[0].id]));
         assert!(giveaways[0].open && !giveaways[0].handled);
+        assert_eq!(giveaways[0].details.can_gift, Some(true));
+        assert_eq!(b.streamer("lunarsea").unwrap().unwrap().can_gift, Some(false));
         assert_eq!(b.giveaway_channels().unwrap()[0].channel_id, "123");
         assert_eq!(b.streamer("lunarsea").unwrap().unwrap().discord_url.as_deref(), Some("https://discord.gg/x"));
         // Même contenu des deux côtés : rien à renvoyer

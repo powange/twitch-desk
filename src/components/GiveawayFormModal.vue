@@ -38,8 +38,12 @@ const CONDITIONS = [
   { key: 'discord', label: 'Discord du streamer', icon: 'i-simple-icons-discord' },
   { key: 'follow', label: 'Follow requis', icon: 'i-lucide-heart' },
   { key: 'greeting', label: 'Avoir dit bonjour dans le chat', icon: 'i-lucide-hand' },
-  { key: 'chatTime', label: 'Temps de présence minimum dans le chat', icon: 'i-lucide-timer' }
+  { key: 'chatTime', label: 'Temps de présence minimum dans le chat', icon: 'i-lucide-timer' },
+  { key: 'canGift', label: 'Gain offrable à quelqu\'un d\'autre', icon: 'i-lucide-hand-heart' }
 ] as const
+// Bulle des boutons Oui / Non : « Requis » n'a pas de sens pour le gain offrable
+const optionTitle = (key: string, o: { value: TriState, title: string }) => key !== 'canGift' ? o.title
+  : o.value === 'yes' ? 'Le gain peut être offert à quelqu\'un d\'autre' : o.value === 'no' ? 'Le gain ne peut pas être offert' : o.title
 const toTri = (v: boolean | null): TriState => v === true ? 'yes' : v === false ? 'no' : 'unknown'
 const fromTri = (v: TriState): boolean | null => v === 'yes' ? true : v === 'no' ? false : null
 
@@ -119,6 +123,7 @@ const form = ref({
   greeting: 'unknown' as TriState,
   chatTime: 'unknown' as TriState,
   chatMinutes: null as number | null,
+  canGift: 'unknown' as TriState,
   // Ancienneté du follow écrite « 7j », « 2h 30min »…
   followDuration: '',
   notes: '',
@@ -278,6 +283,7 @@ watch(open, (isOpen) => {
     greeting: toTri(g?.requireGreeting ?? null),
     chatTime: g?.minChatMinutes == null ? 'unknown' : g.minChatMinutes > 0 ? 'yes' : 'no',
     chatMinutes: g?.minChatMinutes ? g.minChatMinutes : null,
+    canGift: toTri(g?.canGift ?? null),
     followDuration: g?.followMinSecs ? formatDuration(g.followMinSecs) : '',
     notes: g?.notes ?? '',
     giftIds: [...(g?.giftIds ?? [])],
@@ -311,6 +317,7 @@ interface ChannelSuggestion {
     requireDiscord: boolean | null
     requireGreeting: boolean | null
     minChatMinutes: number | null
+    canGift: boolean | null
     // Réponse automatique au gain (présence requise), propre à ce PC
     winReply: string | null
     winReplyDelay: number | null
@@ -417,7 +424,7 @@ function formSnapshot() {
     discord: streamerDiscord.value, notes: streamerNotes.value, ignored: streamerIgnored.value.join(),
     winReply: streamerWinReply.value, winDelay: streamerWinDelay.value, seName: streamerSeName.value,
     follow: f.follow, followDuration: f.followDuration, presence: f.presence, discordCond: f.discord, greeting: f.greeting,
-    chatTime: f.chatTime, chatMinutes: f.chatMinutes
+    chatTime: f.chatTime, chatMinutes: f.chatMinutes, canGift: f.canGift
   }
 }
 
@@ -480,6 +487,7 @@ function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof for
     if (f.presence === before.presence) f.presence = toTri(st.requirePresence)
     if (f.discord === before.discordCond) f.discord = toTri(st.requireDiscord)
     if (f.greeting === before.greeting) f.greeting = toTri(st.requireGreeting)
+    if (f.canGift === before.canGift) f.canGift = toTri(st.canGift)
     if (f.chatTime === before.chatTime && f.chatMinutes === before.chatMinutes) {
       f.chatTime = st.minChatMinutes === null ? 'unknown' : st.minChatMinutes > 0 ? 'yes' : 'no'
       f.chatMinutes = st.minChatMinutes && st.minChatMinutes > 0 ? st.minChatMinutes : null
@@ -531,7 +539,7 @@ const KIND_ICONS: Record<GiveawayInput['kind'], string> = {
 
 const sections = computed(() => {
   const f = form.value
-  const conditions = [f.follow, f.presence, f.discord, f.greeting, f.chatTime].filter(v => v !== 'unknown').length
+  const conditions = [f.follow, f.presence, f.discord, f.greeting, f.chatTime, f.canGift].filter(v => v !== 'unknown').length
   const all = [
     { key: 'channel' as const, label: 'Chaîne', icon: 'i-lucide-tv', summary: f.channel.trim() || 'à choisir', missing: !f.channel.trim() },
     { key: 'giveaway' as const, label: 'Giveaway', icon: 'i-lucide-gift', summary: (f.kind === 'command' || f.kind === 'ticket') && !f.command.trim() ? 'commande à détecter' : GIVEAWAY_KIND_ITEMS.find(k => k.value === f.kind)?.label ?? '', missing: false },
@@ -608,6 +616,7 @@ async function saveStreamer() {
         requireDiscord: fromTri(f.discord),
         requireGreeting: fromTri(f.greeting),
         minChatMinutes: f.chatTime === 'yes' ? (f.chatMinutes ?? null) : f.chatTime === 'no' ? 0 : null,
+        canGift: fromTri(f.canGift),
         winReply: streamerWinReply.value.trim() || null,
         winReplyDelay: streamerWinDelay.value,
         seName: streamerSeName.value.trim() || null
@@ -649,6 +658,7 @@ async function save() {
     // Présence dans le chat : durée si requise, 0 si non requise, null si on ne sait pas
     minChatMinutes: f.chatTime === 'yes' ? (f.chatMinutes ?? null) : f.chatTime === 'no' ? 0 : null,
     followMinSecs: f.follow === 'yes' ? parseDuration(f.followDuration) : null,
+    canGift: fromTri(f.canGift),
     notes: f.notes || null,
     giftIds: f.giftIds
   }
@@ -1065,7 +1075,7 @@ async function save() {
                   v-for="o in TRI_OPTIONS"
                   :key="o.value"
                   :label="o.label"
-                  :title="o.title"
+                  :title="optionTitle(c.key, o)"
                   size="sm"
                   class="w-12 justify-center"
                   :color="form[c.key] === o.value ? 'primary' : 'neutral'"

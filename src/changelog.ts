@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.36',
+    date: '2026-11-05',
+    title: 'Gain offrable à quelqu\'un d\'autre',
+    changes: [
+      { kind: 'new', text: 'Conditions d\'un giveaway et fiche d\'un streamer : nouvelle information « Gain offrable à quelqu\'un d\'autre » (Oui, Non ou ?). Celle de la fiche pré-remplit ses nouveaux giveaways, et la changer sur un giveaway met la fiche à jour.' },
+      { kind: 'new', text: 'Pages Chaînes et Alertes : nouvelle colonne pour cette information dans les tableaux des conditions. Elle apparaît aussi dans la web app du téléphone et se synchronise entre tes PC.' }
+    ]
+  },
+  {
     version: '0.48.35',
     date: '2026-11-05',
     title: 'Adresse de la web app',

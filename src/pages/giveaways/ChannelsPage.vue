@@ -199,7 +199,8 @@ function computeConditions(c: GiveawayChannelView): ConditionTarget {
     requireFollow: s?.requireFollow ?? null,
     followMinSecs: s?.followMinSecs ?? null,
     requireGreeting: s?.requireGreeting ?? null,
-    minChatMinutes: s?.minChatMinutes ?? null
+    minChatMinutes: s?.minChatMinutes ?? null,
+    canGift: s?.canGift ?? null
   }
 }
 // Conditions de chaque chaîne, calculées une fois par mise à jour
@@ -419,7 +420,7 @@ async function confirmRemove() {
             </td>
           </tr>
           <tr v-if="channels.length === 0">
-            <td colspan="13" class="px-3 py-8 text-center text-muted">
+            <td colspan="14" class="px-3 py-8 text-center text-muted">
               {{ filtering ? 'Aucune chaîne ne correspond aux filtres.' : 'Aucune chaîne surveillée. Ajoute la première avec le champ ci-dessus.' }}
             </td>
           </tr>

@@ -66,6 +66,11 @@ export function conditions(g: Giveaway): Condition[] {
       ? { key: 'chat', icon: 'i-lucide-timer', label: `${g.minChatMinutes} min dans le chat`, required: true, colorClass: 'text-sky-600 dark:text-sky-400' }
       : { key: 'chat', icon: 'i-lucide-timer-off', label: 'Pas de temps de chat', required: false, colorClass: 'text-muted' })
   }
+  if (g.canGift != null) {
+    out.push(g.canGift
+      ? { key: 'gift', icon: 'i-lucide-hand-heart', label: 'Gain offrable', required: true, colorClass: 'text-rose-600 dark:text-rose-400' }
+      : { key: 'gift', icon: 'i-lucide-hand-heart', label: 'Gain non offrable', required: false, colorClass: 'text-muted' })
+  }
   return out
 }
 

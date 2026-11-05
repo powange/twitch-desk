@@ -12,6 +12,8 @@ export interface ConditionTarget {
   followMinSecs: number | null
   requireGreeting: boolean | null
   minChatMinutes: number | null
+  // Gain offrable à quelqu'un d'autre (pas une condition à remplir, une information)
+  canGift?: boolean | null
   // Réponse automatique au gain (giveaways avec présence requise), et son délai en secondes
   winReply?: string | null
   winReplyDelay?: number | null

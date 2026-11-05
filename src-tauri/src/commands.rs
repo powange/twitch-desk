@@ -1295,6 +1295,7 @@ fn conditions_of(s: &crate::db::Streamer) -> crate::db::GiveawayDetails {
         require_discord: s.require_discord,
         require_greeting: s.require_greeting,
         min_chat_minutes: s.min_chat_minutes,
+        can_gift: s.can_gift,
         ..Default::default()
     }
 }
@@ -1308,6 +1309,7 @@ fn keep_known(wanted: &mut crate::db::GiveawayDetails, sheet: Option<&crate::db:
     wanted.require_discord = wanted.require_discord.or(s.require_discord);
     wanted.require_greeting = wanted.require_greeting.or(s.require_greeting);
     wanted.min_chat_minutes = wanted.min_chat_minutes.or(s.min_chat_minutes);
+    wanted.can_gift = wanted.can_gift.or(s.can_gift);
 }
 
 /// Ancien giveaway ajouté après coup (page Alertes, giveaways passés) : créé terminé à la date

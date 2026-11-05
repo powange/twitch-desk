@@ -328,6 +328,8 @@ export interface GiveawayDetails {
   minChatMinutes: number | null
   // Follow depuis au moins tant de jours (avec le follow requis)
   followMinSecs: number | null
+  // Gain offrable à quelqu'un d'autre
+  canGift: boolean | null
 }
 
 export interface GiveawayInput extends GiveawayDetails {

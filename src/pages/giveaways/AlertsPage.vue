@@ -759,7 +759,7 @@ function share(g: GiveawayView) {
               </td>
             </tr>
             <tr v-if="group.list.length === 0">
-              <td colspan="16" class="px-3 py-8 text-center text-muted">{{ group.empty }}</td>
+              <td colspan="17" class="px-3 py-8 text-center text-muted">{{ group.empty }}</td>
             </tr>
           </tbody>
         </table>

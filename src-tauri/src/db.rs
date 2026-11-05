@@ -477,6 +477,10 @@ const MIGRATIONS: &[&str] = &[r#"
     -- Clos à la main sur ce PC : jamais rouvert automatiquement (commande reprise dans le chat,
     -- lien StreamElements reposté ou toujours en cours) ; « Rouvrir » le remet à 0
     ALTER TABLE giveaways ADD COLUMN closed_by_user INTEGER NOT NULL DEFAULT 0;
+"#, r#"
+    -- Gain offrable à quelqu'un d'autre (NULL : on ne sait pas), sur le giveaway et la fiche
+    ALTER TABLE giveaways ADD COLUMN can_gift INTEGER;
+    ALTER TABLE streamers ADD COLUMN can_gift INTEGER;
 "#];
 
 /// Message épinglé gardé ; `current` : relu sur Twitch à l'instant (sinon dernière version vue)
@@ -555,6 +559,8 @@ pub struct Streamer {
     pub require_discord: Option<bool>,
     pub require_greeting: Option<bool>,
     pub min_chat_minutes: Option<i64>,
+    /// Gain offrable à quelqu'un d'autre
+    pub can_gift: Option<bool>,
     /// Phrase écrite dans le chat par notre compte quand il gagne un giveaway avec présence
     /// requise (None : pas de réponse) ; propre à ce PC
     pub win_reply: Option<String>,
@@ -568,7 +574,7 @@ pub struct Streamer {
 pub const WIN_REPLY_DELAY: i64 = 10;
 
 const STREAMER_SELECT: &str = "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_secs,
-     require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name FROM streamers";
+     require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name, can_gift FROM streamers";
 
 fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
     Ok(Streamer {
@@ -585,6 +591,7 @@ fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
         win_reply: r.get(10)?,
         win_reply_delay: r.get(11)?,
         se_name: r.get(12)?,
+        can_gift: r.get(13)?,
     })
 }
 
@@ -862,6 +869,8 @@ pub struct GiveawayDetails {
     pub min_chat_minutes: Option<i64>,
     /// Follow depuis au moins tant de jours (avec le follow requis)
     pub follow_min_secs: Option<i64>,
+    /// Gain offrable à quelqu'un d'autre (None : on ne sait pas)
+    pub can_gift: Option<bool>,
 }
 
 /// Fiche saisie à la main (création ou modification)
@@ -1581,7 +1590,7 @@ impl Db {
         conn.execute(
             "UPDATE giveaways SET require_follow = s.require_follow, follow_min_secs = s.follow_min_secs,
                  require_presence = s.require_presence, require_discord = s.require_discord,
-                 require_greeting = s.require_greeting, min_chat_minutes = s.min_chat_minutes
+                 require_greeting = s.require_greeting, min_chat_minutes = s.min_chat_minutes, can_gift = s.can_gift
              FROM (SELECT * FROM streamers WHERE login = ?2) AS s WHERE giveaways.id = ?1",
             params![id, g.channel],
         )?;
@@ -1608,6 +1617,7 @@ impl Db {
         set("require_discord", b.require_discord != after.require_discord, flag(after.require_discord));
         set("require_greeting", b.require_greeting != after.require_greeting, flag(after.require_greeting));
         set("min_chat_minutes", b.min_chat_minutes != after.min_chat_minutes, num(after.min_chat_minutes));
+        set("can_gift", b.can_gift != after.can_gift, flag(after.can_gift));
         if sets.is_empty() {
             return Ok(false);
         }
@@ -1732,7 +1742,7 @@ impl Db {
                     ticket_unique, ticket_max, reward_name, reward_cost, draw_at,
                     require_follow, require_presence, require_discord, notes, manual, reminded,
                     prize_received, prize_note, require_greeting, min_chat_minutes, follow_min_secs, winners,
-                    winner_chances, hidden
+                    winner_chances, hidden, can_gift
              FROM giveaways {filter}"
         ))?;
         let mut rows: Vec<GiveawayRow> = stmt
@@ -1768,6 +1778,7 @@ impl Db {
                         require_greeting: r.get(25)?,
                         min_chat_minutes: r.get(26)?,
                         follow_min_secs: r.get(27)?,
+                        can_gift: r.get(31)?,
                     },
                     manual: r.get(21)?,
                     reminded: r.get(22)?,
@@ -1832,7 +1843,7 @@ impl Db {
             "UPDATE giveaways SET channel = ?2, kind = ?3, command = ?4, url = ?5, ticket_unique = ?6, ticket_max = ?7,
                  reward_name = ?8, reward_cost = ?9, draw_at = ?10, require_follow = ?11, require_presence = ?12,
                  require_discord = ?13, notes = ?14, require_greeting = ?15, min_chat_minutes = ?16, follow_min_secs = ?17,
-                 reminded = CASE WHEN draw_at IS ?10 THEN reminded ELSE 0 END
+                 can_gift = ?18, reminded = CASE WHEN draw_at IS ?10 THEN reminded ELSE 0 END
              WHERE id = ?1",
             params![
                 id,
@@ -1851,7 +1862,8 @@ impl Db {
                 d.notes,
                 d.require_greeting,
                 d.min_chat_minutes,
-                d.follow_min_secs
+                d.follow_min_secs,
+                d.can_gift
             ],
         )?;
         Ok(())
@@ -1991,14 +2003,15 @@ impl Db {
     pub fn save_streamer(&self, s: &Streamer) -> DbResult<()> {
         self.conn().execute(
             "INSERT INTO streamers (login, discord_url, notes, ignored_commands, require_follow, follow_min_secs,
-                 require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name, can_gift)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(login) DO UPDATE SET discord_url = excluded.discord_url, notes = excluded.notes,
                  ignored_commands = excluded.ignored_commands, require_follow = excluded.require_follow,
                  follow_min_secs = excluded.follow_min_secs, require_presence = excluded.require_presence,
                  require_discord = excluded.require_discord, require_greeting = excluded.require_greeting,
                  min_chat_minutes = excluded.min_chat_minutes, win_reply = excluded.win_reply,
-                 win_reply_delay = excluded.win_reply_delay, se_name = excluded.se_name",
+                 win_reply_delay = excluded.win_reply_delay, se_name = excluded.se_name,
+                 can_gift = excluded.can_gift",
             params![
                 s.login,
                 s.discord_url,
@@ -2012,7 +2025,8 @@ impl Db {
                 s.min_chat_minutes,
                 s.win_reply,
                 s.win_reply_delay,
-                s.se_name
+                s.se_name,
+                s.can_gift
             ],
         )?;
         Ok(())
@@ -2027,7 +2041,8 @@ impl Db {
                  require_presence = COALESCE(require_presence, (SELECT require_presence FROM streamers WHERE login = giveaways.channel)),
                  require_discord = COALESCE(require_discord, (SELECT require_discord FROM streamers WHERE login = giveaways.channel)),
                  require_greeting = COALESCE(require_greeting, (SELECT require_greeting FROM streamers WHERE login = giveaways.channel)),
-                 min_chat_minutes = COALESCE(min_chat_minutes, (SELECT min_chat_minutes FROM streamers WHERE login = giveaways.channel))
+                 min_chat_minutes = COALESCE(min_chat_minutes, (SELECT min_chat_minutes FROM streamers WHERE login = giveaways.channel)),
+                 can_gift = COALESCE(can_gift, (SELECT can_gift FROM streamers WHERE login = giveaways.channel))
              WHERE id = ?1",
             [giveaway_id],
         )?;
@@ -3129,6 +3144,7 @@ mod tests {
             require_follow: Some(true),
             follow_min_secs: Some(30),
             require_greeting: Some(true),
+            can_gift: Some(false),
             ..Default::default()
         })
         .unwrap();
@@ -3147,6 +3163,11 @@ mod tests {
         db.apply_streamer_conditions(id).unwrap();
         let d = db.giveaway(id).unwrap().unwrap().details;
         assert_eq!((d.require_follow, d.follow_min_secs, d.require_greeting, d.require_presence), (Some(true), Some(30), Some(false), None));
+        assert_eq!(d.can_gift, Some(false));
+        // Changé sur le giveaway : recopié dans la fiche
+        let after = GiveawayDetails { can_gift: Some(true), ..d.clone() };
+        assert!(db.save_streamer_conditions("lunarsea", Some(&d), &after).unwrap());
+        assert_eq!(db.streamer("lunarsea").unwrap().unwrap().can_gift, Some(true));
     }
 
     #[test]

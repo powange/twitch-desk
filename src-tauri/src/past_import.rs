@@ -40,6 +40,8 @@ struct Conditions {
     discord: Option<bool>,
     greeting: Option<bool>,
     chat_minutes: Option<i64>,
+    /// Gain offrable à quelqu'un d'autre
+    gift: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +167,7 @@ fn check(item: ImportItem, gifts: &[crate::db::Gift]) -> Result<Checked, String>
             notes: item.notes,
             require_greeting: c.greeting,
             min_chat_minutes: c.chat_minutes,
+            can_gift: c.gift,
             follow_min_secs: match c.follow_duration.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
                 Some(d) => Some(crate::giveaways::parse_duration(d).ok_or_else(|| format!("followDuration « {d} » invalide (ex. 7j, 2h 30min)"))?),
                 None => c.follow_days.and_then(|d| d.checked_mul(86_400)),
