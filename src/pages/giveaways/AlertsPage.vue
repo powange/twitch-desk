@@ -10,6 +10,7 @@ import { useOpenExternal } from '../../utils/external'
 import { useWatchStream } from '../../utils/viewer'
 import { channelUrl, formatNumber, timeAgo } from '../../utils/format'
 import type { GiveawayKind, GiveawayView, ParticipationResult } from '../../types'
+import type { DropdownMenuItem } from '@nuxt/ui'
 import ChannelFlag from '../../components/ChannelFlag.vue'
 import GiveawayConditions from '../../components/GiveawayConditions.vue'
 import GiveawayFormModal from '../../components/GiveawayFormModal.vue'
@@ -161,6 +162,28 @@ const setHidden = (g: GiveawayView, hidden: boolean) =>
   run(`hide-${g.id}`, hidden ? 'Giveaway non masqué' : 'Giveaway toujours masqué', () => invoke('set_giveaway_hidden', { id: g.id, hidden }))
 const closeGiveaway = (g: GiveawayView) => run(`close-${g.id}`, 'Giveaway non clos', () => invoke('close_giveaway', { id: g.id }))
 const toDelete = ref<GiveawayView | null>(null)
+
+// Actions d'un giveaway : menu « ⋯ » de la dernière colonne et clic droit sur la ligne
+// (Participer et Acheter restent des boutons visibles) ; Supprimer à part, en bas
+function actionItems(g: GiveawayView): DropdownMenuItem[][] {
+  const main: DropdownMenuItem[] = [
+    { label: 'Journal du chat', icon: 'i-lucide-scroll-text', onSelect: () => openLog(g.channel, g.id) },
+    { label: 'Modifier', icon: 'i-lucide-pencil', onSelect: () => openForm(g) }
+  ]
+  if (g.status !== 'closed') {
+    main.push(
+      g.hidden
+        ? { label: 'Ne plus masquer', icon: 'i-lucide-eye', disabled: busy(`hide-${g.id}`), onSelect: () => void setHidden(g, false) }
+        : { label: 'Masquer', icon: 'i-lucide-eye-off', disabled: busy(`hide-${g.id}`), onSelect: () => void setHidden(g, true) },
+      { label: 'Clore', icon: 'i-lucide-circle-stop', disabled: busy(`close-${g.id}`), onSelect: () => void closeGiveaway(g) }
+    )
+  }
+  return [main, [{ label: 'Supprimer', icon: 'i-lucide-trash-2', color: 'error', onSelect: () => { toDelete.value = g } }]]
+}
+// Ligne sous le clic droit : ses actions dans le menu contextuel du tableau
+const menuGiveaway = ref<GiveawayView | null>(null)
+const contextItems = computed(() => menuGiveaway.value ? actionItems(menuGiveaway.value) : [])
+
 async function confirmDelete() {
   const g = toDelete.value
   if (!g) return
@@ -582,8 +605,9 @@ function share(g: GiveawayView) {
         </template>
       </div>
       <div class="border border-default rounded-lg overflow-x-auto">
+        <UContextMenu :items="contextItems">
         <table class="w-full text-sm">
-          <thead class="bg-elevated/60 text-xs uppercase text-muted">
+          <thead class="bg-elevated/60 text-xs uppercase text-muted" @contextmenu.stop.prevent>
             <tr>
               <th class="text-left px-3 py-2">Détecté</th>
               <th class="px-2 py-2"><span class="sr-only">Regarder</span></th>
@@ -605,6 +629,7 @@ function share(g: GiveawayView) {
               :key="g.id"
               class="border-t border-default"
               :class="[hasFavorite(g) ? FAVORITE_ROW : '', g.winnerOurs ? 'bg-success/10!' : '', g.hidden && g.status !== 'closed' ? 'opacity-50' : '']"
+              @contextmenu="menuGiveaway = g"
             >
               <td class="px-3 py-2 whitespace-nowrap text-muted">{{ timeAgo(g.detectedAt, now) }}</td>
               <td class="px-2 py-2">
@@ -740,29 +765,26 @@ function share(g: GiveawayView) {
                     :loading="participating === g.id"
                     @click="askBuy(g, accounts.map(a => a.id))"
                   />
-                  <UButton icon="i-lucide-scroll-text" size="xs" color="neutral" variant="ghost" :aria-label="`Journal du chat de ${g.channel}`" title="Journal du chat (pendant ce giveaway)" @click="openLog(g.channel, g.id)" />
-                  <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Modifier" @click="openForm(g)" />
-                  <UButton
-                    v-if="g.status !== 'closed'"
-                    :icon="g.hidden ? 'i-lucide-eye' : 'i-lucide-eye-off'"
-                    size="xs"
-                    color="neutral"
-                    variant="ghost"
-                    :aria-label="g.hidden ? 'Ne plus masquer' : 'Masquer'"
-                    :title="g.hidden ? 'Ne plus masquer ce giveaway' : 'Masquer ce giveaway : plus d\'alerte ni de participation automatique (le streamer reste suivi)'"
-                    :loading="busy(`hide-${g.id}`)"
-                    @click="setHidden(g, !g.hidden)"
-                  />
-                  <UButton v-if="g.status !== 'closed'" label="Clore" size="xs" color="neutral" variant="ghost" :loading="busy(`close-${g.id}`)" @click="closeGiveaway(g)" />
-                  <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" aria-label="Supprimer" @click="toDelete = g" />
+                  <UDropdownMenu :items="actionItems(g)" :content="{ align: 'end' }">
+                    <UButton
+                      icon="i-lucide-ellipsis"
+                      size="xs"
+                      color="neutral"
+                      variant="ghost"
+                      :loading="busy(`hide-${g.id}`) || busy(`close-${g.id}`)"
+                      :aria-label="`Actions du giveaway de ${g.channel}`"
+                      title="Actions (aussi au clic droit sur la ligne)"
+                    />
+                  </UDropdownMenu>
                 </div>
               </td>
             </tr>
-            <tr v-if="group.list.length === 0">
+            <tr v-if="group.list.length === 0" @contextmenu.stop.prevent>
               <td colspan="17" class="px-3 py-8 text-center text-muted">{{ group.empty }}</td>
             </tr>
           </tbody>
         </table>
+        </UContextMenu>
       </div>
       <!-- Giveaways passés : en ajouter un ancien, déjà terminé, pour garder l'historique -->
       <div v-if="group.key === 'past'" class="flex items-center gap-1">

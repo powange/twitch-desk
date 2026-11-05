@@ -9,7 +9,7 @@ defineProps<{ target: ConditionTarget, actions: ConditionActions }>()
 </script>
 
 <template>
-  <td class="px-2 py-2">
+  <td class="px-2 py-2 border-l border-default">
     <div class="flex justify-center items-center">
       <UTooltip v-if="target.requirePresence === null" text="Présence au tirage : on ne sait pas">
         <span class="text-muted rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Présence au tirage : on ne sait pas">?</span>
@@ -118,7 +118,7 @@ defineProps<{ target: ConditionTarget, actions: ConditionActions }>()
     </div>
   </td>
   <!-- Gain offrable : une information plutôt qu'une condition, affichée dans les deux cas -->
-  <td class="px-2 py-2">
+  <td class="px-2 py-2 border-r border-default">
     <div class="flex justify-center items-center">
       <UTooltip v-if="target.canGift == null" text="Gain offrable à quelqu'un d'autre : on ne sait pas">
         <span class="text-muted rounded focus-visible:outline-2 focus-visible:outline-primary" tabindex="0" role="img" aria-label="Gain offrable à quelqu'un d'autre : on ne sait pas">?</span>

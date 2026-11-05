@@ -1,6 +1,7 @@
-<!-- En-têtes des colonnes de conditions (une par condition), à côté de ConditionCells -->
+<!-- En-têtes des colonnes de conditions (une par condition), à côté de ConditionCells ; bloc
+     encadré d'un trait vertical à gauche et à droite -->
 <template>
-  <th class="px-2 py-2">
+  <th class="px-2 py-2 border-l border-default">
     <div class="flex justify-center">
       <UTooltip text="Présence requise dans le chat au moment du tirage">
       <UIcon name="i-lucide-user-check" class="size-4 block" aria-label="Présence au tirage" />
@@ -35,7 +36,7 @@
       </UTooltip>
     </div>
   </th>
-  <th class="px-2 py-2">
+  <th class="px-2 py-2 border-r border-default">
     <div class="flex justify-center">
       <UTooltip text="Gain offrable à quelqu'un d'autre">
         <UIcon name="i-lucide-hand-heart" class="size-4 block" aria-label="Gain offrable à quelqu'un d'autre" />

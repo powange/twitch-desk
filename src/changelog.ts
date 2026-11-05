@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.43',
+    date: '2026-11-05',
+    title: 'Menu d\'actions des giveaways',
+    changes: [
+      { kind: 'improved', text: 'Page Alertes : les actions d\'un giveaway (journal du chat, modifier, masquer, clore, supprimer) sont regroupées dans un menu « ⋯ » au bout de la ligne, et s\'ouvrent aussi d\'un clic droit n\'importe où sur la ligne. Participer et Acheter restent des boutons visibles.' },
+      { kind: 'improved', text: 'Pages Alertes et Chaînes : le bloc des colonnes de conditions est encadré d\'un trait vertical à gauche et à droite, pour mieux le distinguer des colonnes voisines.' }
+    ]
+  },
+  {
     version: '0.48.42',
     date: '2026-11-05',
     title: 'Connexion temps réel stable',
