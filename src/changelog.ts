@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.35',
+    date: '2026-11-05',
+    title: 'Adresse de la web app',
+    changes: [
+      { kind: 'new', text: 'Paramètres, Synchronisation : l\'adresse de la web app du téléphone s\'affiche, avec des boutons pour la copier et l\'ouvrir.' },
+      { kind: 'improved', text: 'L\'adresse de la web app peut être réglée une fois pour toutes sur le serveur de synchronisation (version 0.8.8 et plus) : tous les PC l\'utilisent, pour l\'affichage comme pour le QR code de connexion d\'un téléphone, sans rien régler. Le champ du PC reste disponible pour utiliser une autre adresse sur ce poste.' }
+    ]
+  },
+  {
     version: '0.48.34',
     date: '2026-11-05',
     title: 'Réponse au gain plus fiable',

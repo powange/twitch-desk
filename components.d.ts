@@ -21,6 +21,7 @@ declare module 'vue' {
     ChatLogModal: typeof import('./src/components/ChatLogModal.vue')['default']
     ConditionCells: typeof import('./src/components/conditions/ConditionCells.vue')['default']
     ConditionHeaders: typeof import('./src/components/conditions/ConditionHeaders.vue')['default']
+    DevInstances: typeof import('./src/components/DevInstances.vue')['default']
     GiftBadge: typeof import('./src/components/GiftBadge.vue')['default']
     GiftFormModal: typeof import('./src/components/GiftFormModal.vue')['default']
     GiftGroupsModal: typeof import('./src/components/GiftGroupsModal.vue')['default']

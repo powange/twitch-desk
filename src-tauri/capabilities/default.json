@@ -118,6 +118,7 @@
     "allow-save-sync-instance",
     "allow-sync-pair-start",
     "allow-sync-devices",
+    "allow-sync-instances",
     "allow-sync-revoke-device",
     "allow-export-gifts",
     "allow-import-gifts",

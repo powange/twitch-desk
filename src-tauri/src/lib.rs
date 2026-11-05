@@ -367,6 +367,7 @@ pub fn run() {
             sync::save_sync_instance,
             sync::sync_pair_start,
             sync::sync_devices,
+            sync::sync_instances,
             sync::sync_revoke_device,
             sync::sync_now,
             sync::set_sync_skipped,

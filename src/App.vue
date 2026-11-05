@@ -13,6 +13,7 @@ import { useSnapshot } from './composables/useSnapshot'
 import { useUpdater } from './composables/useUpdater'
 import { installSoundAlerts } from './composables/useSoundAlerts'
 import { useSettings } from './composables/useSettings'
+import { useDevMode } from './composables/useDevMode'
 import { installLogin } from './composables/useLogin'
 import UpdateBanner from './components/UpdateBanner.vue'
 import GiveawayFormModal from './components/GiveawayFormModal.vue'
@@ -20,6 +21,10 @@ import GiveawayFormModal from './components/GiveawayFormModal.vue'
 const { snapshot, accounts, paused } = useSnapshot()
 const updater = useUpdater()
 const version = ref('')
+const devMode = useDevMode()
+function onVersionClick() {
+  if (devMode.tap()) winToast.add({ title: 'Menu développeur débloqué', description: 'Dans Paramètres, jusqu\'à la fermeture de l\'application', icon: 'i-lucide-code-xml' })
+}
 
 const needsAttention = computed(() => accounts.value.filter(a => a.status === 'expired').length)
 const liveCount = computed(() => accounts.value.flatMap(a => a.channels).filter(c => c.live).length)
@@ -155,7 +160,7 @@ onMounted(async () => {
             {{ paused ? 'En pause' : `Actif · ${liveCount} en live` }}
           </div>
           <AppUsage />
-          <div>v{{ version }}</div>
+          <div class="select-none" @click="onVersionClick">v{{ version }}</div>
         </div>
       </aside>
       <main class="flex-1 min-w-0 flex flex-col">

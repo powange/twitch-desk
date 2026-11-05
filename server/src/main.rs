@@ -114,6 +114,11 @@ struct Server {
     web_dir: PathBuf,
     /// Notifications push : clé VAPID et envoi
     push: push::Push,
+    /// Adresse publique de la web app (`SYNC_WEB_URL`), donnée aux applications
+    web_url: Option<String>,
+    /// Flux temps réel ouverts par chaque application (identifiant donné à l'ouverture) : ouverte
+    /// ou fermée, pour le diagnostic
+    pc_streams: Mutex<HashMap<String, usize>>,
 }
 
 impl Server {
@@ -126,6 +131,7 @@ impl Server {
             tracing::warn!("SYNC_PUSH_CONTACT non défini : indique un contact de l'hébergeur (mailto:toi@exemple.fr) pour les notifications push");
         }
         let push = push::Push::load(&conn, contact.unwrap_or_else(|| push::DEFAULT_CONTACT.to_owned()))?;
+        let web_url = std::env::var("SYNC_WEB_URL").ok().and_then(|u| web_url_of(&u));
         Ok(Server {
             code,
             collections,
@@ -136,6 +142,8 @@ impl Server {
             phone_seq: watch::Sender::new(Some(seq)),
             streams: Arc::new(Semaphore::new(MAX_STREAMS)),
             stream_owners: Mutex::new(HashMap::new()),
+            web_url,
+            pc_streams: Mutex::new(HashMap::new()),
             next_stream: std::sync::atomic::AtomicU64::new(0),
             pair_guard: Guard::new(mobile::PAIR_MAX_FAILURES, mobile::PAIR_WINDOW, mobile::PAIR_BLOCK),
             pairings: Mutex::new(HashMap::new()),
@@ -272,6 +280,19 @@ struct Info {
     seq: i64,
     /// Documents présents (hors suppressions) par collection synchronisée
     counts: std::collections::BTreeMap<String, i64>,
+    /// Adresse de la web app (`SYNC_WEB_URL`), si l'hébergeur l'a indiquée
+    #[serde(rename = "webUrl", skip_serializing_if = "Option::is_none")]
+    web_url: Option<String>,
+}
+
+/// `SYNC_WEB_URL` : adresse http(s) sans espace, sans / final ; autre chose : ignorée
+fn web_url_of(raw: &str) -> Option<String> {
+    let url = raw.trim().trim_end_matches('/');
+    let ok = (url.starts_with("https://") || url.starts_with("http://")) && url.len() <= 300 && !url.contains(char::is_whitespace) && url.split("://").nth(1).is_some_and(|h| !h.is_empty());
+    if !ok && !url.is_empty() {
+        tracing::warn!("SYNC_WEB_URL ignorée : adresse http(s) attendue");
+    }
+    ok.then(|| url.to_owned())
 }
 
 #[derive(Debug, Serialize)]
@@ -533,7 +554,69 @@ async fn info(State(server): State<Shared>) -> Result<Json<Info>, ApiError> {
         collections: COLLECTIONS.iter().filter(|c| server.collections.contains(**c)).map(|c| c.to_string()).collect(),
         seq,
         counts,
+        web_url: server.web_url.clone(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct EventsQuery {
+    /// Identifiant de l'application qui ouvre le flux (diagnostic : ouverte ou fermée)
+    instance: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstanceOverview {
+    id: String,
+    name: String,
+    /// Flux temps réel ouvert en ce moment
+    online: bool,
+    /// Dernier enregistrement ou dernier état publié
+    last_seen: String,
+    /// Comptes Twitch de l'application (d'après son dernier état publié)
+    accounts: Vec<String>,
+    /// Appareils associés, et ceux dont la web app est ouverte en ce moment
+    devices: i64,
+    devices_online: i64,
+}
+
+/// `GET /api/v1/admin/instances` : applications connues du serveur, ouvertes ou non, leurs comptes
+/// Twitch et leurs appareils (code partagé seulement)
+async fn instances_overview(State(server): State<Shared>) -> Result<Json<Vec<InstanceOverview>>, ApiError> {
+    let online: HashMap<String, usize> = server.pc_streams.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let devices_live: BTreeSet<String> = server
+        .stream_owners
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .keys()
+        .filter_map(|k| k.strip_prefix("device:").map(str::to_owned))
+        .collect();
+    let list = with_db(&server, move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT i.id, i.name, MAX(i.updated_at, COALESCE(i.state_at, '')), i.state,
+                    (SELECT COUNT(*) FROM devices d WHERE d.instance = i.id)
+             FROM instances i ORDER BY i.name COLLATE NOCASE, i.id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, i64>(4)?))
+        })?;
+        let mut device_stmt = conn.prepare("SELECT id FROM devices WHERE instance = ?1")?;
+        let mut out = vec![];
+        for row in rows {
+            let (id, name, last_seen, state, devices) = row?;
+            let accounts = state
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| v.get("accounts").and_then(|a| a.as_array()).cloned())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            let ids: Vec<String> = device_stmt.query_map([&id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let devices_online = ids.iter().filter(|d| devices_live.contains(*d)).count() as i64;
+            out.push(InstanceOverview { online: online.get(&id).is_some_and(|n| *n > 0), id, name, last_seen, accounts, devices, devices_online });
+        }
+        Ok(out)
+    })
+    .await?;
+    Ok(Json(list))
 }
 
 /// Modifications après `since` : `limit` documents et `max_bytes` de contenu au plus (au
@@ -676,7 +759,12 @@ fn seq_event(seq: i64) -> Event {
 ///
 /// Appareil associé (0.6) : en plus, un événement `state` (`data: {"instance":"…"}`) quand
 /// son application publie un nouvel état ; son flux se ferme dès qu'il est révoqué
-async fn events(State(server): State<Shared>, Extension(access): Extension<Access>, request: Request) -> Response {
+async fn events(State(server): State<Shared>, Extension(access): Extension<Access>, Query(q): Query<EventsQuery>, request: Request) -> Response {
+    // Application qui se signale : comptée ouverte tant que son flux l'est
+    let pc = match (&access, q.instance) {
+        (Access::Full, Some(i)) if mobile::valid_instance_id(&i) => Some(i),
+        _ => None,
+    };
     // Propriétaire du flux : l'appareil, ou l'adresse de l'application ; ses flux en trop
     // (le plus ancien d'abord) sont fermés pour faire de la place
     let (owner, limit) = match &access {
@@ -698,10 +786,22 @@ async fn events(State(server): State<Shared>, Extension(access): Extension<Acces
             }
         }
     }
+    if let Some(i) = &pc {
+        *server.pc_streams.lock().unwrap_or_else(|e| e.into_inner()).entry(i.clone()).or_default() += 1;
+    }
     let release = {
         let server = server.clone();
         let owner = owner.clone();
         move || {
+            if let Some(i) = &pc {
+                let mut streams = server.pc_streams.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(n) = streams.get_mut(i) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        streams.remove(i);
+                    }
+                }
+            }
             let mut owners = server.stream_owners.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(list) = owners.get_mut(&owner) {
                 list.retain(|(id, _)| *id != stream_id);
@@ -956,6 +1056,7 @@ fn app(server: Shared) -> Router {
     // Code partagé : applications seulement (tout ce qui écrit)
     let full = Router::new()
         .route("/api/v1/info", get(info))
+        .route("/api/v1/admin/instances", get(instances_overview))
         .route("/api/v1/changes", get(changes).post(push))
         .route("/api/v1/instances/{id}", put(mobile::put_instance))
         .route("/api/v1/instances/{id}/state", put(mobile::put_state))
@@ -1390,6 +1491,30 @@ mod tests {
             .header("authorization", auth)
             .body(Body::from(body.to_owned()))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_overview_shows_open_apps_accounts_and_devices() {
+        let s = server(&["gifts"]);
+        let put = |uri: String, body: &str| request("PUT", &uri, Some("code-secret"), "7.7.7.7", body);
+        assert_eq!(status(&s, put(format!("/api/v1/instances/{INSTANCE}"), r#"{"name":"PC salon"}"#)).await, StatusCode::OK);
+        let state = r#"{"accounts":["alice","bob"],"giveaways":{},"live":{}}"#;
+        assert_eq!(status(&s, put(format!("/api/v1/instances/{INSTANCE}/state"), state)).await, StatusCode::NO_CONTENT);
+        let overview = || request("GET", "/api/v1/admin/instances", Some("code-secret"), "7.7.7.7", "");
+        let (code, list) = json_of(&s, overview()).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(list[0]["name"], "PC salon");
+        assert_eq!(list[0]["accounts"], serde_json::json!(["alice", "bob"]));
+        assert_eq!((list[0]["online"].clone(), list[0]["devices"].clone()), (serde_json::json!(false), serde_json::json!(0)));
+        // Flux temps réel ouvert par l'application : ouverte
+        let res = app(s.clone()).oneshot(request("GET", &format!("/api/v1/events?instance={INSTANCE}"), Some("code-secret"), "7.7.7.7", "")).await.unwrap();
+        let mut body = res.into_body().into_data_stream();
+        next_event(&mut body).await;
+        assert_eq!(json_of(&s, overview()).await.1[0]["online"], true);
+        // Réservé au code partagé
+        assert_eq!(status(&s, request("GET", "/api/v1/admin/instances", None, "7.7.7.7", "")).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(web_url_of(" https://app.exemple.fr/ "), Some("https://app.exemple.fr".into()));
+        assert_eq!(web_url_of("ftp://x"), None);
     }
 
     async fn json_of(s: &Shared, r: Request) -> (StatusCode, serde_json::Value) {

@@ -184,6 +184,9 @@ pub struct ServerInfo {
     /// Documents par collection (serveur 0.2 et plus)
     #[serde(default)]
     pub counts: Option<BTreeMap<String, i64>>,
+    /// Adresse de la web app réglée sur le serveur (`SYNC_WEB_URL`, serveur 0.8.8 et plus)
+    #[serde(default, rename = "webUrl")]
+    pub web_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1262,6 +1265,14 @@ fn reapply(conn: &Connection, deferred: &[(&str, String, Value)], enabled: &[&st
 
 async fn run(app: &App, cfg: &Config) -> Result<Outcome, String> {
     let info = server_info(&app.http, &cfg.url, &cfg.code).await?;
+    // Adresse de la web app donnée par le serveur : gardée (paramètres, QR code de connexion)
+    let server_web = info.web_url.as_deref().and_then(|u| normalize_url(u).ok()).unwrap_or_default();
+    {
+        let conn = app.db.conn();
+        if meta(&conn, "server_web_url").unwrap_or_default() != server_web {
+            set_meta(&conn, "server_web_url", &server_web).map_err(db_err)?;
+        }
+    }
     let skipped = skipped(&app.db.conn());
     let offered: Vec<&str> = COLLECTIONS.iter().copied().filter(|c| info.collections.iter().any(|x| x == c)).collect();
     let enabled: Vec<&str> = offered.iter().copied().filter(|c| !skipped.iter().any(|s| s == c)).collect();
@@ -1476,9 +1487,12 @@ enum LiveEnd {
 /// Écoute le flux temps réel jusqu'à sa fermeture : chaque numéro annoncé différent du
 /// curseur lance un passage
 async fn listen(app: &App, cfg: &Config) -> LiveEnd {
+    let instance = instance_id(&app.db.conn()).unwrap_or_default();
     let res = app
         .http
+        // Identifiant de l'application : le serveur la sait ouverte tant que ce flux l'est
         .get(format!("{}/api/v1/events", cfg.url))
+        .query(&[("instance", instance)])
         .bearer_auth(&cfg.code)
         .header(reqwest::header::ACCEPT, "text/event-stream")
         // Pas de compression : chaque événement arrive aussitôt
@@ -1708,12 +1722,13 @@ fn default_instance_name(first_login: Option<String>) -> String {
     host.unwrap_or_else(|| "Twitch Desk".to_owned())
 }
 
-/// Adresse de la web app : celle choisie, sinon celle du serveur suivie de /app
+/// Adresse de la web app : celle choisie sur ce PC, sinon celle réglée sur le serveur
+/// (`SYNC_WEB_URL`), sinon l'adresse du serveur suivie de /app
 fn web_app_url(conn: &Connection, server_url: &str) -> String {
-    match meta(conn, "web_url").filter(|u| !u.is_empty()) {
-        Some(u) => u,
-        None => format!("{server_url}/app"),
-    }
+    meta(conn, "web_url")
+        .filter(|u| !u.is_empty())
+        .or_else(|| meta(conn, "server_web_url").filter(|u| !u.is_empty()))
+        .unwrap_or_else(|| format!("{}/app", server_url.trim_end_matches('/')))
 }
 
 /// Enregistre l'application sur le serveur (nom compris) quand l'adresse ou le nom change ;
@@ -2242,6 +2257,34 @@ pub async fn sync_devices(app: State<'_, Arc<App>>) -> Result<Vec<DeviceView>, S
     request(app.http.get(format!("{url}/api/v1/instances/{id}/devices")), &code).await.map_err(web_app_err)
 }
 
+/// Applications connues du serveur (diagnostic) : ouvertes ou non, comptes Twitch, appareils
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceOverview {
+    id: String,
+    name: String,
+    online: bool,
+    last_seen: String,
+    accounts: Vec<String>,
+    devices: i64,
+    devices_online: i64,
+    /// Cette application
+    #[serde(default)]
+    current: bool,
+}
+
+#[tauri::command]
+pub async fn sync_instances(app: State<'_, Arc<App>>) -> Result<Vec<InstanceOverview>, String> {
+    let (url, code, id) = saved_server(&app)?;
+    let mut list: Vec<InstanceOverview> = request(app.http.get(format!("{url}/api/v1/admin/instances")), &code)
+        .await
+        .map_err(|e| if e == NOT_SYNC_SERVER { "Mets à jour le serveur de synchronisation (version 0.8.8 ou plus)".to_owned() } else { e })?;
+    for i in &mut list {
+        i.current = i.id == id;
+    }
+    Ok(list)
+}
+
 /// Révoque un téléphone : son accès est refusé aussitôt
 #[tauri::command]
 pub async fn sync_revoke_device(app: State<'_, Arc<App>>, device_id: String) -> Result<(), String> {
@@ -2280,8 +2323,12 @@ pub struct SyncConfigView {
     /// Nom de cette application (vide : `default_name`)
     instance_name: String,
     default_name: String,
-    /// Adresse de la web app choisie (vide : celle du serveur suivie de /app)
+    /// Adresse de la web app choisie (vide : celle du serveur)
     web_url: String,
+    /// Adresse réglée sur le serveur (`SYNC_WEB_URL`, vide : aucune)
+    server_web_url: String,
+    /// Adresse de la web app utilisée (choisie, sinon serveur, sinon serveur suivi de /app)
+    app_url: String,
     /// Achats de tickets StreamElements depuis le téléphone autorisés
     phone_actions: bool,
 }
@@ -2297,6 +2344,8 @@ pub fn get_sync_config(app: State<'_, Arc<App>>) -> SyncConfigView {
         instance_name: meta(&conn, "instance_name").unwrap_or_default(),
         default_name,
         web_url: meta(&conn, "web_url").unwrap_or_default(),
+        server_web_url: meta(&conn, "server_web_url").unwrap_or_default(),
+        app_url: meta(&conn, "url").filter(|u| !u.is_empty()).map(|u| web_app_url(&conn, &u)).unwrap_or_default(),
         phone_actions: meta(&conn, "phone_actions").as_deref() == Some("1"),
     }
 }

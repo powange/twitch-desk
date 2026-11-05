@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { getVersion } from '@tauri-apps/api/app'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
@@ -11,6 +11,8 @@ import SyncSettings from '../components/SyncSettings.vue'
 import LogViewer from '../components/LogViewer.vue'
 import ChangelogView from '../components/ChangelogView.vue'
 import { useSettings } from '../composables/useSettings'
+import { useDevMode } from '../composables/useDevMode'
+import DevInstances from '../components/DevInstances.vue'
 
 const toast = useToast()
 const updater = useUpdater()
@@ -51,7 +53,7 @@ async function setAutostart(value: boolean) {
 }
 
 // Sections de la page : menu vertical à gauche, une section affichée à la fois
-type Section = 'general' | 'updates' | 'sync' | 'data' | 'logs' | 'changelog'
+type Section = 'general' | 'updates' | 'sync' | 'data' | 'logs' | 'changelog' | 'dev'
 const SECTIONS: { key: Section, label: string, icon: string }[] = [
   { key: 'general', label: 'Général', icon: 'i-lucide-sliders-horizontal' },
   { key: 'updates', label: 'Mises à jour', icon: 'i-lucide-download' },
@@ -60,6 +62,9 @@ const SECTIONS: { key: Section, label: string, icon: string }[] = [
   { key: 'logs', label: 'Journaux', icon: 'i-lucide-scroll-text' },
   { key: 'changelog', label: 'Changelog', icon: 'i-lucide-newspaper' }
 ]
+// Section Développeur : visible seulement une fois débloquée (pour cette session)
+const { unlocked: devUnlocked } = useDevMode()
+const sections = computed(() => devUnlocked.value ? [...SECTIONS, { key: 'dev' as const, label: 'Développeur', icon: 'i-lucide-code-xml' }] : SECTIONS)
 const SECTION_KEY = 'settings-section'
 function savedSection(): Section {
   try {
@@ -93,7 +98,7 @@ async function checkUpdates() {
     <div class="grid gap-6 items-start" :class="section === 'logs' ? 'grid-cols-[200px_minmax(0,1fr)]' : 'grid-cols-[200px_minmax(0,48rem)]'">
       <nav class="flex flex-col gap-1 border-r border-default pr-4 sticky top-6" aria-label="Sections des paramètres">
         <button
-          v-for="item in SECTIONS"
+          v-for="item in sections"
           :key="item.key"
           type="button"
           class="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm font-medium transition-colors"
@@ -238,6 +243,12 @@ async function checkUpdates() {
             <USwitch v-model="settings.showUsage" aria-label="Afficher les ressources de l'application" />
           </div>
           <LogViewer />
+        </section>
+
+        <section v-if="section === 'dev' && devUnlocked" class="flex flex-col gap-2">
+          <h2 class="text-sm font-semibold uppercase text-muted tracking-wide">Développeur</h2>
+          <p class="text-sm text-muted">Applications connectées au serveur de synchronisation.</p>
+          <DevInstances />
         </section>
 
         <section v-if="section === 'changelog'" class="flex flex-col gap-2">

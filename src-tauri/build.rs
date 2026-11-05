@@ -107,6 +107,7 @@ const COMMANDS: &[&str] = &[
     "save_sync_instance",
     "sync_pair_start",
     "sync_devices",
+    "sync_instances",
     "sync_revoke_device",
     "export_gifts",
     "import_gifts",

@@ -110,6 +110,7 @@ Depuis le menu ⋮, un téléphone peut aussi demander au PC de vérifier ses mi
 | `SYNC_DB` | `/data/sync.db` | Fichier SQLite (volume `/data`) |
 | `SYNC_PORT` | `8787` | Port d'écoute |
 | `SYNC_WEB_PORT` | (aucun) | Port supplémentaire qui ne sert que la web app (`/app`) ; sans lui, elle est servie sur `SYNC_PORT` seulement |
+| `SYNC_WEB_URL` | (aucune) | Adresse publique de la web app, telle que ton proxy la sert (`https://twitch.exemple.fr/app`). Donnée aux applications : elle s'affiche dans leurs paramètres de synchronisation et sert au QR code de connexion d'un téléphone, sans rien régler sur chaque PC. Sans elle : l'adresse du serveur suivie de `/app` (ou celle réglée sur le PC) |
 | `SYNC_PUSH_CONTACT` | `https://github.com/powange/twitch-desk` | Contact donné aux services de push dans la signature VAPID (`mailto:…` ou `https://…`). À remplacer par un contact de l'hébergeur (`mailto:toi@exemple.fr`) : par défaut, Google, Apple ou Mozilla contacteraient l'auteur du projet en cas de problème, et un avertissement est écrit au démarrage |
 | `SYNC_WEB_DIR` | `/usr/share/twitch-desk-sync/web` | Fichiers de la web app (remplis dans l'image) |
 | `SYNC_HOST_BIND` | `127.0.0.1` | (compose) Interface de l'hôte où le port est publié |

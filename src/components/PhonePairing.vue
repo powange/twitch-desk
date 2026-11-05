@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import QRCode from 'qrcode'
 import { timeAgo } from '../utils/format'
+import { useOpenExternal } from '../utils/external'
 
 // Web app mobile (serveur 0.6 et plus) : nom de cette application, téléphones associés par
 // un code à 6 chiffres, révocation
@@ -17,6 +18,9 @@ const defaultName = ref('')
 const webUrl = ref('')
 const savedName = ref('')
 const savedWebUrl = ref('')
+// Adresse réglée sur le serveur (SYNC_WEB_URL), vide : aucune
+const serverWebUrl = ref('')
+const openExternal = useOpenExternal()
 const savingInstance = ref(false)
 
 const devices = ref<Device[]>([])
@@ -31,7 +35,9 @@ const now = ref(Date.now())
 let ticker: ReturnType<typeof setInterval> | null = null
 let poller: ReturnType<typeof setInterval> | null = null
 
-const webPlaceholder = computed(() => `${props.serverUrl.replace(/\/+$/, '') || 'https://sync.exemple.fr'}/app`)
+const webPlaceholder = computed(() => serverWebUrl.value || `${props.serverUrl.replace(/\/+$/, '') || 'https://sync.exemple.fr'}/app`)
+// Adresse de la web app utilisée : celle choisie ici, sinon celle du serveur, sinon /app du serveur
+const appUrl = computed(() => (savedWebUrl.value || (props.serverUrl.trim() ? webPlaceholder.value : '')).replace(/\/+$/, ''))
 const instanceChanged = computed(() => name.value.trim() !== savedName.value || webUrl.value.trim() !== savedWebUrl.value)
 const remaining = computed(() => {
   if (!pairing.value) return 0
@@ -40,7 +46,8 @@ const remaining = computed(() => {
 const remainingLabel = computed(() => `${Math.floor(remaining.value / 60)}:${String(remaining.value % 60).padStart(2, '0')}`)
 
 onMounted(async () => {
-  const config = await invoke<{ instanceName: string, defaultName: string, webUrl: string, phoneActions: boolean }>('get_sync_config')
+  const config = await invoke<{ instanceName: string, defaultName: string, webUrl: string, serverWebUrl: string, phoneActions: boolean }>('get_sync_config')
+  serverWebUrl.value = config.serverWebUrl
   phoneActions.value = config.phoneActions
   name.value = config.instanceName
   savedName.value = config.instanceName
@@ -160,6 +167,15 @@ async function copyLink() {
     toast.add({ title: 'Copie impossible', color: 'error' })
   }
 }
+
+async function copyAppUrl() {
+  try {
+    await navigator.clipboard.writeText(appUrl.value)
+    toast.add({ title: 'Adresse copiée', color: 'success', icon: 'i-lucide-check' })
+  } catch {
+    toast.add({ title: 'Copie impossible', color: 'error' })
+  }
+}
 </script>
 
 <template>
@@ -178,7 +194,13 @@ async function copyLink() {
     <UFormField label="Nom de cette application" help="Affiché sur le téléphone pour reconnaître ce poste">
       <UInput id="sync-instance-name" v-model="name" :placeholder="defaultName" class="w-full" maxlength="60" autocomplete="off" />
     </UFormField>
-    <UFormField label="Adresse de la web app" help="À changer seulement si ton proxy sert /app ailleurs que sur l'adresse du serveur">
+    <div v-if="appUrl" class="flex flex-wrap items-center gap-2 text-sm">
+      <span class="text-muted">Web app :</span>
+      <span class="font-mono break-all select-all">{{ appUrl }}</span>
+      <UButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" aria-label="Copier l'adresse de la web app" title="Copier" @click="copyAppUrl" />
+      <UButton icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" aria-label="Ouvrir la web app" title="Ouvrir" @click="openExternal(appUrl)" />
+    </div>
+    <UFormField label="Adresse de la web app" :help="serverWebUrl ? 'Donnée par le serveur : à remplir seulement pour utiliser une autre adresse sur ce poste' : 'À changer seulement si ton proxy sert /app ailleurs que sur l\'adresse du serveur (ou règle SYNC_WEB_URL sur le serveur)'">
       <UInput id="sync-web-url" v-model="webUrl" :placeholder="webPlaceholder" class="w-full" autocomplete="off" />
     </UFormField>
     <div class="flex items-center gap-2">
