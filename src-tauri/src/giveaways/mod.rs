@@ -323,7 +323,18 @@ struct Monitor {
     open_commands: HashMap<String, Vec<(i64, String)>>,
     /// Commande d'information tapée, en attente de la réponse d'un bot : chaîne → (commande, pseudo, moment)
     pending_info: HashMap<String, (String, String, Instant)>,
+    /// Participation automatique hors giveaway : chaîne → commandes que ce PC tape
+    auto_commands: HashMap<String, Vec<String>>,
+    /// (chaîne, commande) → spectateurs qui l'ont tapée récemment, et quand
+    auto_seen: HashMap<(String, String), VecDeque<(String, Instant)>>,
+    /// (chaîne, commande) → dernier envoi (une fois par vague)
+    auto_sent: HashMap<(String, String), Instant>,
 }
+
+/// Participation automatique hors giveaway : une vague (assez de spectateurs différents qui
+/// tapent la commande dans ce délai) déclenche l'envoi, au plus une fois par AUTO_COMMAND_COOLDOWN
+const AUTO_COMMAND_WINDOW: Duration = Duration::from_secs(120);
+const AUTO_COMMAND_COOLDOWN: Duration = Duration::from_secs(600);
 
 /// Journal du chat : écrit par lots, gardé 14 jours
 const CHAT_LOG_FLUSH: usize = 50;
@@ -392,6 +403,9 @@ impl Monitor {
             chat_log: vec![],
             last_prune: None,
             pending_info: HashMap::new(),
+            auto_commands: HashMap::new(),
+            auto_seen: HashMap::new(),
+            auto_sent: HashMap::new(),
             open_commands: HashMap::new(),
         }
     }
@@ -478,6 +492,16 @@ impl Monitor {
             tracing::warn!("formulation de gagnant écartée : {e}");
         }
         self.channels = self.app.db.giveaway_channels().unwrap_or_default();
+        self.auto_commands = self
+            .app
+            .db
+            .streamers()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| !s.auto_commands_on.is_empty())
+            .map(|s| (s.login, s.auto_commands_on))
+            .collect();
+        self.auto_seen.retain(|(c, cmd), _| self.auto_commands.get(c).is_some_and(|l| l.contains(cmd)));
         self.games = self.app.db.giveaway_games().unwrap_or_default();
         self.gqls.clear();
         self.accounts = self.app.db.accounts().unwrap_or_default().into_iter().map(|a| (a.id, a.login.to_lowercase())).collect();
@@ -492,7 +516,7 @@ impl Monitor {
 
     /// Chaînes dont le chat est lu : surveillées, et celles d'un giveaway ouvert (journal)
     fn logged(&self, channel: &str) -> bool {
-        self.monitored(channel) || self.giveaway_only.contains(channel)
+        self.monitored(channel) || self.giveaway_only.contains(channel) || self.auto_commands.contains_key(channel)
     }
 
     /// Chaînes que la connexion anonyme doit rejoindre : lues et sans compte présent
@@ -512,6 +536,8 @@ impl Monitor {
             .iter()
             .map(|c| c.login.clone())
             .chain(self.giveaway_only.iter().cloned())
+            // Chaînes avec une participation automatique active sur ce PC : chat lu aussi
+            .chain(self.auto_commands.keys().cloned())
             .filter(|c| !self.coverage.get(c).is_some_and(|s| s.iter().any(|src| *src != ANONYMOUS)))
             .collect();
         if !wanted.is_empty() && self.anon_task.is_none() {
@@ -1033,6 +1059,35 @@ impl Monitor {
     }
 
     /// Détection active : sauf en live hors des catégories choisies
+    /// Commande en participation automatique tapée par un spectateur : vague assez grande (autant
+    /// de spectateurs différents que pour détecter un giveaway), pas d'envoi depuis 10 min ->
+    /// tapée avec nos comptes après quelques secondes
+    fn on_auto_command(&mut self, channel: &str, user_l: &str, text: &str) {
+        let Some(list) = self.auto_commands.get(channel) else { return };
+        let typed = text.trim().to_lowercase();
+        let Some(command) = list.iter().find(|c| typed == **c || typed.starts_with(&format!("{c} "))).cloned() else { return };
+        // Nos propres comptes ne comptent pas dans la vague
+        if self.accounts.iter().any(|(_, l)| l == user_l) {
+            return;
+        }
+        let now = Instant::now();
+        let key = (channel.to_owned(), command.clone());
+        let seen = self.auto_seen.entry(key.clone()).or_default();
+        seen.retain(|(_, at)| now.duration_since(*at) < AUTO_COMMAND_WINDOW);
+        if !seen.iter().any(|(u, _)| u == user_l) {
+            seen.push_back((user_l.to_owned(), now));
+        }
+        let needed = detect::DetectParams::from_settings(&self.app.db.settings()).min_count.max(2);
+        if seen.len() < needed || self.auto_sent.get(&key).is_some_and(|t| now.duration_since(*t) < AUTO_COMMAND_COOLDOWN) {
+            return;
+        }
+        self.auto_sent.insert(key.clone(), now);
+        seen.clear();
+        let app = self.app.clone();
+        let channel = channel.to_owned();
+        tauri::async_runtime::spawn(async move { send_auto_command(&app, &channel, &command).await });
+    }
+
     fn detection_active(&self, channel: &str) -> bool {
         let live_elsewhere = self.live.get(channel).is_some_and(|l| l.info.is_some()) && !self.in_category(channel);
         !live_elsewhere
@@ -1081,7 +1136,9 @@ impl Monitor {
                     if self.monitored(&channel) {
                         self.on_message(&channel, &user, &text, parsed);
                     } else {
-                        // Chaîne lue pour un giveaway ouvert : gagnant seulement, pas de détection
+                        // Chaîne lue pour un giveaway ouvert ou une participation automatique :
+                        // gagnant et commandes automatiques seulement, pas de détection
+                        self.on_auto_command(&channel, &user.to_lowercase(), &text);
                         self.on_announcement(&channel, parsed, false);
                     }
                 }
@@ -1411,6 +1468,7 @@ impl Monitor {
             return;
         }
         self.on_mention(channel, &user_l, text);
+        self.on_auto_command(channel, &user_l, text);
         if !self.detection_active(channel) {
             return;
         }
@@ -2106,6 +2164,23 @@ pub async fn participate(app: &Arc<App>, giveaway_id: i64, account_ids: &[i64], 
     }
     refresh_view(app);
     Ok(results)
+}
+
+/// Participation automatique hors giveaway : la commande tapée avec chacun de nos comptes, après
+/// un délai aléatoire de 2 à 8 s (pas dans la même seconde que tout le monde)
+async fn send_auto_command(app: &Arc<App>, channel: &str, command: &str) {
+    let wait = rand::random_range(2_000..8_000);
+    tokio::time::sleep(Duration::from_millis(wait)).await;
+    for account in app.db.accounts().unwrap_or_default() {
+        let result = match app.secrets.load(&account.user_id) {
+            None => Err("jeton introuvable : reconnecte ce compte".to_owned()),
+            Some(tokens) => chat::send_message(&account.login, &tokens.access_token, channel, command).await,
+        };
+        match result {
+            Ok(()) => app.log(&account.login, EventKind::Giveaway, format!("{command} envoyé sur {channel} (participation automatique, hors giveaway)")),
+            Err(e) => app.log(&account.login, EventKind::Error, format!("{command} non envoyé sur {channel} : {e}")),
+        }
+    }
 }
 
 /// Envoi d'une participation réservé (giveaway, compte) ; libéré à la fin de l'envoi

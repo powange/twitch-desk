@@ -1232,6 +1232,15 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
     }
     let notes = streamer.notes.map(|n| n.trim().chars().take(2000).collect::<String>()).filter(|n| !n.is_empty());
     let ignored_commands = crate::giveaways::detect::normalize_excluded(&streamer.ignored_commands);
+    // Participation automatique : mêmes commandes nettoyées ; celles activées sur ce PC, parmi elles
+    let auto_commands = crate::giveaways::detect::normalize_excluded(&streamer.auto_commands);
+    let auto_commands_on: Vec<String> = crate::giveaways::detect::normalize_excluded(&streamer.auto_commands_on)
+        .into_iter()
+        .filter(|c| auto_commands.contains(c))
+        .collect();
+    if auto_commands.len() > 30 {
+        return Err("30 commandes au plus en participation automatique".into());
+    }
     if streamer.min_chat_minutes.is_some_and(|m| !(0..=1440).contains(&m)) {
         return Err("Temps de présence dans le chat invalide (24 h au plus)".into());
     }
@@ -1251,7 +1260,18 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
     };
     let se_changed = app.db.streamer(&login).map_err(db_err)?.and_then(|s| s.se_name) != se_name;
     app.db
-        .save_streamer(&crate::db::Streamer { login: login.clone(), discord_url, notes, ignored_commands, follow_min_secs, win_reply, se_name, ..streamer })
+        .save_streamer(&crate::db::Streamer {
+            login: login.clone(),
+            discord_url,
+            notes,
+            ignored_commands,
+            follow_min_secs,
+            win_reply,
+            se_name,
+            auto_commands,
+            auto_commands_on,
+            ..streamer
+        })
         .map_err(db_err)?;
     if se_changed {
         refresh_se_names(&app, &login);

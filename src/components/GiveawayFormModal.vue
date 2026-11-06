@@ -274,6 +274,7 @@ watch(open, (isOpen) => {
   streamerDiscord.value = ''
   streamerNotes.value = ''
   streamerIgnored.value = []
+  streamerAuto.value = []
   streamerWinReply.value = ''
   streamerWinDelay.value = null
   streamerSeName.value = ''
@@ -371,6 +372,9 @@ interface ChannelSuggestion {
     winReplyDelay: number | null
     // Pseudo de sa page StreamElements s'il diffère de son pseudo Twitch
     seName: string | null
+    // Participation automatique : commandes (liste partagée) et celles tapées par ce PC
+    autoCommands: string[]
+    autoCommandsOn: string[]
   } | null
 }
 
@@ -379,6 +383,20 @@ const streamerDiscord = ref('')
 const streamerNotes = ref('')
 // Commandes du chat ignorées par la détection sur sa chaîne
 const streamerIgnored = ref<string[]>([])
+// Participation automatique hors giveaway (commandes à points…) : la liste est partagée entre les
+// PC, y répondre (`on`) est propre à ce PC
+const streamerAuto = ref<{ command: string, on: boolean }[]>([])
+const autoInput = ref('')
+const autoKey = () => streamerAuto.value.map(a => `${a.command}:${a.on}`).join()
+function addAutoCommands() {
+  for (const raw of autoInput.value.split(/[\s,]+/)) {
+    let c = raw.trim().toLowerCase()
+    if (!c) continue
+    if (!c.startsWith('!')) c = `!${c}`
+    if (!streamerAuto.value.some(a => a.command === c)) streamerAuto.value.push({ command: c, on: true })
+  }
+  autoInput.value = ''
+}
 // Réponse écrite dans le chat quand un de nos comptes gagne (présence requise), et son délai
 const WIN_REPLY_DELAY = 10
 const streamerWinReply = ref('')
@@ -469,7 +487,7 @@ watch(() => [open.value, form.value.kind, form.value.channel.trim().toLowerCase(
 function formSnapshot() {
   const f = form.value
   return {
-    discord: streamerDiscord.value, notes: streamerNotes.value, ignored: streamerIgnored.value.join(),
+    discord: streamerDiscord.value, notes: streamerNotes.value, ignored: streamerIgnored.value.join(), auto: autoKey(),
     winReply: streamerWinReply.value, winDelay: streamerWinDelay.value, seName: streamerSeName.value,
     follow: f.follow, followDuration: f.followDuration, presence: f.presence, discordCond: f.discord, greeting: f.greeting,
     chatTime: f.chatTime, chatMinutes: f.chatMinutes, canGift: f.canGift
@@ -525,6 +543,10 @@ function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof for
   if (streamerDiscord.value === before.discord) streamerDiscord.value = found.streamer?.discordUrl ?? found.profile?.discord ?? ''
   if (streamerNotes.value === before.notes) streamerNotes.value = found.streamer?.notes ?? ''
   if (streamerIgnored.value.join() === before.ignored) streamerIgnored.value = [...(found.streamer?.ignoredCommands ?? [])]
+  if (autoKey() === before.auto) {
+    const on = found.streamer?.autoCommandsOn ?? []
+    streamerAuto.value = (found.streamer?.autoCommands ?? []).map(command => ({ command, on: on.includes(command) }))
+  }
   const st = found.streamer
   // Fiche du streamer, et nouveau giveaway : toutes les conditions reprises de la fiche (jamais
   // celles changées pendant le chargement). Elles y sont gardées à jour quand on les change sur
@@ -574,7 +596,7 @@ const profile = computed(() => suggestion.value?.profile ?? null)
 
 
 // --- Sections du formulaire (menu vertical) ---
-type Section = 'channel' | 'giveaway' | 'gifts' | 'conditions'
+type Section = 'channel' | 'giveaway' | 'gifts' | 'conditions' | 'auto'
 const section = ref<Section>('channel')
 watch(open, (isOpen) => { if (isOpen) section.value = 'channel' })
 
@@ -592,10 +614,11 @@ const sections = computed(() => {
     { key: 'channel' as const, label: 'Chaîne', icon: 'i-lucide-tv', summary: f.channel.trim() || 'à choisir', missing: !f.channel.trim() },
     { key: 'giveaway' as const, label: 'Giveaway', icon: 'i-lucide-gift', summary: (f.kind === 'command' || f.kind === 'ticket') && !f.command.trim() ? 'commande à détecter' : GIVEAWAY_KIND_ITEMS.find(k => k.value === f.kind)?.label ?? '', missing: false },
     { key: 'gifts' as const, label: 'Cadeaux', icon: 'i-lucide-package', summary: f.giftIds.length ? `${f.giftIds.length} choisi(s)` : 'aucun', missing: false },
-    { key: 'conditions' as const, label: 'Conditions', icon: 'i-lucide-list-checks', summary: conditions ? `${conditions} renseignée(s)` : 'inconnues', missing: false }
+    { key: 'conditions' as const, label: 'Conditions', icon: 'i-lucide-list-checks', summary: conditions ? `${conditions} renseignée(s)` : 'inconnues', missing: false },
+    { key: 'auto' as const, label: 'Participation automatique', icon: 'i-lucide-bot', summary: streamerAuto.value.length ? `${streamerAuto.value.filter(a => a.on).length} sur ${streamerAuto.value.length} active(s)` : 'aucune commande', missing: false }
   ]
-  // Fiche du streamer : ni giveaway ni cadeaux
-  return props.streamerOnly ? all.filter(s => s.key === 'channel' || s.key === 'conditions') : all
+  // Fiche du streamer : ni giveaway ni cadeaux ; participation automatique seulement sur la fiche
+  return props.streamerOnly ? all.filter(s => s.key === 'channel' || s.key === 'conditions' || s.key === 'auto') : all.filter(s => s.key !== 'auto')
 })
 
 // Erreur du cœur : ouvrir la section concernée
@@ -658,6 +681,8 @@ async function saveStreamer() {
         discordUrl: streamerDiscord.value.trim() || null,
         notes: streamerNotes.value || null,
         ignoredCommands: streamerIgnored.value,
+        autoCommands: streamerAuto.value.map(a => a.command),
+        autoCommandsOn: streamerAuto.value.filter(a => a.on).map(a => a.command),
         requireFollow: fromTri(f.follow),
         followMinSecs: f.follow === 'yes' ? parseDuration(f.followDuration) : null,
         requirePresence: fromTri(f.presence),
@@ -1112,6 +1137,30 @@ async function save() {
               <p v-if="giftSections.length === 0" class="text-sm text-muted">Aucun cadeau ne correspond.</p>
             </div>
             <p v-else class="text-sm text-muted">Catalogue vide : ajoute un cadeau avec « Nouveau cadeau ».</p>
+          </div>
+
+          <!-- Participation automatique (fiche du streamer) : commandes hors giveaway -->
+          <div v-show="section === 'auto'" class="flex flex-col gap-3">
+            <p class="text-sm text-muted">
+              Commandes que le streamer propose de taper pendant un court moment (pour gagner des points…), hors giveaway.
+              Quand plusieurs spectateurs en tapent une, l'application la tape avec tes comptes après quelques secondes, puis attend 10 min avant de recommencer.
+              Une commande peut aussi être dans les commandes ignorées (pas d'alerte de giveaway).
+            </p>
+            <p class="text-xs text-muted">La liste est partagée avec tes autres PC ; y répondre se choisit sur chaque PC (une commande ajoutée ailleurs arrive désactivée ici).</p>
+            <div class="flex items-center gap-2">
+              <UInput id="gw-auto-command" v-model="autoInput" placeholder="!commande" size="sm" class="w-48 font-mono" @keydown.enter.prevent="addAutoCommands" />
+              <UButton label="Ajouter" icon="i-lucide-plus" size="sm" color="neutral" variant="soft" :disabled="!autoInput.trim()" @click="addAutoCommands" />
+            </div>
+            <div v-if="streamerAuto.length" class="border border-default rounded-lg divide-y divide-default">
+              <div v-for="a in streamerAuto" :key="a.command" class="flex items-center justify-between gap-4 px-4 py-2.5">
+                <span class="font-mono">{{ a.command }}</span>
+                <div class="flex items-center gap-3">
+                  <USwitch v-model="a.on" label="Répondre sur ce PC" size="sm" :aria-label="`Répondre automatiquement à ${a.command} sur ce PC`" />
+                  <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="ghost" :aria-label="`Retirer ${a.command}`" @click="streamerAuto = streamerAuto.filter(x => x.command !== a.command)" />
+                </div>
+              </div>
+            </div>
+            <p v-else class="text-sm text-muted">Aucune commande.</p>
           </div>
 
           <!-- Conditions : une par ligne -->

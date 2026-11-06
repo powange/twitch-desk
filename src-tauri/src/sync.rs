@@ -528,7 +528,7 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
         "streamers" => conn
             .prepare_cached(&format!(
                 "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_secs, require_presence,
-                        require_discord, require_greeting, min_chat_minutes, se_name, can_gift
+                        require_discord, require_greeting, min_chat_minutes, se_name, can_gift, auto_commands
                  FROM streamers WHERE {}",
                 one("login", 1)
             ))?
@@ -552,6 +552,12 @@ fn export_all(conn: &Connection, collection: &str, only: Option<&str>, windowed:
                 // Gain offrable : seulement s'il est connu (empreinte des autres fiches inchangée)
                 if let Some(can) = r.get::<_, Option<bool>>(11)? {
                     doc["conditions"]["canGift"] = json!(can);
+                }
+                // Commandes en participation automatique : la liste seulement (y répondre reste le
+                // choix de chaque PC) ; ajoutée seulement s'il y en a (empreinte des autres inchangée)
+                let auto: Vec<String> = serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default();
+                if !auto.is_empty() {
+                    doc["autoCommands"] = json!(auto);
                 }
                 Ok((r.get(0)?, doc))
             })?
@@ -1091,6 +1097,19 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
                         int_of(c, "minChatMinutes"),
                         bool_of(c, "canGift"),
                     ],
+                )?;
+            }
+            // Commandes en participation automatique (absentes : aucune) ; celles activées sur ce PC
+            // restent activées si elles sont toujours dans la liste
+            {
+                let list = crate::giveaways::detect::normalize_excluded(&strings_of(data, "autoCommands"));
+                let on: String = conn
+                    .query_row("SELECT auto_commands_on FROM streamers WHERE login = ?1", [id], |r| r.get(0))
+                    .unwrap_or_else(|_| "[]".into());
+                let on: Vec<String> = serde_json::from_str::<Vec<String>>(&on).unwrap_or_default().into_iter().filter(|c| list.contains(c)).collect();
+                conn.execute(
+                    "UPDATE streamers SET auto_commands = ?2, auto_commands_on = ?3 WHERE login = ?1",
+                    params![id, serde_json::to_string(&list).expect("liste"), serde_json::to_string(&on).expect("liste")],
                 )?;
             }
             // Pseudo StreamElements (absent : version plus ancienne, celui d'ici reste) ; changé :
@@ -2538,6 +2557,8 @@ mod tests {
             notes: None,
             ignored_commands: vec!["!points".into()],
             can_gift: Some(false),
+            auto_commands: vec!["!points".into(), "!bonus".into()],
+            auto_commands_on: vec!["!points".into()],
             ..Default::default()
         })
             .unwrap();
@@ -2553,7 +2574,11 @@ mod tests {
         assert_eq!((giveaways[0].command.as_deref(), giveaways[0].gift_ids.clone()), (Some("!join"), vec![gifts[0].id]));
         assert!(giveaways[0].open && !giveaways[0].handled);
         assert_eq!(giveaways[0].details.can_gift, Some(true));
-        assert_eq!(b.streamer("lunarsea").unwrap().unwrap().can_gift, Some(false));
+        let sheet = b.streamer("lunarsea").unwrap().unwrap();
+        assert_eq!(sheet.can_gift, Some(false));
+        // Liste des commandes automatiques partagée, mais y répondre reste le choix de chaque PC
+        assert_eq!(sheet.auto_commands, vec!["!points".to_owned(), "!bonus".to_owned()]);
+        assert!(sheet.auto_commands_on.is_empty());
         assert_eq!(b.giveaway_channels().unwrap()[0].channel_id, "123");
         assert_eq!(b.streamer("lunarsea").unwrap().unwrap().discord_url.as_deref(), Some("https://discord.gg/x"));
         // Même contenu des deux côtés : rien à renvoyer

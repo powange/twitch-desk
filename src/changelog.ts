@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.47',
+    date: '2026-11-06',
+    title: 'Participation automatique hors giveaway',
+    changes: [
+      { kind: 'new', text: 'Fiche d\'un streamer : nouvelle section « Participation automatique ». On y liste les commandes que le streamer propose de taper un court moment pour gagner des points, hors giveaway. Quand plusieurs spectateurs en tapent une, l\'application la tape avec tes comptes après quelques secondes, puis attend 10 minutes avant de recommencer. Une commande peut aussi rester dans les commandes ignorées, pour ne pas déclencher d\'alerte de giveaway.' },
+      { kind: 'new', text: 'La liste de ces commandes est partagée entre tes PC, mais y répondre se choisit commande par commande sur chaque PC. Une commande ajoutée sur un autre PC arrive désactivée.' }
+    ]
+  },
+  {
     version: '0.48.46',
     date: '2026-11-06',
     title: 'Giveaway en cours sur chaque stream',

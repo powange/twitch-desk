@@ -481,6 +481,11 @@ const MIGRATIONS: &[&str] = &[r#"
     -- Gain offrable à quelqu'un d'autre (NULL : on ne sait pas), sur le giveaway et la fiche
     ALTER TABLE giveaways ADD COLUMN can_gift INTEGER;
     ALTER TABLE streamers ADD COLUMN can_gift INTEGER;
+"#, r#"
+    -- Participation automatique hors giveaway (commandes à points, …) : liste des commandes
+    -- (synchronisée), et celles auxquelles ce PC répond (propre à ce PC)
+    ALTER TABLE streamers ADD COLUMN auto_commands TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE streamers ADD COLUMN auto_commands_on TEXT NOT NULL DEFAULT '[]';
 "#];
 
 /// Message épinglé gardé ; `current` : relu sur Twitch à l'instant (sinon dernière version vue)
@@ -561,6 +566,11 @@ pub struct Streamer {
     pub min_chat_minutes: Option<i64>,
     /// Gain offrable à quelqu'un d'autre
     pub can_gift: Option<bool>,
+    /// Commandes de son chat auxquelles participer automatiquement (hors giveaway : commandes à
+    /// points…) ; liste synchronisée
+    pub auto_commands: Vec<String>,
+    /// Parmi elles, celles que ce PC tape vraiment (propre à ce PC, jamais synchronisé)
+    pub auto_commands_on: Vec<String>,
     /// Phrase écrite dans le chat par notre compte quand il gagne un giveaway avec présence
     /// requise (None : pas de réponse) ; propre à ce PC
     pub win_reply: Option<String>,
@@ -574,7 +584,7 @@ pub struct Streamer {
 pub const WIN_REPLY_DELAY: i64 = 10;
 
 const STREAMER_SELECT: &str = "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_secs,
-     require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name, can_gift FROM streamers";
+     require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name, can_gift, auto_commands, auto_commands_on FROM streamers";
 
 fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
     Ok(Streamer {
@@ -592,6 +602,8 @@ fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
         win_reply_delay: r.get(11)?,
         se_name: r.get(12)?,
         can_gift: r.get(13)?,
+        auto_commands: serde_json::from_str(&r.get::<_, String>(14)?).unwrap_or_default(),
+        auto_commands_on: serde_json::from_str(&r.get::<_, String>(15)?).unwrap_or_default(),
     })
 }
 
@@ -2003,15 +2015,16 @@ impl Db {
     pub fn save_streamer(&self, s: &Streamer) -> DbResult<()> {
         self.conn().execute(
             "INSERT INTO streamers (login, discord_url, notes, ignored_commands, require_follow, follow_min_secs,
-                 require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name, can_gift)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name, can_gift, auto_commands, auto_commands_on)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(login) DO UPDATE SET discord_url = excluded.discord_url, notes = excluded.notes,
                  ignored_commands = excluded.ignored_commands, require_follow = excluded.require_follow,
                  follow_min_secs = excluded.follow_min_secs, require_presence = excluded.require_presence,
                  require_discord = excluded.require_discord, require_greeting = excluded.require_greeting,
                  min_chat_minutes = excluded.min_chat_minutes, win_reply = excluded.win_reply,
                  win_reply_delay = excluded.win_reply_delay, se_name = excluded.se_name,
-                 can_gift = excluded.can_gift",
+                 can_gift = excluded.can_gift, auto_commands = excluded.auto_commands,
+                 auto_commands_on = excluded.auto_commands_on",
             params![
                 s.login,
                 s.discord_url,
@@ -2026,7 +2039,9 @@ impl Db {
                 s.win_reply,
                 s.win_reply_delay,
                 s.se_name,
-                s.can_gift
+                s.can_gift,
+                serde_json::to_string(&s.auto_commands).expect("liste sérialisable"),
+                serde_json::to_string(&s.auto_commands_on).expect("liste sérialisable")
             ],
         )?;
         Ok(())
