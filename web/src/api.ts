@@ -107,6 +107,11 @@ export function giveawayChatLog<T>(token: string, item: string): Promise<T> {
 export function giveawayConditions<T>(token: string, item: string, conditions: Record<string, unknown>): Promise<T> {
   return requestAction<T>(token, { kind: 'giveaway_conditions', item, conditions })
 }
+// Demande quelconque au PC (vérifiée par le serveur selon son type)
+export function pcAction<T>(token: string, body: Record<string, unknown>): Promise<T> {
+  return requestAction<T>(token, body)
+}
+
 // Ordre des chaînes de la page Points de chaîne d'un compte (pseudos)
 export function pointsOrder<T>(token: string, account: string, order: string[]): Promise<T> {
   return requestAction<T>(token, { kind: 'points_order', account, order })

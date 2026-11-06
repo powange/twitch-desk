@@ -3,8 +3,10 @@ import { computed } from 'vue'
 import type { DropCampaign, DropProgress, InstanceState } from '../types'
 import AccountPicker from './AccountPicker.vue'
 import ChannelFlag from './ChannelFlag.vue'
+import { sendAction, usePhone } from '../phone'
 
-// Page Drops : chaîne regardée et campagnes en cours du compte choisi, en lecture seule
+// Page Drops : chaîne regardée et campagnes en cours du compte choisi ; une campagne s'ignore
+// (ou se rétablit), les drops terminés se réclament (le PC relit l'inventaire et les réclame)
 const props = defineProps<{ state: InstanceState | null }>()
 const account = defineModel<string>('account', { required: true })
 
@@ -33,6 +35,18 @@ function dropState(c: DropCampaign, d: DropProgress): { label: string, color: 's
 }
 
 const obtained = (c: DropCampaign) => c.drops.filter(d => d.claimed).length
+
+const phone = usePhone()
+const toast = useToast()
+const pending = (kind: string, item?: string) =>
+  phone.actions.value.some(a => a.status === 'pending' && a.kind === kind && a.payload.account === current.value?.login && (!item || a.payload.item === item))
+const claimable = (c: DropCampaign) => c.accountLinked && c.drops.some(d => !d.claimed && (d.claimable ?? (d.requiredMinutes > 0 && d.currentMinutes >= d.requiredMinutes)))
+function ignore(id: string, ignored: boolean) {
+  if (current.value) void sendAction(phone, toast, { kind: 'drop_campaign_ignore', account: current.value.login, item: id, enabled: ignored })
+}
+function claim() {
+  if (current.value) void sendAction(phone, toast, { kind: 'drops_refresh', account: current.value.login })
+}
 const endDate = (iso: string) => new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 </script>
 
@@ -65,6 +79,10 @@ const endDate = (iso: string) => new Date(iso).toLocaleDateString('fr-FR', { day
               <UBadge v-if="!c.accountLinked" label="Compte non lié" color="error" variant="subtle" size="sm" icon="i-lucide-unlink" />
             </div>
           </div>
+          <div class="flex flex-wrap gap-2 px-3 py-2 border-b border-default">
+            <UButton v-if="claimable(c)" label="Réclamer" icon="i-lucide-gift" size="xs" :loading="pending('drops_refresh')" @click="claim" />
+            <UButton label="Ignorer" icon="i-lucide-eye-off" size="xs" color="neutral" variant="soft" :loading="pending('drop_campaign_ignore', c.id)" @click="ignore(c.id, true)" />
+          </div>
           <ul class="flex flex-col">
             <li v-for="d in c.drops" :key="d.id" class="flex items-center gap-3 px-3 py-2.5 border-t border-default first:border-t-0">
               <img v-if="d.image" :src="d.image" alt="" class="size-9 rounded object-cover shrink-0" loading="lazy">
@@ -81,6 +99,19 @@ const endDate = (iso: string) => new Date(iso).toLocaleDateString('fr-FR', { day
           </ul>
         </li>
       </ul>
+      <!-- Campagnes ignorées : à rétablir -->
+      <section v-if="current.ignored?.length" class="flex flex-col gap-2">
+        <h2 class="text-sm font-medium text-muted uppercase">Ignorées · {{ current.ignored.length }}</h2>
+        <ul class="flex flex-col gap-2">
+          <li v-for="c in current.ignored" :key="c.id" class="rounded-xl border border-default bg-elevated/40 p-3 flex items-center gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="font-semibold break-words">{{ c.game }}</div>
+              <div class="text-xs text-muted break-words">{{ c.name }}</div>
+            </div>
+            <UButton label="Rétablir" size="xs" color="neutral" variant="soft" class="shrink-0" :loading="pending('drop_campaign_ignore', c.id)" @click="ignore(c.id, false)" />
+          </li>
+        </ul>
+      </section>
     </template>
     <p v-else class="text-sm text-muted py-6 text-center">Aucun compte sur le PC.</p>
   </div>

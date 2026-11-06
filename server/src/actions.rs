@@ -52,6 +52,9 @@ pub struct NewAction {
     option: String,
     #[serde(default)]
     enabled: bool,
+    /// Solde maximum d'une chaîne Points (absent ou 0 : pas de limite)
+    #[serde(default)]
+    max: Option<i64>,
 }
 
 /// Identifiant de synchronisation (uuid) d'un document de l'application
@@ -119,6 +122,45 @@ fn payload_of(body: &NewAction) -> Result<Value, ApiError> {
                 return Err(ApiError::BadRequest("Réglage invalide".into()));
             }
             Ok(serde_json::json!({ "account": account, "channel": channel, "option": body.option, "enabled": body.enabled }))
+        }
+        // Giveaway (0.8.11) : participer, suivre la chaîne, dire bonjour ; réponse au gain à annuler
+        "giveaway_participate" | "giveaway_follow" | "giveaway_hello" | "win_reply_cancel" => {
+            if !sync_id_ok(&body.item) {
+                return Err(ApiError::BadRequest("Demande invalide".into()));
+            }
+            Ok(serde_json::json!({ "item": body.item }))
+        }
+        // Application du PC en pause ou relancée (0.8.11)
+        "app_pause" => Ok(serde_json::json!({ "enabled": body.enabled })),
+        // Compte (0.8.11) : récolte ou bonus auto d'une chaîne Points, solde maximum, campagne de
+        // drops ignorée ou rétablie, drops relus
+        "points_option" | "points_max" | "drop_campaign_ignore" | "drops_refresh" => {
+            let account = body.account.trim().to_lowercase();
+            if !login_ok(&account) {
+                return Err(ApiError::BadRequest("Compte invalide".into()));
+            }
+            let channel = body.channel.trim().to_lowercase();
+            match body.kind.as_str() {
+                "points_option" => {
+                    if !login_ok(&channel) || !matches!(body.option.as_str(), "harvest" | "bonus") {
+                        return Err(ApiError::BadRequest("Réglage invalide".into()));
+                    }
+                    Ok(serde_json::json!({ "account": account, "channel": channel, "option": body.option, "enabled": body.enabled }))
+                }
+                "points_max" => {
+                    if !login_ok(&channel) || body.max.is_some_and(|m| !(0..=2_000_000_000).contains(&m)) {
+                        return Err(ApiError::BadRequest("Solde maximum invalide".into()));
+                    }
+                    Ok(serde_json::json!({ "account": account, "channel": channel, "max": body.max }))
+                }
+                "drop_campaign_ignore" => {
+                    if !sync_id_ok(&body.item) {
+                        return Err(ApiError::BadRequest("Campagne invalide".into()));
+                    }
+                    Ok(serde_json::json!({ "account": account, "item": body.item, "enabled": body.enabled }))
+                }
+                _ => Ok(serde_json::json!({ "account": account })),
+            }
         }
         // Chaîne du scanner à surveiller (0.8.10)
         "channel_monitor" => {

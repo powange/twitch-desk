@@ -25,3 +25,19 @@ export function usePhone(): PhoneContext {
 export function pendingFor(actions: PhoneAction[], kind: string, target: string): boolean {
   return actions.some(a => a.status === 'pending' && a.kind === kind && (a.payload.item === target || a.payload.channel === target))
 }
+
+// Demande au PC depuis un composant : envoyée, suivie jusqu'au résultat (message), erreur affichée
+export async function sendAction(ctx: PhoneContext, toast: ReturnType<typeof useToast>, body: Record<string, unknown>) {
+  const token = ctx.token.value
+  if (!token) return
+  const { pcAction, ApiError } = await import('./api')
+  try {
+    ctx.requested(await pcAction<PhoneAction>(token, body))
+  } catch (e) {
+    toast.add({
+      title: 'Demande non envoyée',
+      description: e instanceof ApiError && e.status === 400 ? 'Mets à jour le serveur de synchronisation (version 0.8.11 ou plus).' : String(e),
+      color: 'error'
+    })
+  }
+}

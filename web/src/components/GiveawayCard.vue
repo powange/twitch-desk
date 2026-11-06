@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import type { ChannelLive, Giveaway, GiveawayConditions, InstanceState, PhoneAction } from '../types'
 import { ApiError, giveawayChatLog, giveawayConditions, hideGiveaway } from '../api'
-import { pendingFor, usePhone } from '../phone'
+import { pendingFor, sendAction, usePhone } from '../phone'
 import { chatUrl, conditions, copyText, GIVEAWAY_KIND, playerUrl, streamUrl } from '../giveaways'
 import { formatDraw, formatNumber, formatWhen } from '../format'
 import GiftImage from './GiftImage.vue'
@@ -32,6 +32,18 @@ async function ask(run: (token: string) => Promise<PhoneAction>) {
   }
 }
 const toggleHidden = () => ask(t => hideGiveaway<PhoneAction>(t, g.value.id, !hidden.value))
+
+// Participer (commande envoyée, ou récompense achetée) avec les comptes qui n'y sont pas encore
+const missing = computed(() => {
+  const done = (mine.value?.participated ?? []).map(l => l.toLowerCase())
+  return (props.state?.accounts ?? []).filter(a => !done.includes(a.toLowerCase()))
+})
+const canJoin = computed(() => g.value.status === 'open' && missing.value.length > 0
+  && (((g.value.kind === 'command' || g.value.kind === 'ticket') && !!g.value.command)
+    || (g.value.kind === 'channelpoints' && !!g.value.rewardName && !!props.state?.actionsAllowed)))
+const act = (kind: string) => sendAction(phone, toast, { kind, item: g.value.id })
+// Raccourcis des conditions : suivre la chaîne, dire bonjour, ouvrir le Discord du streamer
+const discordUrl = computed(() => props.state?.discord?.[g.value.channel.toLowerCase()] ?? null)
 const openChatLog = () => ask(t => giveawayChatLog<PhoneAction>(t, g.value.id))
 
 // Conditions : Oui / Non / ? ; temps de présence en minutes (0 : non requis)
@@ -161,6 +173,22 @@ async function copy() {
         </span>
       </div>
       <p v-if="g.notes" class="text-sm text-muted whitespace-pre-line">{{ g.notes }}</p>
+
+      <!-- Participer, raccourcis des conditions -->
+      <UButton
+        v-if="canJoin"
+        :label="g.kind === 'channelpoints' ? `Acheter avec ${missing.join(', ')}` : `Participer avec ${missing.join(', ')}`"
+        :icon="g.kind === 'channelpoints' ? 'i-lucide-coins' : 'i-lucide-send'"
+        size="lg"
+        block
+        :loading="busy('giveaway_participate')"
+        @click="act('giveaway_participate')"
+      />
+      <div v-if="g.requireFollow || g.requireGreeting || (g.requireDiscord && discordUrl)" class="flex flex-wrap gap-2">
+        <UButton v-if="g.requireFollow" label="Suivre la chaîne" icon="i-lucide-heart" color="neutral" variant="soft" size="sm" :loading="busy('giveaway_follow')" @click="act('giveaway_follow')" />
+        <UButton v-if="g.requireGreeting" label="Dire bonjour" icon="i-lucide-hand" color="neutral" variant="soft" size="sm" :loading="busy('giveaway_hello')" @click="act('giveaway_hello')" />
+        <UButton v-if="g.requireDiscord && discordUrl" label="Discord" icon="i-simple-icons-discord" color="neutral" variant="soft" size="sm" :to="discordUrl" target="_blank" />
+      </div>
 
       <!-- Demandes au PC -->
       <div class="grid grid-cols-3 gap-2">

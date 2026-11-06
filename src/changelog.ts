@@ -14,6 +14,19 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.56',
+    date: '2026-11-06',
+    title: 'Web app : participer et agir à distance',
+    changes: [
+      { kind: 'new', text: 'Web app, giveaways : bouton « Participer avec … » (ou « Acheter avec … » pour un giveaway par points de chaîne, si les achats depuis le téléphone sont autorisés). Le PC envoie la commande avec tes comptes qui n\'y sont pas encore.' },
+      { kind: 'new', text: 'Web app, giveaways : raccourcis des conditions, « Suivre la chaîne » (follow requis), « Dire bonjour » (bonjour requis) et « Discord » (lien de la fiche du streamer).' },
+      { kind: 'new', text: 'Web app : quand un de tes comptes gagne, un bandeau affiche la réponse prévue avec un compte à rebours et un bouton « Annuler ».' },
+      { kind: 'new', text: 'Web app, Points de chaîne : interrupteurs « Récolte » et « Bonus auto », et solde maximum de chaque chaîne.' },
+      { kind: 'new', text: 'Web app, Drops : ignorer une campagne (ou la rétablir) et réclamer les drops terminés.' },
+      { kind: 'new', text: 'Web app : mettre l\'application du PC en pause ou la relancer, depuis le menu. Un bandeau signale la pause.' }
+    ]
+  },
+  {
     version: '0.48.55',
     date: '2026-11-06',
     title: 'Web app plus complète',

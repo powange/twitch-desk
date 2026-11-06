@@ -14,7 +14,7 @@ import MentionList from './components/MentionList.vue'
 import NotificationsModal from './components/NotificationsModal.vue'
 import UpdateModal from './components/UpdateModal.vue'
 import ChatLogModal from './components/ChatLogModal.vue'
-import { providePhone } from './phone'
+import { providePhone, sendAction } from './phone'
 import type { ChatLogEntry } from './types'
 import { active as pushActive, disable as disablePush, refresh as refreshPush, serverTooOld, support as pushSupport } from './push'
 
@@ -205,6 +205,15 @@ const ACTION_TITLES: Record<string, [string, string]> = {
   giveaway_chat_log: ['Journal du chat', 'Journal du chat illisible'],
   channel_monitor: ['Chaîne surveillée', 'Chaîne non ajoutée'],
   points_order: ['Ordre enregistré', 'Ordre non enregistré'],
+  giveaway_participate: ['Participation', 'Participation incomplète'],
+  giveaway_follow: ['Follow', 'Follow impossible'],
+  giveaway_hello: ['Bonjour', 'Bonjour impossible'],
+  win_reply_cancel: ['Réponse annulée', 'Annulation impossible'],
+  app_pause: ['Application du PC', 'Pause impossible'],
+  points_option: ['Réglage enregistré', 'Réglage refusé'],
+  points_max: ['Solde maximum', 'Solde maximum refusé'],
+  drop_campaign_ignore: ['Drops', 'Campagne non modifiée'],
+  drops_refresh: ['Drops', 'Drops non relus'],
   se_option: ['Réglage enregistré', 'Réglage refusé']
 }
 // Journal du chat rendu par le PC : affiché dans sa fenêtre
@@ -295,12 +304,32 @@ function hideHint() {
 
 const logoutOpen = ref(false)
 const updateOpen = ref(false)
+// Pause générale de l'application du PC (plus de récolte, participation ni envoi)
+const phoneCtx = { token: computed(() => device.value?.token ?? null), actions: phoneActions, requested: onRequested }
+function togglePause(paused: boolean) {
+  void sendAction(phoneCtx, toast, { kind: 'app_pause', enabled: paused })
+}
+// Réponses au gain en attente sur le PC : annulables d'ici pendant leur délai
+const now = ref(Date.now())
+const clock = setInterval(() => { now.value = Date.now() }, 1000)
+onBeforeUnmount(() => clearInterval(clock))
+const winReplies = computed(() => (data.value?.state?.winReplies ?? []).filter(r => new Date(r.sendAt).getTime() > now.value - 60_000))
+const secondsLeft = (at: string) => Math.max(0, Math.round((new Date(at).getTime() - now.value) / 1000))
+function cancelReply(id: string) {
+  void sendAction(phoneCtx, toast, { kind: 'win_reply_cancel', item: id })
+}
+
 const menu = computed<DropdownMenuItem[][]>(() => [
   [
     { label: 'Notifications', icon: pushActive.value ? 'i-lucide-bell-ring' : 'i-lucide-bell', onSelect: () => { notificationsOpen.value = true } },
     { label: 'Mise à jour du PC', icon: 'i-lucide-download', onSelect: () => { updateOpen.value = true } },
-    { label: 'Actualiser', icon: 'i-lucide-refresh-cw', onSelect: () => { void load() } }
-  ],
+    { label: 'Actualiser', icon: 'i-lucide-refresh-cw', onSelect: () => { void load() } },
+    data.value?.state?.paused === undefined
+      ? []
+      : data.value.state.paused
+        ? { label: 'Relancer l\'application du PC', icon: 'i-lucide-play', onSelect: () => togglePause(false) }
+        : { label: 'Mettre le PC en pause', icon: 'i-lucide-pause', onSelect: () => togglePause(true) }
+  ].flat(),
   [{ label: 'Se déconnecter de cet appareil', icon: 'i-lucide-log-out', color: 'error', onSelect: () => { logoutOpen.value = true } }]
 ])
 </script>
@@ -324,6 +353,18 @@ const menu = computed<DropdownMenuItem[][]>(() => [
       </header>
 
       <main class="flex-1 w-full max-w-2xl mx-auto px-4 py-4 flex flex-col gap-4 pb-[calc(5rem+env(safe-area-inset-bottom))]">
+        <!-- PC en pause ; réponses au gain en attente, annulables pendant leur délai -->
+        <UAlert v-if="data?.state?.paused" color="warning" variant="subtle" icon="i-lucide-pause" title="Application du PC en pause" description="Ni récolte, ni participation, ni envoi dans le chat." :actions="[{ label: 'Relancer', onClick: () => togglePause(false) }]" />
+        <UAlert
+          v-for="r in winReplies"
+          :key="r.id"
+          color="success"
+          variant="subtle"
+          icon="i-lucide-trophy"
+          :title="`${r.login} a gagné sur ${r.channel}`"
+          :description="secondsLeft(r.sendAt) > 0 ? `Réponse dans ${secondsLeft(r.sendAt)} s : « ${r.text.replace(/\n/g, ' / ')} »` : `Réponse en cours d'envoi : « ${r.text.replace(/\n/g, ' / ')} »`"
+          :actions="[{ label: 'Annuler', color: 'error', onClick: () => cancelReply(r.id) }]"
+        />
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :description="error" />
         <UAlert
           v-if="staleAt"

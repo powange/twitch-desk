@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import type { InstanceState, PhoneAction, PointsChannel, PointsChannelState } from '../types'
 import { ApiError, pointsOrder } from '../api'
-import { usePhone } from '../phone'
+import { sendAction, usePhone } from '../phone'
 import { formatNumber } from '../format'
 import AccountPicker from './AccountPicker.vue'
 import ChannelFlag from './ChannelFlag.vue'
@@ -24,6 +24,27 @@ const STATES: Record<PointsChannelState, { label: string, color: 'success' | 'pr
   unknown: { label: '…', color: 'neutral' }
 }
 const totalToday = computed(() => current.value?.channels.reduce((n, c) => n + c.earnedToday, 0) ?? 0)
+
+// --- Réglages d'une chaîne (récolte, bonus auto, solde maximum), appliqués par le PC ---
+const optionPending = (login: string, option: string) =>
+  phone.actions.value.some(a => a.status === 'pending' && a.kind === 'points_option' && a.payload.channel === login && (a.payload as Record<string, unknown>).option === option)
+function setOption(login: string, option: 'harvest' | 'bonus', enabled: boolean) {
+  if (!current.value) return
+  void sendAction(phone, toast, { kind: 'points_option', account: current.value.login, channel: login, option, enabled })
+}
+const maxOpen = ref(false)
+const maxChannel = ref('')
+const maxValue = ref<number | null>(null)
+function editMax(c: PointsChannel) {
+  maxChannel.value = c.login
+  maxValue.value = c.maxBalance
+  maxOpen.value = true
+}
+function saveMax() {
+  if (!current.value) return
+  void sendAction(phone, toast, { kind: 'points_max', account: current.value.login, channel: maxChannel.value, max: maxValue.value ?? 0 })
+  maxOpen.value = false
+}
 
 // --- Ordre : glisser la poignée (souris ou doigt) ---
 const phone = usePhone()
@@ -108,9 +129,10 @@ async function onDrop() {
           v-for="c in channels"
           :key="c.login"
           :data-login="c.login"
-          class="rounded-xl border bg-elevated/40 p-3 flex items-center gap-3 transition-colors"
+          class="rounded-xl border bg-elevated/40 p-3 flex flex-col gap-2 transition-colors"
           :class="dragging === c.login ? 'border-primary bg-primary/10' : 'border-default'"
         >
+          <div class="flex items-center gap-3">
           <button
             type="button"
             class="touch-none cursor-grab active:cursor-grabbing text-muted -ml-1 p-1 shrink-0"
@@ -140,9 +162,27 @@ async function onDrop() {
             <div class="text-xs text-success">+{{ formatNumber(c.earnedToday) }}</div>
             <div v-if="c.maxBalance" class="text-xs text-muted">max {{ formatNumber(c.maxBalance) }}</div>
           </div>
+          </div>
+          <!-- Réglages de la ligne, appliqués par le PC -->
+          <div v-if="c.harvest !== undefined" class="flex flex-wrap items-center gap-x-5 gap-y-2 pl-9">
+            <USwitch :model-value="c.harvest" label="Récolte" size="sm" :disabled="optionPending(c.login, 'harvest')" @update:model-value="(v: boolean) => setOption(c.login, 'harvest', v)" />
+            <USwitch :model-value="!!c.autoClaim" label="Bonus auto" size="sm" :disabled="optionPending(c.login, 'bonus')" @update:model-value="(v: boolean) => setOption(c.login, 'bonus', v)" />
+            <UButton :label="c.maxBalance ? `Max ${formatNumber(c.maxBalance)}` : 'Solde max'" icon="i-lucide-target" size="xs" color="neutral" variant="soft" @click="editMax(c)" />
+          </div>
         </li>
       </ul>
     </template>
     <p v-else class="text-sm text-muted py-6 text-center">Aucun compte sur le PC.</p>
+    <UModal v-model:open="maxOpen" :title="`Solde maximum · ${maxChannel}`" description="Une fois ce solde atteint, la chaîne n'est plus regardée et laisse sa place. Vide : pas de limite.">
+      <template #body>
+        <UInputNumber v-model="maxValue" :min="1" :max="2000000000" placeholder="Pas de limite" class="w-full" />
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Annuler" color="neutral" variant="ghost" @click="maxOpen = false" />
+          <UButton label="Enregistrer" @click="saveMax" />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

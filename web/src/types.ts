@@ -65,6 +65,9 @@ export interface PointsChannel {
   maxBalance: number | null
   priority: boolean
   live: ChannelLiveInfo | null
+  // Récolte et bonus auto (application 0.48.56 et plus)
+  harvest?: boolean
+  autoClaim?: boolean
 }
 
 export interface SeGiveawayInfo {
@@ -109,6 +112,11 @@ export interface InstanceState {
   languages?: Record<string, string>
   // Photo de profil des chaînes des giveaways, mentions et drops (application 0.48.55 et plus)
   avatars?: Record<string, string>
+  // Application 0.48.56 et plus : en pause, réponses au gain en attente (annulables), Discord des
+  // streamers des giveaways en cours
+  paused?: boolean
+  winReplies?: { id: string, login: string, channel: string, text: string, sendAt: string }[]
+  discord?: Record<string, string>
   // Page Drops (application 0.42 et plus)
   drops?: DropsAccount[]
   // Mentions de nos pseudos, les plus récentes d'abord (application 0.45 et plus)
@@ -174,6 +182,8 @@ export interface DropsAccount {
   enabled: boolean
   target: { game: string, login: string, title: string } | null
   campaigns: DropCampaign[]
+  // Campagnes ignorées, à rétablir (application 0.48.56 et plus)
+  ignored?: { id: string, name: string, game: string }[]
 }
 
 // Demande envoyée au PC (achat de tickets StreamElements)

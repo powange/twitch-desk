@@ -806,8 +806,17 @@ pub struct HelloMessage {
 #[tauri::command]
 pub async fn say_hello(app: AppState<'_>, channel: String, messages: Option<Vec<HelloMessage>>) -> CmdResult<Vec<GreetingState>> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    hello_accounts(&app, &channel, messages).await?;
+    greeting_status(app, channel)
+}
+
+/// Bonjour dit par chaque compte qui ne l'a pas encore fait (interface, téléphone) ; renvoie le
+/// nombre de comptes qui l'ont dit
+pub(crate) async fn hello_accounts(app: &App, channel: &str, messages: Option<Vec<HelloMessage>>) -> CmdResult<usize> {
+    let channel = channel.to_owned();
+    let mut said = 0;
     let settings = app.db.settings();
-    let phrases = hello_phrases(&app, &settings, &channel);
+    let phrases = hello_phrases(app, &settings, &channel);
     let chosen: Option<std::collections::HashMap<i64, String>> = messages.map(|list| {
         list.into_iter()
             .map(|m| (m.account_id, m.message.replace(['\r', '\n'], " ").trim().chars().take(400).collect::<String>()))
@@ -817,11 +826,11 @@ pub async fn say_hello(app: AppState<'_>, channel: String, messages: Option<Vec<
     if phrases.is_empty() && chosen.is_none() {
         return Err("Aucune phrase de bonjour : ajoute-en dans Giveaways → Réglages".into());
     }
-    ensure_live_for_hello(&app, &channel).await?;
+    ensure_live_for_hello(app, &channel).await?;
     let mut errors = vec![];
     let mut first = true;
     for account in app.db.accounts().map_err(db_err)? {
-        if has_greeted(&app, &settings, &channel, &account) {
+        if has_greeted(app, &settings, &channel, &account) {
             continue;
         }
         let phrase = match &chosen {
@@ -842,6 +851,7 @@ pub async fn say_hello(app: AppState<'_>, channel: String, messages: Option<Vec<
         };
         match result {
             Ok(()) => {
+                said += 1;
                 let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
                 let _ = app.db.set_state(&greeted_key(&channel, account.id), &now);
                 app.log(&account.login, crate::app::EventKind::Info, format!("Bonjour sur {channel} : {phrase}"));
@@ -852,7 +862,7 @@ pub async fn say_hello(app: AppState<'_>, channel: String, messages: Option<Vec<
     if !errors.is_empty() {
         return Err(errors.join(" · "));
     }
-    greeting_status(app, channel)
+    Ok(said)
 }
 
 // --- Follow ---
@@ -901,9 +911,16 @@ pub async fn follow_status(app: AppState<'_>, channel: String) -> CmdResult<Vec<
 #[tauri::command]
 pub async fn follow_channel(app: AppState<'_>, channel: String, account_ids: Vec<i64>) -> CmdResult<Vec<FollowState>> {
     let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    follow_accounts(&app, &channel, &account_ids).await?;
+    follow_status(app, channel).await
+}
+
+/// Fait suivre la chaîne aux comptes choisis (interface, téléphone)
+pub(crate) async fn follow_accounts(app: &App, channel: &str, account_ids: &[i64]) -> CmdResult<()> {
+    let channel = channel.to_owned();
     let mut errors = vec![];
-    for id in account_ids {
-        let account = find_account(&app, id)?;
+    for &id in account_ids {
+        let account = find_account(app, id)?;
         let tokens = app.secrets.load(&account.user_id).ok_or_else(|| format!("Reconnecte {}", account.login))?;
         let gql = Gql::new(app.http.clone(), tokens.access_token, Some(account.device_id.clone()));
         let result = match gql.follow_state(&channel).await {
@@ -920,7 +937,7 @@ pub async fn follow_channel(app: AppState<'_>, channel: String, account_ids: Vec
     if !errors.is_empty() {
         return Err(errors.join(" · "));
     }
-    follow_status(app, channel).await
+    Ok(())
 }
 
 // --- Sons des alertes ---

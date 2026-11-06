@@ -19,6 +19,20 @@ struct Pending {
     channel: String,
     /// Giveaway du gain (None : gain annoncé sans giveaway trouvé, d'après la fiche du streamer)
     giveaway_id: Option<i64>,
+    /// Phrases et heure d'envoi de la première (affichées sur le téléphone, annulables)
+    text: String,
+    send_at: String,
+}
+
+/// Réponses en attente, pour l'état publié au téléphone (bouton « Annuler »)
+pub fn pending_view(app: &App) -> Vec<serde_json::Value> {
+    let pending = app.win_replies.pending.lock().unwrap();
+    let mut list: Vec<serde_json::Value> = pending
+        .iter()
+        .map(|(id, p)| serde_json::json!({ "id": id.to_string(), "login": p.login, "channel": p.channel, "text": p.text, "sendAt": p.send_at }))
+        .collect();
+    list.sort_by(|a, b| a["sendAt"].as_str().cmp(&b["sendAt"].as_str()));
+    list
 }
 
 pub struct WinReplies {
@@ -64,7 +78,12 @@ struct WinReplyDone {
 #[allow(clippy::too_many_arguments)]
 pub fn schedule(app: &Arc<App>, account_id: i64, giveaway_id: Option<i64>, login: &str, channel: &str, text: &str, delay: u64, gap: u64) -> u64 {
     let id = app.win_replies.next.fetch_add(1, Ordering::Relaxed) + 1;
-    app.win_replies.pending.lock().unwrap().insert(id, Pending { login: login.to_owned(), channel: channel.to_owned(), giveaway_id });
+    let send_at = (chrono::Utc::now() + chrono::Duration::seconds(delay as i64)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    app.win_replies.pending.lock().unwrap().insert(
+        id,
+        Pending { login: login.to_owned(), channel: channel.to_owned(), giveaway_id, text: text.to_owned(), send_at },
+    );
+    app.sync.state_changed();
     let view = WinReplyView { id, login: login.to_owned(), channel: channel.to_owned(), text: text.to_owned(), delay };
     let _ = app.handle().emit_to("main", "win-reply", &view);
     app.log(login, EventKind::Giveaway, format!("Réponse au gain sur {channel} dans {delay} s : {}", text.replace('\n', " / ")));
@@ -76,13 +95,20 @@ pub fn schedule(app: &Arc<App>, account_id: i64, giveaway_id: Option<i64>, login
         for (i, phrase) in phrases.iter().enumerate() {
             tokio::time::sleep(Duration::from_secs(if i == 0 { delay } else { gap })).await;
             // Annulée en route : plus en attente (le message d'annulation est déjà parti)
-            let Some(p) = app.win_replies.pending.lock().unwrap().get(&id).map(|p| Pending { login: p.login.clone(), channel: p.channel.clone(), giveaway_id: p.giveaway_id }) else {
+            let Some(p) = app.win_replies.pending.lock().unwrap().get(&id).map(|p| Pending {
+                login: p.login.clone(),
+                channel: p.channel.clone(),
+                giveaway_id: p.giveaway_id,
+                text: String::new(),
+                send_at: String::new(),
+            }) else {
                 return;
             };
             // Situation changée en route (gagnant retiré, giveaway masqué, application en pause) :
             // pas de phrase de plus
             if let Some(why) = stale(&app, &p) {
                 app.win_replies.pending.lock().unwrap().remove(&id);
+                app.sync.state_changed();
                 app.log(&p.login, EventKind::Info, format!("Réponse au gain sur {} abandonnée : {why}", p.channel));
                 let done = WinReplyDone { id, login: p.login, channel: p.channel, outcome: "cancelled", message: Some(why.to_owned()) };
                 let _ = app.handle().emit_to("main", "win-reply-done", &done);
@@ -106,6 +132,7 @@ pub fn schedule(app: &Arc<App>, account_id: i64, giveaway_id: Option<i64>, login
             }
         }
         let Some(p) = app.win_replies.pending.lock().unwrap().remove(&id) else { return };
+        app.sync.state_changed();
         let (outcome, message) = match failure {
             None => ("sent", None),
             Some(e) if sent > 0 => ("failed", Some(format!("{sent} phrase(s) envoyée(s), puis : {e}"))),
@@ -137,6 +164,7 @@ fn stale(app: &App, p: &Pending) -> Option<&'static str> {
 /// Annule une réponse encore en attente ; `false` : déjà partie (ou inconnue)
 pub fn cancel(app: &App, id: u64) -> bool {
     let Some(p) = app.win_replies.pending.lock().unwrap().remove(&id) else { return false };
+    app.sync.state_changed();
     app.log(&p.login, EventKind::Info, format!("Réponse au gain sur {} annulée", p.channel));
     let done = WinReplyDone { id, login: p.login, channel: p.channel, outcome: "cancelled", message: None };
     let _ = app.handle().emit_to("main", "win-reply-done", &done);

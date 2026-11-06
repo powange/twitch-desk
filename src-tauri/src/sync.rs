@@ -1849,6 +1849,8 @@ fn phone_channels(views: &[crate::app::AccountView]) -> (Value, Value) {
                     "earnedToday": c.earned_today,
                     "maxBalance": c.max_balance,
                     "priority": c.priority,
+                    "harvest": c.enabled,
+                    "autoClaim": c.auto_claim,
                     "live": phone_live(&c.live),
                 })
             })
@@ -1915,6 +1917,21 @@ fn phone_scanner(view: &crate::scanner::ScannerView) -> Value {
         })
         .collect();
     json!({ "scannedAt": view.scanned_at, "matches": matches })
+}
+
+/// Lien du Discord de chaque streamer d'un giveaway en cours (fiche du streamer)
+fn phone_discord(app: &App, view: &crate::giveaways::GiveawaysView) -> Value {
+    let channels: BTreeSet<String> =
+        view.giveaways.iter().filter(|g| matches!(g.row.status.as_str(), "open" | "paused")).map(|g| g.row.channel.to_lowercase()).collect();
+    let mut out = serde_json::Map::new();
+    for s in app.db.streamers().unwrap_or_default() {
+        if let Some(url) = s.discord_url.filter(|u| u.starts_with("https://")) {
+            if channels.contains(&s.login.to_lowercase()) {
+                out.insert(s.login.to_lowercase(), json!(url));
+            }
+        }
+    }
+    Value::Object(out)
 }
 
 /// Langue de diffusion (code ISO 639-1) des chaînes de l'état publié (giveaways, Points,
@@ -2030,11 +2047,20 @@ fn phone_drops(views: &[crate::app::AccountView]) -> Value {
                     })
                 })
                 .collect();
+            // Campagnes ignorées (actives) : à rétablir depuis le téléphone
+            let ignored: Vec<Value> = d
+                .campaigns
+                .iter()
+                .filter(|c| c.active() && d.ignored_campaigns.contains(&c.id))
+                .take(PHONE_CAMPAIGNS)
+                .map(|c| json!({ "id": c.id, "name": c.name, "game": c.game.name }))
+                .collect();
             json!({
                 "login": a.login,
                 "enabled": d.enabled,
                 "target": d.target.as_ref().map(|t| json!({ "game": t.game_name, "login": t.login, "title": t.title })),
                 "campaigns": campaigns,
+                "ignored": ignored,
             })
         })
         .collect();
@@ -2091,6 +2117,11 @@ fn spawn_state(app: Arc<App>) {
             state["languages"] = languages;
             state["avatars"] = avatars;
             state["actionsAllowed"] = json!(phone_actions_allowed(&app));
+            // Application en pause, réponses au gain en attente (annulables), Discord des
+            // streamers des giveaways en cours (application 0.48.56)
+            state["paused"] = json!(app.is_paused());
+            state["winReplies"] = json!(crate::win_reply::pending_view(&app));
+            state["discord"] = phone_discord(&app, &giveaways);
             state["pc"] = json!({
                 "version": app.handle().package_info().version.to_string(),
                 "update": app.sync.pc_update.lock().unwrap().clone(),
@@ -2209,7 +2240,9 @@ async fn run_phone_action(app: &Arc<App>, action: &PhoneAction) -> Result<(Strin
 /// Demandes du téléphone sur un giveaway ou le scanner (serveur 0.8.10) : masquer, journal du
 /// chat, conditions, surveiller une chaîne ; None : autre demande. Pas d'achat : toujours permises
 async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Result<(String, Option<Value>), String>> {
-    if !matches!(action.kind.as_str(), "giveaway_hide" | "giveaway_chat_log" | "giveaway_conditions" | "channel_monitor" | "points_order" | "se_option") {
+    if !matches!(action.kind.as_str(), "giveaway_hide" | "giveaway_chat_log" | "giveaway_conditions" | "channel_monitor" | "points_order" | "se_option" | "giveaway_participate" | "giveaway_follow" | "giveaway_hello"
+            | "win_reply_cancel" | "points_option" | "points_max" | "drop_campaign_ignore" | "drops_refresh" | "app_pause"
+    ) {
         return None;
     }
     let p = &action.payload;
@@ -2218,6 +2251,23 @@ async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Res
     }
     if action.kind == "se_option" {
         return Some(phone_se_option(app, p));
+    }
+    match action.kind.as_str() {
+        "win_reply_cancel" => {
+            let id = str_of(p, "item").and_then(|i| i.parse::<u64>().ok());
+            return Some(match id {
+                Some(id) if crate::win_reply::cancel(app, id) => Ok(("Réponse au gain annulée".into(), None)),
+                _ => Err("Réponse déjà partie ou inconnue".into()),
+            });
+        }
+        "app_pause" => {
+            let paused = bool_of(p, "enabled").unwrap_or(true);
+            app.set_paused(paused);
+            crate::tray::refresh(app.handle(), paused);
+            return Some(Ok((if paused { "Application du PC en pause".into() } else { "Application du PC relancée".into() }, None)));
+        }
+        "points_option" | "points_max" | "drop_campaign_ignore" | "drops_refresh" => return Some(phone_account_action(app, &action.kind, p)),
+        _ => {}
     }
     if action.kind == "channel_monitor" {
         let Some(channel) = str_of(p, "channel") else { return Some(Err("Demande incomplète".into())) };
@@ -2231,6 +2281,29 @@ async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Res
         Err(e) => return Some(Err(db_err(e))),
     };
     Some(match action.kind.as_str() {
+        "giveaway_participate" => {
+            // Points de chaîne : des points sont dépensés, même autorisation que les achats
+            if row.kind == "channelpoints" && !phone_actions_allowed(app) {
+                return Some(Err("Achats depuis le téléphone désactivés sur le PC (Paramètres → Synchronisation)".into()));
+            }
+            let entered: Vec<i64> = row.entries.iter().map(|e| e.account_id).collect();
+            let ids: Vec<i64> = app.db.accounts().unwrap_or_default().into_iter().map(|a| a.id).filter(|a| !entered.contains(a)).collect();
+            if ids.is_empty() {
+                return Some(Ok(("Tous tes comptes participent déjà".into(), None)));
+            }
+            match crate::giveaways::participate(app, id, &ids, false).await {
+                Ok(results) if results.iter().all(|r| r.ok) => Ok((format!("Participation envoyée sur {} : {}", row.channel, results.iter().map(|r| r.login.as_str()).collect::<Vec<_>>().join(", ")), None)),
+                Ok(results) => Err(results.iter().filter(|r| !r.ok).map(|r| format!("{} : {}", r.login, r.message)).collect::<Vec<_>>().join(" · ")),
+                Err(e) => Err(e),
+            }
+        }
+        "giveaway_follow" => {
+            let ids: Vec<i64> = app.db.accounts().unwrap_or_default().into_iter().map(|a| a.id).collect();
+            crate::commands::follow_accounts(app, &row.channel, &ids).await.map(|_| (format!("{} suivie par tes comptes", row.channel), None))
+        }
+        "giveaway_hello" => crate::commands::hello_accounts(app, &row.channel, None).await.map(|n| {
+            (if n == 0 { format!("Bonjour déjà dit sur {} par tous tes comptes", row.channel) } else { format!("Bonjour dit sur {} ({n} compte(s))", row.channel) }, None)
+        }),
         "giveaway_hide" => {
             let hidden = bool_of(p, "hidden").unwrap_or(true);
             crate::commands::hide_giveaway(app, id, hidden)
@@ -2283,6 +2356,65 @@ async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Res
             crate::commands::apply_giveaway_update(app, id, input).await.map(|_| (format!("Conditions du giveaway de {} enregistrées", row.channel), None))
         }
     })
+}
+
+/// Demandes du téléphone sur un compte : récolte ou bonus auto d'une chaîne Points, solde
+/// maximum, campagne de drops ignorée ou rétablie, drops relus (et réclamés) tout de suite
+fn phone_account_action(app: &Arc<App>, kind: &str, p: &Value) -> Result<(String, Option<Value>), String> {
+    let Some(login) = str_of(p, "account") else { return Err("Demande incomplète".into()) };
+    let account = app
+        .db
+        .accounts()
+        .map_err(db_err)?
+        .into_iter()
+        .find(|a| a.login.eq_ignore_ascii_case(&login))
+        .ok_or_else(|| format!("Compte {login} inconnu sur ce PC"))?;
+    let points_channel = || -> Result<crate::db::Channel, String> {
+        let channel = str_of(p, "channel").ok_or("Demande incomplète")?;
+        app.db
+            .channels(account.id)
+            .map_err(db_err)?
+            .into_iter()
+            .find(|c| c.in_points && c.login.eq_ignore_ascii_case(&channel))
+            .ok_or_else(|| format!("{channel} n'est pas dans la page Points de chaîne de {login}"))
+    };
+    let message = match kind {
+        "points_option" => {
+            let ch = points_channel()?;
+            let enabled = bool_of(p, "enabled").unwrap_or(false);
+            match str_of(p, "option").as_deref() {
+                Some("harvest") => app.db.set_channel_options(ch.id, enabled, ch.auto_claim, ch.chat_presence).map_err(db_err)?,
+                Some("bonus") => app.db.set_channel_options(ch.id, ch.enabled, enabled, ch.chat_presence).map_err(db_err)?,
+                _ => return Err("Réglage inconnu".into()),
+            }
+            format!("{} : réglage enregistré pour {}", ch.login, account.login)
+        }
+        "points_max" => {
+            let ch = points_channel()?;
+            let max = int_of(p, "max").filter(|m| *m > 0);
+            if max.is_some_and(|m| m > 2_000_000_000) {
+                return Err("Solde maximum invalide".into());
+            }
+            app.db.set_max_balance(ch.id, max).map_err(db_err)?;
+            match max {
+                Some(m) => format!("{} : solde maximum {m}", ch.login),
+                None => format!("{} : plus de solde maximum", ch.login),
+            }
+        }
+        "drop_campaign_ignore" => {
+            let campaign = str_of(p, "item").ok_or("Demande incomplète")?;
+            let ignored = bool_of(p, "enabled").unwrap_or(true);
+            app.db.set_drop_campaign_ignored(account.id, &campaign, ignored).map_err(db_err)?;
+            (if ignored { "Campagne ignorée" } else { "Campagne rétablie" }).to_owned()
+        }
+        "drops_refresh" => {
+            app.send(account.id, crate::miner::MinerCommand::RefreshDrops);
+            return Ok((format!("Drops de {} relus : ceux terminés sont réclamés", account.login), None));
+        }
+        _ => return Err("Action inconnue".into()),
+    };
+    app.send(account.id, crate::miner::MinerCommand::Reload);
+    Ok((message, None))
 }
 
 /// Présence dans le chat ou achat automatique d'une chaîne StreamElements, depuis le téléphone
