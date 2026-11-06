@@ -434,12 +434,17 @@ fn parse_line(line: &str, login: &str) -> Line {
         }
         "JOIN" if own => Line::SelfJoin(target.trim_start_matches('#').to_lowercase()),
         "PART" if own => Line::SelfPart(target.trim_start_matches('#').to_lowercase()),
-        "PRIVMSG" => Line::Privmsg {
-            nick: nick.to_lowercase(),
-            channel: target.trim_start_matches('#').to_lowercase(),
-            text: parts.next().unwrap_or("").trim_start_matches(':').to_owned(),
-            moderator,
-        },
+        "PRIVMSG" => {
+            // Badge « Chat Bot » (bot-badge) : bot ajouté par le streamer, reconnu comme tel
+            let badged_bot = tags.split(';').filter_map(|t| t.strip_prefix("badges=")).any(|b| b.split(',').any(|badge| badge.starts_with("bot-badge/")));
+            if badged_bot {
+                crate::giveaways::bots::note_badged_bot(nick);
+            }
+            let text = parts.next().unwrap_or("").trim_start_matches(':');
+            // Message en « /me » : « \u{1}ACTION texte\u{1} » ; analysé sans cet emballage
+            let text = text.strip_prefix("\u{1}ACTION ").map(|t| t.trim_end_matches('\u{1}')).unwrap_or(text);
+            Line::Privmsg { nick: nick.to_lowercase(), channel: target.trim_start_matches('#').to_lowercase(), text: text.to_owned(), moderator }
+        }
         "NOTICE" => Line::Notice {
             id: tags.split(';').find_map(|t| t.strip_prefix("msg-id=")).unwrap_or("").to_owned(),
             channel: target.trim_start_matches('#').to_lowercase(),
@@ -480,6 +485,13 @@ mod tests {
             parse_line("@badges=subscriber/12;display-name=moderator/x :bob!b@b.tmi.twitch.tv PRIVMSG #sot :hi", "me"),
             Line::Privmsg { moderator: false, .. }
         ));
+        // Message en « /me » d'un bot avec le badge « Chat Bot » : texte sans l'emballage ACTION,
+        // auteur reconnu comme bot de confiance
+        assert_eq!(
+            parse_line("@badges=moderator/1,bot-badge/1 :pokemoncommunitygame!p@p.tmi.twitch.tv PRIVMSG #b :\u{1}ACTION A wild Shroomish appears\u{1}", "me"),
+            Line::Privmsg { nick: "pokemoncommunitygame".into(), channel: "b".into(), text: "A wild Shroomish appears".into(), moderator: true }
+        );
+        assert!(crate::giveaways::bots::is_trusted_bot("pokemoncommunitygame"));
         assert_eq!(parse_line(":tmi.twitch.tv RECONNECT", "me"), Line::Reconnect);
     }
 

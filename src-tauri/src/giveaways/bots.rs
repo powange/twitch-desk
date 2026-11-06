@@ -81,11 +81,29 @@ pub fn is_bot_like(user: &str) -> bool {
     is_trusted_bot(&user) || user.ends_with("bot")
 }
 
-/// Bot identifié par son pseudo exact (connu, ou ajouté dans les réglages) : un spectateur ne
-/// peut pas le prendre. Un pseudo en « …bot » seul n'en est pas un (« viewerbot » est libre)
+/// Comptes vus avec le badge « Chat Bot » de Twitch (bot-badge) : donné par Twitch aux bots
+/// ajoutés par un streamer, un spectateur ne peut pas se l'attribuer
+static BADGED_BOTS: LazyLock<RwLock<std::collections::HashSet<String>>> = LazyLock::new(|| RwLock::new(Default::default()));
+const BADGED_BOTS_MAX: usize = 500;
+
+/// Auteur d'un message portant le badge « Chat Bot » : bot de confiance désormais
+pub fn note_badged_bot(user: &str) {
+    let user = user.to_lowercase();
+    if BADGED_BOTS.read().unwrap().contains(&user) {
+        return;
+    }
+    let mut set = BADGED_BOTS.write().unwrap();
+    if set.len() < BADGED_BOTS_MAX {
+        set.insert(user);
+    }
+}
+
+/// Bot identifié par son pseudo exact (connu, ajouté dans les réglages) ou par le badge « Chat
+/// Bot » : un spectateur ne peut pas le prendre. Un pseudo en « …bot » seul n'en est pas un
+/// (« viewerbot » est libre)
 pub fn is_trusted_bot(user: &str) -> bool {
     let user = user.to_lowercase();
-    is_chat_bot(&user) || user == "streamlabs" || EXTRA_BOTS.read().unwrap().contains(&user)
+    is_chat_bot(&user) || user == "streamlabs" || EXTRA_BOTS.read().unwrap().contains(&user) || BADGED_BOTS.read().unwrap().contains(&user)
 }
 
 /// Formulations ajoutées par l'utilisateur (Giveaways → Réglages), compilées
@@ -451,6 +469,10 @@ mod tests {
         );
         set_extra_bots(&[]);
         assert!(is_trusted_bot("Nightbot") && !is_trusted_bot("sery_bot") && is_bot_like("sery_bot"));
+        // Badge « Chat Bot » vu sur un message : bot de confiance, quel que soit son pseudo
+        assert!(!is_trusted_bot("badgedgamebotless") && !is_bot_like("badgedgamebotless"));
+        note_badged_bot("BadgedGameBotless");
+        assert!(is_trusted_bot("badgedgamebotless") && is_bot_like("badgedgamebotless"));
     }
 
     #[test]

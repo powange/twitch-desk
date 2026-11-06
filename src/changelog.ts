@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.49',
+    date: '2026-11-06',
+    title: 'Bots de chat reconnus à leur badge',
+    changes: [
+      { kind: 'improved', text: 'Giveaways : un bot qui porte le badge « Bot de chat » de Twitch est reconnu comme un bot, quel que soit son pseudo. Ses annonces de gagnant sont lues comme celles de StreamElements ou Nightbot.' },
+      { kind: 'fixed', text: 'Chat : les messages écrits en « /me » (texte en italique, souvent utilisé par les bots) sont maintenant lus correctement par la détection.' }
+    ]
+  },
+  {
     version: '0.48.48',
     date: '2026-11-06',
     title: 'Participation automatique depuis un giveaway',
