@@ -23,7 +23,8 @@ export const CHANGELOG: Release[] = [
       { kind: 'new', text: 'Web app : quand un de tes comptes gagne, un bandeau affiche la réponse prévue avec un compte à rebours et un bouton « Annuler ».' },
       { kind: 'new', text: 'Web app, Points de chaîne : interrupteurs « Récolte » et « Bonus auto », et solde maximum de chaque chaîne.' },
       { kind: 'new', text: 'Web app, Drops : ignorer une campagne (ou la rétablir) et réclamer les drops terminés.' },
-      { kind: 'new', text: 'Web app : mettre l\'application du PC en pause ou la relancer, depuis le menu. Un bandeau signale la pause.' }
+      { kind: 'new', text: 'Web app : mettre l\'application du PC en pause ou la relancer, depuis le menu. Un bandeau signale la pause.' },
+      { kind: 'improved', text: 'Web app, giveaways : un seul carrousel, avec une liste pour choisir ce qu\'il affiche : giveaways en cours, masqués ou en pause. Elle remplace les deux coches.' }
     ]
   },
   {

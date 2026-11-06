@@ -90,22 +90,28 @@ const TABS: { key: Tab, label: string, icon: string, title?: string }[] = [
   { key: 'drops', label: 'Drops', icon: 'i-lucide-package-open' }
 ]
 
-// Masqués sur le PC : cachés, sauf « Afficher les masqués » (choix gardé sur ce téléphone)
-const showHidden = ref(localStorage.getItem('showHidden') === '1')
-watch(showHidden, v => localStorage.setItem('showHidden', v ? '1' : '0'))
+// Un seul carrousel : giveaways en cours, masqués sur le PC, ou en pause (live terminé, tirage
+// pas encore fait), au choix (gardé sur ce téléphone)
+type GiveawayList = 'open' | 'hidden' | 'paused'
+const savedList = localStorage.getItem('giveawayList')
+const listChoice = ref<GiveawayList>(savedList === 'hidden' || savedList === 'paused' ? savedList : 'open')
+watch(listChoice, v => localStorage.setItem('giveawayList', v))
 const isHidden = (id: string) => !!data.value?.state?.giveaways[id]?.hidden
-const hiddenCount = computed(() => data.value?.giveaways.filter(g => isHidden(g.id)).length ?? 0)
-const visible = computed(() => data.value?.giveaways.filter(g => showHidden.value || !isHidden(g.id)) ?? [])
-const open = computed(() => visible.value.filter(g => g.status === 'open'))
-// En pause (live terminé, tirage pas encore fait) : cachés, sauf « Afficher les giveaways en
-// pause » (choix gardé sur ce téléphone)
-const showPaused = ref(localStorage.getItem('showPaused') === '1')
-watch(showPaused, v => localStorage.setItem('showPaused', v ? '1' : '0'))
-const pausedAll = computed(() => visible.value.filter(g => g.status === 'paused'))
-const paused = computed(() => showPaused.value ? pausedAll.value : [])
-// Giveaway affiché dans chaque carrousel
-const openIndex = ref(0)
-const pausedIndex = ref(0)
+const all = computed(() => data.value?.giveaways ?? [])
+const hiddenList = computed(() => all.value.filter(g => isHidden(g.id)))
+const pausedList = computed(() => all.value.filter(g => g.status === 'paused' && !isHidden(g.id)))
+const openList = computed(() => all.value.filter(g => g.status === 'open' && !isHidden(g.id)))
+const mode = computed<GiveawayList>(() => listChoice.value)
+const listItems = computed(() => [
+  { label: `Giveaways en cours (${openList.value.length})`, value: 'open' },
+  { label: `Giveaways masqués (${hiddenList.value.length})`, value: 'hidden' },
+  { label: `Giveaways en pause (${pausedList.value.length})`, value: 'paused' }
+])
+const shown = computed(() => mode.value === 'hidden' ? hiddenList.value : mode.value === 'paused' ? pausedList.value : openList.value)
+const shownTitle = computed(() => mode.value === 'hidden' ? 'Masqués' : mode.value === 'paused' ? 'En pause' : 'En cours')
+// Giveaway affiché ; revenu au premier quand la liste change
+const shownIndex = ref(0)
+watch(mode, () => { shownIndex.value = 0 })
 const instanceName = computed(() => data.value?.instance.name || device.value?.instanceName || 'Twitch Desk')
 const connection = computed(() => {
   switch (status.value) {
@@ -406,19 +412,14 @@ const menu = computed<DropdownMenuItem[][]>(() => [
             <p class="font-medium">Aucun giveaway en cours</p>
             <p class="text-sm text-muted">Ils apparaissent ici dès que l'application en détecte un.</p>
           </div>
-          <div v-if="hiddenCount || pausedAll.length" class="flex flex-col gap-2">
-            <USwitch v-if="pausedAll.length" v-model="showPaused" :label="`Afficher les giveaways en pause (${pausedAll.length})`" size="sm" />
-            <USwitch v-if="hiddenCount" v-model="showHidden" :label="`Afficher les masqués (${hiddenCount})`" size="sm" />
-          </div>
-          <section v-if="open.length" class="flex flex-col gap-3" aria-labelledby="open-title">
-            <h1 id="open-title" class="text-sm font-medium text-muted uppercase tabular-nums">En cours · {{ Math.min(openIndex, open.length - 1) + 1 }} / {{ open.length }}</h1>
-            <GiveawayCarousel v-model:index="openIndex" :giveaways="open" :state="data.state" />
+          <USelect v-if="data.giveaways.length" v-model="listChoice" :items="listItems" class="w-full" aria-label="Giveaways affichés" />
+          <section v-if="shown.length" class="flex flex-col gap-3" aria-labelledby="shown-title">
+            <h1 id="shown-title" class="text-sm font-medium text-muted uppercase tabular-nums">{{ shownTitle }} · {{ Math.min(shownIndex, shown.length - 1) + 1 }} / {{ shown.length }}</h1>
+            <p v-if="mode === 'paused'" class="text-xs text-muted -mt-1">Live terminé, tirage pas encore fait.</p>
+            <p v-else-if="mode === 'hidden'" class="text-xs text-muted -mt-1">Masqués sur le PC : ni alerte, ni participation automatique.</p>
+            <GiveawayCarousel :key="mode" v-model:index="shownIndex" :giveaways="shown" :state="data.state" />
           </section>
-          <section v-if="paused.length" class="flex flex-col gap-3" aria-labelledby="paused-title">
-            <h1 id="paused-title" class="text-sm font-medium text-muted uppercase tabular-nums">En pause · {{ Math.min(pausedIndex, paused.length - 1) + 1 }} / {{ paused.length }}</h1>
-            <p class="text-xs text-muted -mt-1">Live terminé, tirage pas encore fait.</p>
-            <GiveawayCarousel v-model:index="pausedIndex" :giveaways="paused" :state="data.state" />
-          </section>
+          <p v-else-if="data.giveaways.length" class="text-sm text-muted py-6 text-center">{{ mode === 'hidden' ? 'Aucun giveaway masqué.' : mode === 'paused' ? 'Aucun giveaway en pause.' : 'Aucun giveaway en cours : choisis une autre liste ci-dessus.' }}</p>
           <MentionList v-if="data.state?.mentions?.length" id="mentions" :mentions="data.state.mentions" :langs="data.state.languages" :avatars="data.state.avatars" class="scroll-mt-20" />
           <p v-if="data.stateAt" class="text-xs text-muted text-center">Participations publiées par le PC {{ timeAgo(data.stateAt) }}</p>
         </template>
