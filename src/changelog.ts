@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.50',
+    date: '2026-11-06',
+    title: 'Giveaways passés dans l\'ordre, heure du tirage',
+    changes: [
+      { kind: 'fixed', text: 'Page Alertes, giveaways passés : ils sont rangés par date de détection, la plus récente en premier, comme l\'indique la colonne « Détecté ». Corriger le gagnant d\'un ancien giveaway ne le fait plus remonter en haut de la liste. Le filtre par période utilise la même date.' },
+      { kind: 'fixed', text: 'Giveaways : quand un gagnant est détecté (annonce d\'un bot ou tirage StreamElements), l\'heure du tirage est remplie si elle n\'était pas connue. C\'est l\'heure du tirage donnée par StreamElements, ou celle de l\'annonce dans le chat.' }
+    ]
+  },
+  {
     version: '0.48.49',
     date: '2026-11-06',
     title: 'Bots de chat reconnus à leur badge',

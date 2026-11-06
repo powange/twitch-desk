@@ -1937,10 +1937,11 @@ impl Db {
     /// Giveaways terminés qui passent `filter`, les plus récents d'abord, par page (`offset`,
     /// `limit`) ; et leur nombre
     pub fn closed_giveaways(&self, filter: &PastFilter, limit: usize, offset: usize) -> DbResult<(Vec<GiveawayRow>, usize)> {
-        // Date d'un giveaway : celle du tirage, sinon de la détection
+        // Date d'un giveaway : celle de sa détection (colonne « Détecté ») ; celle du tirage change
+        // quand on corrige le gagnant après coup, elle ne sert ni au tri ni au filtre
         let condition = "status = 'closed'
-            AND (:from IS NULL OR julianday(COALESCE(drawn_at, detected_at)) >= julianday(:from))
-            AND (:to IS NULL OR julianday(COALESCE(drawn_at, detected_at)) <= julianday(:to))
+            AND (:from IS NULL OR julianday(detected_at) >= julianday(:from))
+            AND (:to IS NULL OR julianday(detected_at) <= julianday(:to))
             AND (:channel IS NULL OR instr(channel, :channel) > 0)
             AND (:kinds = '[]' OR kind IN (SELECT value FROM json_each(:kinds)))
             AND (:winner IS NULL OR EXISTS (SELECT 1 FROM json_each(giveaways.winners) w WHERE instr(lower_full(w.value), :winner) > 0))
@@ -1960,7 +1961,7 @@ impl Db {
         paged.push((":limit", &limit));
         paged.push((":offset", &offset));
         let rows = self.select_giveaways(
-            &format!("WHERE {condition} ORDER BY COALESCE(drawn_at, detected_at) DESC, id DESC LIMIT :limit OFFSET :offset"),
+            &format!("WHERE {condition} ORDER BY detected_at DESC, id DESC LIMIT :limit OFFSET :offset"),
             paged.as_slice(),
         )?;
         Ok((rows, total as usize))
@@ -2298,7 +2299,8 @@ impl Db {
     }
 
     /// Gagnant ajouté aux gagnants du giveaway, qui est clos ; `false` : déjà gagnant (ou giveaway
-    /// inconnu). Le premier gagnant reste dans `winner`, avec sa chance et l'heure du tirage
+    /// inconnu). Le premier gagnant reste dans `winner`, avec sa chance et l'heure du tirage ;
+    /// heure du tirage encore inconnue sur la fiche (colonne « Tirage ») : celle-ci
     pub fn set_giveaway_winner(&self, id: i64, winner: &str, chance: Option<&str>, at: &str) -> DbResult<bool> {
         let conn = self.conn();
         let found: Option<(String, String)> =
@@ -2315,7 +2317,8 @@ impl Db {
         }
         conn.execute(
             "UPDATE giveaways SET winners = ?2, winner = COALESCE(winner, ?3), winner_chance = CASE WHEN winner IS NULL THEN ?4 ELSE winner_chance END,
-                 drawn_at = COALESCE(drawn_at, ?5), ended_at = ?5, status = 'closed', winner_chances = ?6 WHERE id = ?1",
+                 drawn_at = COALESCE(drawn_at, ?5), draw_at = COALESCE(draw_at, ?5), ended_at = ?5, status = 'closed',
+                 winner_chances = ?6 WHERE id = ?1",
             params![id, serde_json::to_string(&winners).expect("liste"), winner, chance, at, serde_json::to_string(&chances).expect("objet")],
         )?;
         Ok(true)
@@ -3428,6 +3431,8 @@ mod tests {
         let row = db.giveaway(g).unwrap().unwrap();
         assert_eq!(row.winners, ["alice", "bob"]);
         assert_eq!((row.winner.as_deref(), row.winner_chance.as_deref(), row.drawn_at.as_deref(), row.status.as_str()), (Some("alice"), Some("2 %"), Some("2026-11-03T10:30:00Z"), "closed"));
+        // Heure du tirage inconnue : celle du premier gagnant détecté
+        assert_eq!(row.details.draw_at.as_deref(), Some("2026-11-03T10:30:00Z"));
         assert_eq!(db.won_giveaways(&["bob".into()]).unwrap().len(), 1);
         // Tiré il y a peu, sans giveaway ajouté depuis : une nouvelle annonce s'y ajoute
         assert_eq!(db.recent_drawn_giveaway("lunarsea", "2026-11-03T10:20:00Z").unwrap().map(|r| r.id), Some(g));

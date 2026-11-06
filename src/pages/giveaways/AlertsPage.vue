@@ -64,8 +64,8 @@ const pastPage = ref(1)
 const past = ref<{ giveaways: GiveawayView[], total: number } | null>(null)
 let pastTimer: ReturnType<typeof setTimeout> | null = null
 let pastSeq = 0
-// Filtres des giveaways passés (fenêtre « Filtres ») : période (date du tirage, sinon de la
-// détection), chaîne, types, gagnant, cadeaux ; appliqués par la base, sur tous les terminés
+// Filtres des giveaways passés (fenêtre « Filtres ») : période (date de détection),
+// chaîne, types, gagnant, cadeaux ; appliqués par la base, sur tous les terminés
 const pastFilterOpen = ref(false)
 const emptyPastFilter = () => ({ from: '', to: '', channel: '', kinds: [] as GiveawayKind[], winner: '', giftIds: [] as number[] })
 const pastFilter = ref(emptyPastFilter())
@@ -804,7 +804,7 @@ function share(g: GiveawayView) {
       <template #body>
         <div class="flex flex-col gap-4">
           <div class="grid grid-cols-2 gap-4">
-            <UFormField label="Du" help="Date du tirage, sinon de la détection">
+            <UFormField label="Du" help="Date de détection du giveaway">
               <UInput id="past-from" v-model="pastFilter.from" type="date" :max="pastFilter.to || undefined" class="w-full" />
             </UFormField>
             <UFormField label="Au" :error="pastDatesCrossed ? '« Au » est avant « Du » : inverse les dates' : undefined">
