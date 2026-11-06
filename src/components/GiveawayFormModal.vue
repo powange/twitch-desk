@@ -278,7 +278,7 @@ watch(open, (isOpen) => {
   streamerWinReply.value = ''
   streamerWinDelay.value = null
   streamerSeName.value = ''
-  streamerLoaded.value = { discord: '', notes: '', ignored: '', winReply: '', winDelay: null, seName: '' }
+  streamerLoaded.value = { discord: '', notes: '', ignored: '', auto: '', winReply: '', winDelay: null, seName: '' }
   const g = props.giveaway
   const channel = g?.channel ?? props.channel ?? ''
   shownGiftIds.value = [...(g?.giftIds ?? [])]
@@ -404,7 +404,7 @@ const streamerWinDelay = ref<number | null>(null)
 // Pseudo StreamElements s'il diffère du pseudo Twitch (vide : le même)
 const streamerSeName = ref('')
 // Valeurs chargées, pour n'enregistrer que si elles changent
-const streamerLoaded = ref({ discord: '', notes: '', ignored: '', winReply: '', winDelay: null as number | null, seName: '' })
+const streamerLoaded = ref({ discord: '', notes: '', ignored: '', auto: '', winReply: '', winDelay: null as number | null, seName: '' })
 const inspecting = ref(false)
 let inspectTimer: ReturnType<typeof setTimeout> | null = null
 let inspectSeq = 0
@@ -535,6 +535,7 @@ function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof for
   // Fiche du streamer : ce qu'on a noté, sinon le lien Discord trouvé sur sa chaîne
   streamerLoaded.value = {
     discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '', ignored: (found.streamer?.ignoredCommands ?? []).join(),
+    auto: (found.streamer?.autoCommands ?? []).map(c => `${c}:${(found.streamer?.autoCommandsOn ?? []).includes(c)}`).join(),
     winReply: found.streamer?.winReply ?? '', winDelay: found.streamer?.winReplyDelay ?? null, seName: found.streamer?.seName ?? ''
   }
   if (streamerSeName.value === before.seName) streamerSeName.value = found.streamer?.seName ?? ''
@@ -617,8 +618,9 @@ const sections = computed(() => {
     { key: 'conditions' as const, label: 'Conditions', icon: 'i-lucide-list-checks', summary: conditions ? `${conditions} renseignée(s)` : 'inconnues', missing: false },
     { key: 'auto' as const, label: 'Participation automatique', icon: 'i-lucide-bot', summary: streamerAuto.value.length ? `${streamerAuto.value.filter(a => a.on).length} sur ${streamerAuto.value.length} active(s)` : 'aucune commande', missing: false }
   ]
-  // Fiche du streamer : ni giveaway ni cadeaux ; participation automatique seulement sur la fiche
-  return props.streamerOnly ? all.filter(s => s.key === 'channel' || s.key === 'conditions' || s.key === 'auto') : all.filter(s => s.key !== 'auto')
+  // Fiche du streamer : ni giveaway ni cadeaux ; participation automatique (fiche du streamer)
+  // aussi en modifiant un giveaway
+  return props.streamerOnly ? all.filter(s => s.key === 'channel' || s.key === 'conditions' || s.key === 'auto') : all.filter(s => s.key !== 'auto' || editId.value !== null)
 })
 
 // Erreur du cœur : ouvrir la section concernée
@@ -739,7 +741,8 @@ async function save() {
   // jamais si elle n'a pas été chargée (elle serait effacée)
   const loaded = streamerLoaded.value
   const streamerChanged = !!suggestion.value && (streamerDiscord.value !== loaded.discord || streamerNotes.value !== loaded.notes || streamerIgnored.value.join() !== loaded.ignored
-    || streamerWinReply.value.trim() !== loaded.winReply || streamerWinDelay.value !== loaded.winDelay || streamerSeName.value.trim() !== loaded.seName)
+    || streamerWinReply.value.trim() !== loaded.winReply || streamerWinDelay.value !== loaded.winDelay || streamerSeName.value.trim() !== loaded.seName
+    || autoKey() !== loaded.auto)
   if (followDurationError.value) {
     toast.add({ title: 'Ancienneté du follow invalide', description: followDurationError.value, color: 'error' })
     section.value = 'conditions'
@@ -814,7 +817,8 @@ async function save() {
       await invoke('save_streamer', {
         streamer: {
           ...(existing ?? {}), login: f.channel, discordUrl: streamerDiscord.value.trim() || null, notes: streamerNotes.value || null, ignoredCommands: streamerIgnored.value,
-          winReply: streamerWinReply.value.trim() || null, winReplyDelay: streamerWinDelay.value, seName: streamerSeName.value.trim() || null
+          winReply: streamerWinReply.value.trim() || null, winReplyDelay: streamerWinDelay.value, seName: streamerSeName.value.trim() || null,
+          autoCommands: streamerAuto.value.map(a => a.command), autoCommandsOn: streamerAuto.value.filter(a => a.on).map(a => a.command)
         }
       })
     }
@@ -1146,6 +1150,7 @@ async function save() {
               Quand plusieurs spectateurs en tapent une, l'application la tape avec tes comptes après quelques secondes, puis attend 10 min avant de recommencer.
               Une commande peut aussi être dans les commandes ignorées (pas d'alerte de giveaway).
             </p>
+            <p v-if="!streamerOnly" class="text-xs text-muted">Réglage de la fiche de {{ form.channel }} (pas seulement de ce giveaway), enregistré avec le giveaway.</p>
             <p class="text-xs text-muted">La liste est partagée avec tes autres PC ; y répondre se choisit sur chaque PC (une commande ajoutée ailleurs arrive désactivée ici).</p>
             <div class="flex items-center gap-2">
               <UInput id="gw-auto-command" v-model="autoInput" placeholder="!commande" size="sm" class="w-48 font-mono" @keydown.enter.prevent="addAutoCommands" />

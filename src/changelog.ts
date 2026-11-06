@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.48',
+    date: '2026-11-06',
+    title: 'Participation automatique depuis un giveaway',
+    changes: [
+      { kind: 'improved', text: 'Modifier un giveaway : la section « Participation automatique » de la fiche du streamer est aussi dans le menu. Les commandes ajoutées ou changées là sont enregistrées dans la fiche, avec le giveaway.' }
+    ]
+  },
+  {
     version: '0.48.47',
     date: '2026-11-06',
     title: 'Participation automatique hors giveaway',
