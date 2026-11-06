@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.46',
+    date: '2026-11-06',
+    title: 'Giveaway en cours sur chaque stream',
+    changes: [
+      { kind: 'improved', text: 'Fenêtre des streams : dès qu\'un giveaway est en cours sur un stream affiché, son type (Commande, Ticket, StreamElements, Points de chaîne) et sa commande s\'affichent dans l\'en-tête du stream, même si tu y participes déjà. Un clic sur la commande la copie. « Participer » ne s\'ajoute que s\'il reste des comptes à inscrire.' }
+    ]
+  },
+  {
     version: '0.48.45',
     date: '2026-11-06',
     title: 'Participer depuis la fenêtre des streams',

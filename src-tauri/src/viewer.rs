@@ -335,8 +335,9 @@ fn open_window(app: &App, query: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Giveaways ouverts à rejoindre à la main, par chaîne (le plus récent) : commande, comptes qui
-/// n'y sont pas encore ; envoyés à la page pour le bouton « Participer » de chaque stream
+/// Giveaway en cours (ouvert ou en pause, non masqué) de chaque chaîne, le plus récent : type,
+/// commande (ou récompense), et comptes qui n'y sont pas encore quand on peut y participer d'ici
+/// (giveaway ouvert par commande ou ticket) ; envoyés à la page pour l'en-tête de chaque stream
 fn giveaways_to_join(app: &App) -> serde_json::Map<String, serde_json::Value> {
     let accounts = app.db.accounts().unwrap_or_default();
     let mut out = serde_json::Map::new();
@@ -345,16 +346,28 @@ fn giveaways_to_join(app: &App) -> serde_json::Map<String, serde_json::Value> {
     list.sort_by(|a, b| b.row.detected_at.cmp(&a.row.detected_at));
     for g in list {
         let r = &g.row;
-        let Some(command) = r.command.as_deref().filter(|c| !c.trim().is_empty()) else { continue };
-        if r.status != "open" || r.hidden || !matches!(r.kind.as_str(), "command" | "ticket") || out.contains_key(&r.channel) {
+        if !matches!(r.status.as_str(), "open" | "paused") || r.hidden || out.contains_key(&r.channel) {
             continue;
         }
-        let missing: Vec<&str> =
-            accounts.iter().filter(|a| !g.entries_view.iter().any(|e| e.account_id == a.id)).map(|a| a.login.as_str()).collect();
-        if missing.is_empty() {
-            continue;
-        }
-        out.insert(r.channel.clone(), serde_json::json!({ "id": r.id, "command": command, "accounts": missing }));
+        let command = r.command.as_deref().map(str::trim).filter(|c| !c.is_empty());
+        let joinable = r.status == "open" && command.is_some() && matches!(r.kind.as_str(), "command" | "ticket");
+        let missing: Vec<&str> = if joinable {
+            accounts.iter().filter(|a| !g.entries_view.iter().any(|e| e.account_id == a.id)).map(|a| a.login.as_str()).collect()
+        } else {
+            vec![]
+        };
+        let reward = r.details.reward_name.as_deref().filter(|_| r.kind == "channelpoints");
+        out.insert(
+            r.channel.clone(),
+            serde_json::json!({
+                "id": r.id,
+                "kind": r.kind,
+                "paused": r.status == "paused",
+                "command": command,
+                "reward": reward,
+                "accounts": missing,
+            }),
+        );
     }
     out
 }

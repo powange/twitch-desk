@@ -140,7 +140,8 @@ function createTile(channel) {
   close.textContent = '✕'
   close.title = 'Retirer ce stream'
   close.setAttribute('aria-label', `Retirer ${channel}`)
-  // Giveaway à rejoindre (envoyé par Twitch Desk) : « Participer » et la commande, à droite du pseudo
+  // Giveaway en cours (envoyé par Twitch Desk), à droite du pseudo : type, « Participer » si un
+  // compte n'y est pas encore, et la commande (clic : copiée)
   const giveaway = document.createElement('span')
   giveaway.className = 'giveaway'
   bar.append(name, giveaway, star, ficheButton, videoButton, chatButton, close)
@@ -337,32 +338,51 @@ pauseButton.addEventListener('click', () => {
 // Twitch Desk ajoute un stream sans recharger les autres
 window.twitchDeskAdd = addChannel
 
-// Giveaways à rejoindre, par chaîne ({ id, command, accounts }), envoyés par Twitch Desk
+// Giveaway en cours de chaque chaîne ({ id, kind, paused, command, reward, accounts }), envoyé par Twitch Desk
 let toJoin = {}
 const sending = new Set()
+// Libellés des types de giveaway (comme dans Twitch Desk)
+const KINDS = { command: 'Commande', ticket: 'Ticket', streamelements: 'StreamElements', channelpoints: 'Points de chaîne' }
 function renderGiveaway(channel) {
   const t = tiles.get(channel)
   if (!t) return
   const g = toJoin[channel]
   t.giveaway.replaceChildren()
   if (!g) return
-  const join = document.createElement('button')
-  join.className = 'join'
-  join.textContent = sending.has(g.id) ? 'Envoi…' : 'Participer'
-  join.disabled = sending.has(g.id)
-  join.title = `Envoyer ${g.command} avec ${g.accounts.join(', ')}`
-  // Envoyée par l'application (adresse convenue interceptée, la page ne se recharge pas)
-  join.addEventListener('click', () => {
-    sending.add(g.id)
-    renderGiveaway(channel)
-    location.href = `${location.pathname}?participer=${g.id}`
-  })
-  const command = document.createElement('button')
-  command.className = 'command'
-  command.textContent = g.command
-  command.title = 'Copier la commande'
-  command.addEventListener('click', () => copyCommand(g.command, command))
-  t.giveaway.append(join, command)
+  // Type du giveaway en cours (en pause : live terminé, tirage pas encore fait)
+  const kind = document.createElement('span')
+  kind.className = `kind kind-${g.kind}`
+  kind.textContent = (KINDS[g.kind] || 'Giveaway') + (g.paused ? ' · en pause' : '')
+  kind.title = g.paused ? 'Giveaway en pause : live terminé, tirage pas encore fait' : 'Giveaway en cours'
+  t.giveaway.append(kind)
+  if (g.accounts && g.accounts.length) {
+    const join = document.createElement('button')
+    join.className = 'join'
+    join.textContent = sending.has(g.id) ? 'Envoi…' : 'Participer'
+    join.disabled = sending.has(g.id)
+    join.title = `Envoyer ${g.command} avec ${g.accounts.join(', ')}`
+    // Envoyée par l'application (adresse convenue interceptée, la page ne se recharge pas)
+    join.addEventListener('click', () => {
+      sending.add(g.id)
+      renderGiveaway(channel)
+      location.href = `${location.pathname}?participer=${g.id}`
+    })
+    t.giveaway.append(join)
+  }
+  if (g.command) {
+    const command = document.createElement('button')
+    command.className = 'command'
+    command.textContent = g.command
+    command.title = 'Copier la commande'
+    command.addEventListener('click', () => copyCommand(g.command, command))
+    t.giveaway.append(command)
+  } else if (g.reward) {
+    const reward = document.createElement('span')
+    reward.className = 'reward'
+    reward.textContent = g.reward
+    reward.title = 'Récompense à acheter avec les points de chaîne'
+    t.giveaway.append(reward)
+  }
 }
 async function copyCommand(text, button) {
   let ok = false

@@ -55,6 +55,11 @@
     .bar .join:disabled { opacity: 0.6; cursor: default; }
     .bar .join.done { background: #2f9e6b; }
     .bar .join.failed { background: #c2414b; }
+    .bar .kind { padding: 1px 7px; border-radius: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+    .bar .kind-ticket { color: #5cb3ff; background: color-mix(in srgb, #5cb3ff 18%, transparent); }
+    .bar .kind-streamelements { color: #f5a524; background: color-mix(in srgb, #f5a524 18%, transparent); }
+    .bar .kind-channelpoints { color: #c084fc; background: color-mix(in srgb, #c084fc 18%, transparent); }
+    .bar .reward { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .bar .command { font-family: ui-monospace, Consolas, monospace; color: var(--text); background: #2a2538; overflow: hidden; text-overflow: ellipsis; }
     .body { display: flex; flex: 1; min-height: 0; }
     .player { flex: 1; min-width: 0; }
