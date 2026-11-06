@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.57',
+    date: '2026-11-06',
+    title: 'Moins de mémoire en arrière-plan',
+    changes: [
+      { kind: 'improved', text: 'Windows : quand la fenêtre est cachée dans la zone de notification ou réduite, l\'affichage se met en veille et libère de la mémoire. Tout continue de tourner : récolte, giveaways, notifications, sons d\'alerte. Il revient aussitôt à la réouverture.' },
+      { kind: 'improved', text: 'Windows : la fenêtre des streams réduite utilise moins de mémoire, sans couper les vidéos ni le son.' }
+    ]
+  },
+  {
     version: '0.48.56',
     date: '2026-11-06',
     title: 'Web app : participer et agir à distance',

@@ -1,4 +1,5 @@
 mod app;
+mod background;
 mod commands;
 mod db;
 mod drops;
@@ -210,6 +211,8 @@ pub fn run() {
             app.manage(state.clone());
 
             tray::setup(app.handle())?;
+            // Mémoire du navigateur intégré des fenêtres cachées ou réduites (Windows)
+            background::spawn_watch(app.handle().clone());
 
             let started_by_autostart = std::env::args().any(|a| a == MINIMIZED_ARG);
             let after_update = state.db.get_state(SHOW_AFTER_UPDATE);
@@ -252,6 +255,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Fenêtre réduite, rétablie, affichée ou cachée : mémoire du navigateur intégré
+            if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
+                if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                    background::apply(&w);
+                }
+            }
             // Seule la fenêtre principale se cache dans la zone de notification ; les autres
             // (multi-stream) se ferment vraiment
             if let (WindowEvent::CloseRequested { api, .. }, "main") = (event, window.label()) {
@@ -264,6 +273,9 @@ pub fn run() {
                     api.prevent_close();
                     save_windows(window.app_handle());
                     let _ = window.hide();
+                    if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                        background::apply(&w);
+                    }
                 }
             }
         })

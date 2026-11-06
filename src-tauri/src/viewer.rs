@@ -80,6 +80,7 @@ pub async fn watch_stream(app: State<'_, Arc<App>>, login: String) -> Result<(),
     let handle = app.handle();
     if let Some(window) = handle.get_webview_window(LABEL) {
         let result = add_in_page(&window, &login).await;
+        crate::background::foreground(&window);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -256,6 +257,7 @@ fn open_window(app: &App, query: &str) -> Result<(), String> {
                 if let Some(login) = url.query().and_then(|q| q.strip_prefix("fiche=")).filter(|l| valid_login(l)) {
                     let _ = handle.emit_to("main", "open-streamer", login.to_owned());
                     if let Some(main) = handle.get_webview_window("main") {
+                        crate::background::foreground(&main);
                         let _ = main.unminimize();
                         let _ = main.show();
                         let _ = main.set_focus();
