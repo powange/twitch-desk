@@ -1330,8 +1330,8 @@ fn se_page_name(input: &str) -> CmdResult<String> {
         .find_map(|p| lower.strip_prefix(p))
         .map(|rest| rest.split(['/', '?', '#']).next().unwrap_or("").to_owned())
         .unwrap_or_else(|| lower.trim_start_matches('@').to_owned());
-    if name.is_empty() || name.len() > 25 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err("Pseudo StreamElements invalide (lettres, chiffres et _ ; ou l'adresse de sa page)".into());
+    if !crate::streamelements::valid_page_name(&name) {
+        return Err("Pseudo StreamElements invalide (lettres, chiffres, _ et - ; ou l'adresse de sa page)".into());
     }
     Ok(name)
 }

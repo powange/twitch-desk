@@ -1115,7 +1115,7 @@ fn apply(conn: &Connection, collection: &str, id: &str, data: Option<&Value>) ->
             // Pseudo StreamElements (absent : version plus ancienne, celui d'ici reste) ; changé :
             // identifiant StreamElements de ses chaînes à retrouver
             if data.get("seName").is_some() {
-                let name = str_of(data, "seName").map(|n| n.to_lowercase()).filter(|n| valid_login(n));
+                let name = str_of(data, "seName").map(|n| n.to_lowercase()).filter(|n| crate::streamelements::valid_page_name(n));
                 let changed = conn.execute(
                     "UPDATE streamers SET se_name = ?2 WHERE login = ?1 AND se_name IS NOT ?2",
                     params![id, name],

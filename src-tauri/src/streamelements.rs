@@ -11,9 +11,29 @@ use serde::{Deserialize, Serialize};
 const API: &str = "https://api.streamelements.com";
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SeChannel {
     #[serde(rename = "_id")]
     id: String,
+    /// Plateforme de la chaîne (« twitch », « youtube »…) et son identifiant chez elle
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    provider_id: Option<String>,
+}
+
+/// Nom de page StreamElements (streamelements.com/<page>) : lettres, chiffres, « _ » et « - »
+/// (« parzival-07095 »)
+pub fn valid_page_name(name: &str) -> bool {
+    (1..=40).contains(&name.len()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Identifiant Twitch de la chaîne d'une page StreamElements (None : page inconnue, ou d'une
+/// autre plateforme)
+pub async fn twitch_id_of_page(http: &reqwest::Client, name: &str) -> Option<String> {
+    let res = http.get(format!("{API}/kappa/v2/channels/{name}")).send().await.ok()?;
+    let ch: SeChannel = res.error_for_status().ok()?.json().await.ok()?;
+    (ch.provider.as_deref() == Some("twitch")).then_some(ch.provider_id).flatten()
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -321,7 +341,7 @@ pub fn parse_giveaway_url(url: &str) -> Option<(String, String)> {
     let ok = parts.next().is_none()
         && kind == "giveaway"
         && !channel.is_empty()
-        && channel.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && valid_page_name(channel)
         && !id.is_empty()
         && id.chars().all(|c| c.is_ascii_hexdigit());
     ok.then(|| (channel.to_lowercase(), id.to_owned()))

@@ -260,6 +260,13 @@ pub fn parse_bot_message(user: &str, message: &str, privileged: bool) -> Vec<Bot
         _ => vec![],
     };
     let mut events: Vec<BotEvent> = events.into_iter().flatten().collect();
+    // Lien d'un giveaway StreamElements posté par un autre bot de confiance (bot connu, ajouté
+    // dans les réglages, ou reconnu à son badge « Chat Bot ») ; jamais celui d'un spectateur
+    if bot != "streamelements" && is_trusted_bot(&bot) {
+        if let Some(m) = SE_URL.find(message) {
+            events.push(BotEvent::StreamElementsUrl(format!("https://streamelements.com/{}", &m.as_str()["https://streamelements.com/".len()..])));
+        }
+    }
     // Pseudo en « …bot » sans badge : un spectateur a pu le choisir, ses annonces sont ignorées
     let trusted = is_trusted_bot(&bot) || (is_bot_like(&bot) && privileged);
     // Autre bot (moobot, sery_bot…) : formulations générales ; les bots connus gardent leurs
@@ -474,6 +481,17 @@ mod tests {
         );
         set_extra_bots(&[]);
         assert!(is_trusted_bot("Nightbot") && !is_trusted_bot("sery_bot") && is_bot_like("sery_bot"));
+        // Lien de giveaway StreamElements : aussi posté par un autre bot de confiance, page avec un
+        // tiret ; jamais celui d'un spectateur
+        let msg = "kspersot, aktueller Giveaway: „Glorious Gilded Phoenix Sails“ https://StreamElements.com/parzival-07095/giveaway/6aedac48431c773cee73d267";
+        let url = BotEvent::StreamElementsUrl("https://streamelements.com/parzival-07095/giveaway/6aedac48431c773cee73d267".into());
+        assert!(parse_bot_message("streamelements", msg, false).contains(&url));
+        assert!(parse_bot_message("nightbot", msg, false).contains(&url));
+        assert!(!parse_bot_message("viewer42", msg, false).contains(&url));
+        assert_eq!(
+            crate::streamelements::parse_giveaway_url("https://streamelements.com/parzival-07095/giveaway/6aedac48431c773cee73d267"),
+            Some(("parzival-07095".into(), "6aedac48431c773cee73d267".into()))
+        );
         // Badge « Chat Bot » vu sur un message : bot de confiance, quel que soit son pseudo
         assert!(!is_trusted_bot("badgedgamebotless") && !is_bot_like("badgedgamebotless"));
         note_badged_bot("BadgedGameBotless");

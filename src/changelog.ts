@@ -14,6 +14,16 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.58',
+    date: '2026-11-06',
+    title: 'Pages StreamElements mieux reconnues',
+    changes: [
+      { kind: 'fixed', text: 'StreamElements : les pages dont le nom contient un tiret (par exemple streamelements.com/parzival-07095) sont acceptées, dans les liens de giveaway comme dans le champ « Pseudo StreamElements » de la fiche d\'un streamer.' },
+      { kind: 'improved', text: 'Giveaways : un lien de giveaway StreamElements posté par n\'importe quel bot de confiance (bot connu, ajouté dans les réglages ou reconnu à son badge) est repéré, plus seulement ceux du bot StreamElements.' },
+      { kind: 'new', text: 'Fiche d\'un streamer : quand un lien StreamElements montre que sa page ne porte pas son pseudo Twitch, le champ « Pseudo StreamElements » se remplit tout seul, après vérification auprès de StreamElements que la page est bien la sienne. Un pseudo déjà saisi n\'est jamais remplacé.' }
+    ]
+  },
+  {
     version: '0.48.57',
     date: '2026-11-06',
     title: 'Moins de mémoire en arrière-plan',

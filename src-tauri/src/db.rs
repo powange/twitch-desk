@@ -2023,6 +2023,14 @@ impl Db {
         Ok(rows)
     }
 
+    /// Pseudo StreamElements de la fiche, s'il n'y en a pas encore (fiche créée au besoin) ;
+    /// renvoie s'il a été enregistré
+    pub fn set_se_name_if_empty(&self, login: &str, name: &str) -> DbResult<bool> {
+        let conn = self.conn();
+        conn.execute("INSERT OR IGNORE INTO streamers (login) VALUES (?1)", [login])?;
+        Ok(conn.execute("UPDATE streamers SET se_name = ?2 WHERE login = ?1 AND (se_name IS NULL OR se_name = '')", params![login, name])? > 0)
+    }
+
     pub fn save_streamer(&self, s: &Streamer) -> DbResult<()> {
         self.conn().execute(
             "INSERT INTO streamers (login, discord_url, notes, ignored_commands, require_follow, follow_min_secs,

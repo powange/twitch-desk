@@ -1601,7 +1601,39 @@ impl Monitor {
     }
 
     fn on_streamelements_url(&mut self, channel: &str, url: &str) {
+        self.learn_se_page(channel, url);
         self.se_giveaway_seen(channel, url, None, None, "lien posté par le bot");
+    }
+
+    /// Lien d'une page StreamElements qui n'est pas au pseudo Twitch de la chaîne (et fiche sans
+    /// pseudo StreamElements) : vérifié auprès de StreamElements (page de cette chaîne Twitch, et
+    /// pas celle d'un autre streamer posté pendant un raid), puis gardé dans la fiche
+    fn learn_se_page(&self, channel: &str, url: &str) {
+        let Some((page, _)) = crate::streamelements::parse_giveaway_url(url) else { return };
+        if page == channel.to_lowercase() || crate::streamelements::page_name(channel) == page {
+            return;
+        }
+        if self.app.db.streamer(channel).ok().flatten().and_then(|s| s.se_name).is_some_and(|n| !n.is_empty()) {
+            return;
+        }
+        let twitch_id = self.channels.iter().find(|c| c.login == channel).map(|c| c.channel_id.clone()).or_else(|| {
+            self.app.db.accounts().unwrap_or_default().into_iter().find_map(|a| {
+                self.app.db.channels(a.id).ok()?.into_iter().find(|c| c.login == channel).map(|c| c.channel_id)
+            })
+        });
+        let Some(twitch_id) = twitch_id.filter(|id| !id.is_empty()) else { return };
+        let app = self.app.clone();
+        let channel = channel.to_owned();
+        tauri::async_runtime::spawn(async move {
+            if crate::streamelements::twitch_id_of_page(&app.http, &page).await.as_deref() != Some(twitch_id.as_str()) {
+                return;
+            }
+            if app.db.set_se_name_if_empty(&channel, &page).unwrap_or(false) {
+                app.log("giveaways", EventKind::Info, format!("Pseudo StreamElements de {channel} trouvé dans un lien : {page}"));
+                crate::commands::refresh_se_names(&app, &channel);
+                app.sync.poke();
+            }
+        });
     }
 
     /// Nouveau giveaway StreamElements (lien posté par un bot, ou trouvé en cours) : conditions
