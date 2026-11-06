@@ -5,6 +5,7 @@ import { formatNumber, timeAgo } from '../format'
 import { GIVEAWAY_KIND, streamUrl } from '../giveaways'
 import { ApiError, monitorChannel } from '../api'
 import { pendingFor, usePhone } from '../phone'
+import ChannelFlag from './ChannelFlag.vue'
 
 // Page Scanner : streams repérés par le scan automatique du PC ; une chaîne pas encore surveillée
 // peut l'être d'ici (ajoutée par le PC à ses chaînes surveillées)
@@ -43,6 +44,7 @@ async function monitor(login: string) {
             <div v-else class="size-10 rounded-full bg-accented shrink-0" />
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-1.5 flex-wrap">
+                <ChannelFlag :login="m.login" :langs="state?.languages" />
                 <span class="font-semibold break-all">{{ m.displayName || m.login }}</span>
                 <UBadge v-if="m.monitored" label="Surveillée" color="success" variant="subtle" size="sm" />
                 <UBadge v-if="m.giveawayKind" :label="GIVEAWAY_KIND[m.giveawayKind]?.label ?? m.giveawayKind" :color="GIVEAWAY_KIND[m.giveawayKind]?.color ?? 'neutral'" variant="subtle" size="sm" />

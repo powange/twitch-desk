@@ -44,6 +44,14 @@ pub struct NewAction {
     /// Conditions du giveaway (mêmes champs que sa fiche synchronisée)
     #[serde(default)]
     conditions: Option<Value>,
+    /// Ordre des chaînes de la page Points de chaîne d'un compte (pseudos)
+    #[serde(default)]
+    order: Vec<String>,
+    /// Réglage d'une chaîne StreamElements : « chat » (présence dans le chat) ou « autoBuy »
+    #[serde(default)]
+    option: String,
+    #[serde(default)]
+    enabled: bool,
 }
 
 /// Identifiant de synchronisation (uuid) d'un document de l'application
@@ -93,6 +101,24 @@ fn payload_of(body: &NewAction) -> Result<Value, ApiError> {
                 }
                 _ => serde_json::json!({ "item": body.item }),
             })
+        }
+        // Ordre des chaînes de la page Points de chaîne d'un compte (0.8.10)
+        "points_order" => {
+            let account = body.account.trim().to_lowercase();
+            let order: Vec<String> = body.order.iter().map(|l| l.trim().to_lowercase()).collect();
+            if !login_ok(&account) || order.is_empty() || order.len() > 200 || !order.iter().all(|l| login_ok(l)) {
+                return Err(ApiError::BadRequest("Ordre invalide".into()));
+            }
+            Ok(serde_json::json!({ "account": account, "order": order }))
+        }
+        // Présence dans le chat ou achat automatique d'une chaîne StreamElements (0.8.10)
+        "se_option" => {
+            let account = body.account.trim().to_lowercase();
+            let channel = body.channel.trim().to_lowercase();
+            if !login_ok(&account) || !login_ok(&channel) || !matches!(body.option.as_str(), "chat" | "autoBuy") {
+                return Err(ApiError::BadRequest("Réglage invalide".into()));
+            }
+            Ok(serde_json::json!({ "account": account, "channel": channel, "option": body.option, "enabled": body.enabled }))
         }
         // Chaîne du scanner à surveiller (0.8.10)
         "channel_monitor" => {

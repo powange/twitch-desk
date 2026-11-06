@@ -1074,6 +1074,10 @@ pub(crate) async fn monitor_channel(app: &App, login: &str) -> CmdResult<String>
     app.db.add_giveaway_channel(&login, &channel_id).map_err(db_err)?;
     app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();
+    // Résultats du scanner (PC et téléphone) à jour sans attendre le prochain scan
+    if app.scanner.lock().unwrap().mark_monitored(&login) {
+        app.touch_domain(crate::app::Domain::Scanner);
+    }
     Ok(login)
 }
 

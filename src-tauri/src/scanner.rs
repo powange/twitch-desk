@@ -117,6 +117,17 @@ impl ScannerState {
     pub fn view(&self) -> ScannerView {
         self.view.clone()
     }
+
+    /// Chaîne ajoutée aux chaînes surveillées : marquée tout de suite dans les résultats (sans
+    /// attendre le prochain scan) ; renvoie si un résultat a changé
+    pub fn mark_monitored(&mut self, login: &str) -> bool {
+        let mut changed = false;
+        for m in self.view.matches.iter_mut().filter(|m| m.stream.login.eq_ignore_ascii_case(login) && !m.monitored) {
+            m.monitored = true;
+            changed = true;
+        }
+        changed
+    }
 }
 
 /// Titre sans accents ni majuscules, découpé en mots

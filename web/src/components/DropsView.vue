@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { DropCampaign, DropProgress, InstanceState } from '../types'
 import AccountPicker from './AccountPicker.vue'
+import ChannelFlag from './ChannelFlag.vue'
 
 // Page Drops : chaîne regardée et campagnes en cours du compte choisi, en lecture seule
 const props = defineProps<{ state: InstanceState | null }>()
@@ -45,7 +46,7 @@ const endDate = (iso: string) => new Date(iso).toLocaleDateString('fr-FR', { day
       <div v-if="current.target" class="rounded-xl border border-success/40 bg-success/10 p-3 flex items-start gap-2 text-sm">
         <UIcon name="i-lucide-eye" class="size-4 text-success shrink-0 mt-0.5" />
         <div class="min-w-0">
-          <div><b>{{ current.target.game }}</b> : visionnage de <b class="break-all">{{ current.target.login }}</b></div>
+          <div><b>{{ current.target.game }}</b> : visionnage de <img v-if="state?.avatars?.[current.target.login.toLowerCase()]" :src="state.avatars[current.target.login.toLowerCase()]" alt="" class="inline-block align-middle size-5 rounded-full" loading="lazy"> <ChannelFlag :login="current.target.login" :langs="state?.languages" class="inline-block align-middle" /> <b class="break-all">{{ current.target.login }}</b></div>
           <div v-if="current.target.title" class="text-xs text-muted break-words">{{ current.target.title }}</div>
         </div>
       </div>

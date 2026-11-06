@@ -9,6 +9,7 @@
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
+    "@iconify-json/flag": "^1.2.15",
     "@iconify-json/lucide": "^1.2.150",
     "@iconify-json/simple-icons": "^1.2.101",
     "@nuxt/ui": "4.12",

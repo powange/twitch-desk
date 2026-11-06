@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AccountPicker: typeof import('./src/components/AccountPicker.vue')['default']
+    ChannelFlag: typeof import('./src/components/ChannelFlag.vue')['default']
     ChatLogModal: typeof import('./src/components/ChatLogModal.vue')['default']
     DropsView: typeof import('./src/components/DropsView.vue')['default']
     GiftImage: typeof import('./src/components/GiftImage.vue')['default']

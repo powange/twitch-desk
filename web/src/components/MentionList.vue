@@ -3,10 +3,11 @@ import { computed, ref } from 'vue'
 import type { Mention } from '../types'
 import { formatWhen } from '../format'
 import { chatUrl } from '../giveaways'
+import ChannelFlag from './ChannelFlag.vue'
 
 // Mentions de nos pseudos dans les chats surveillés (accueil), les plus récentes d'abord ;
 // les 5 dernières, puis toutes sur demande
-const props = defineProps<{ mentions: Mention[] }>()
+const props = defineProps<{ mentions: Mention[], langs?: Record<string, string> | null, avatars?: Record<string, string> | null }>()
 const all = ref(false)
 const shown = computed(() => all.value ? props.mentions : props.mentions.slice(0, 5))
 </script>
@@ -19,7 +20,7 @@ const shown = computed(() => all.value ? props.mentions : props.mentions.slice(0
         <div class="flex items-start gap-2">
           <div class="min-w-0 flex-1 text-sm">
             <b class="break-words">{{ m.author }}</b> mentionne <b class="break-words">{{ m.account }}</b>
-            <span class="text-muted"> sur </span><b class="break-words">{{ m.channel }}</b>
+            <span class="text-muted"> sur </span><img v-if="avatars?.[m.channel.toLowerCase()]" :src="avatars[m.channel.toLowerCase()]" alt="" class="inline-block align-middle size-5 rounded-full" loading="lazy"> <ChannelFlag :login="m.channel" :langs="langs" class="inline-block align-middle" /> <b class="break-words">{{ m.channel }}</b>
           </div>
           <span class="text-xs text-muted whitespace-nowrap shrink-0">{{ formatWhen(m.at) }}</span>
         </div>

@@ -89,6 +89,9 @@ export interface SeChannel {
   live: ChannelLiveInfo | null
   myTickets: number | null
   giveaway: SeGiveawayInfo | null
+  // Réglages de la ligne (application 0.48.55 et plus)
+  chatPresence?: boolean
+  autoBuy?: boolean
 }
 
 // État publié par l'application du PC
@@ -102,6 +105,10 @@ export interface InstanceState {
   streamelements?: { login: string, connected: boolean, channels: SeChannel[] }[]
   // Achats depuis le téléphone autorisés sur le PC
   actionsAllowed?: boolean
+  // Langue de diffusion des chaînes affichées, login → code (application 0.48.55 et plus)
+  languages?: Record<string, string>
+  // Photo de profil des chaînes des giveaways, mentions et drops (application 0.48.55 et plus)
+  avatars?: Record<string, string>
   // Page Drops (application 0.42 et plus)
   drops?: DropsAccount[]
   // Mentions de nos pseudos, les plus récentes d'abord (application 0.45 et plus)

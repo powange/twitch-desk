@@ -14,6 +14,18 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.55',
+    date: '2026-11-06',
+    title: 'Web app plus complète',
+    changes: [
+      { kind: 'new', text: 'Web app, Points de chaîne : l\'ordre des chaînes se change en faisant glisser la poignée de chaque ligne, comme sur le PC.' },
+      { kind: 'new', text: 'Web app, StreamElements : interrupteurs « Chat » (présence dans le chat) et « Achat auto » sur chaque chaîne. Activer l\'achat automatique demande que les achats depuis le téléphone soient autorisés sur le PC.' },
+      { kind: 'new', text: 'Web app, giveaways : coche « Afficher les giveaways en pause » (live terminé, tirage pas encore fait), décochée au départ.' },
+      { kind: 'improved', text: 'Web app : drapeau de la langue du streamer, comme sur le PC, à côté de son nom sur toutes les pages, et sa photo de profil sur les giveaways, les mentions et les drops.' },
+      { kind: 'fixed', text: 'Scanner (PC et web app) : une chaîne qu\'on vient de surveiller est marquée « Surveillée » tout de suite, sans attendre le scan suivant. Après une demande faite depuis le téléphone, le PC lui renvoie aussitôt son état à jour.' }
+    ]
+  },
+  {
     version: '0.48.54',
     date: '2026-11-06',
     title: 'Web app : masquer, journal, conditions et photos',

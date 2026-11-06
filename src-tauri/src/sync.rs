@@ -1866,6 +1866,8 @@ fn phone_channels(views: &[crate::app::AccountView]) -> (Value, Value) {
                     "points": c.se_points,
                     "earnedToday": c.se_earned_today,
                     "inChat": c.in_chat,
+                    "chatPresence": c.chat_presence,
+                    "autoBuy": c.se_auto_buy,
                     "live": phone_live(&c.live),
                     "myTickets": c.se_my_tickets,
                     "giveaway": c.se_giveaway.as_ref().map(|g| json!({
@@ -1913,6 +1915,70 @@ fn phone_scanner(view: &crate::scanner::ScannerView) -> Value {
         })
         .collect();
     json!({ "scannedAt": view.scanned_at, "matches": matches })
+}
+
+/// Langue de diffusion (code ISO 639-1) des chaînes de l'état publié (giveaways, Points,
+/// StreamElements, scanner, mentions, drops), et photo de profil de celles qui n'en ont pas déjà
+/// une dans l'état (giveaways, mentions, drops) ; inconnues : absentes
+fn phone_channel_info(app: &App, state: &Value, scanner: &crate::scanner::ScannerView) -> (Value, Value) {
+    let mut logins: BTreeSet<String> = BTreeSet::new();
+    if let Some(live) = state["live"].as_object() {
+        logins.extend(live.keys().cloned());
+    }
+    for key in ["points", "streamelements"] {
+        for account in state[key].as_array().into_iter().flatten() {
+            for c in account["channels"].as_array().into_iter().flatten() {
+                if let Some(l) = c["login"].as_str() {
+                    logins.insert(l.to_lowercase());
+                }
+            }
+        }
+    }
+    for m in state["mentions"].as_array().into_iter().flatten() {
+        if let Some(c) = m["channel"].as_str() {
+            logins.insert(c.to_lowercase());
+        }
+    }
+    // Sans photo dans l'état : giveaways, mentions, chaîne regardée pour les drops
+    let mut need_avatar: BTreeSet<String> = BTreeSet::new();
+    for g in &app.giveaways.view().giveaways {
+        if matches!(g.row.status.as_str(), "open" | "paused") {
+            logins.insert(g.row.channel.to_lowercase());
+            need_avatar.insert(g.row.channel.to_lowercase());
+        }
+    }
+    for m in state["mentions"].as_array().into_iter().flatten() {
+        if let Some(c) = m["channel"].as_str() {
+            need_avatar.insert(c.to_lowercase());
+        }
+    }
+    for account in state["drops"].as_array().into_iter().flatten() {
+        if let Some(l) = account["target"]["login"].as_str() {
+            logins.insert(l.to_lowercase());
+            need_avatar.insert(l.to_lowercase());
+        }
+    }
+    let mut avatars = serde_json::Map::new();
+    for login in need_avatar {
+        if let Some(url) = app.lives.avatar(&login) {
+            avatars.insert(login, json!(url));
+        }
+    }
+    let mut out = serde_json::Map::new();
+    for m in &scanner.matches {
+        if let Some(lang) = m.stream.language.as_deref().filter(|l| !l.is_empty()) {
+            out.insert(m.stream.login.to_lowercase(), json!(lang.to_lowercase()));
+        }
+    }
+    for login in logins {
+        if out.contains_key(&login) {
+            continue;
+        }
+        if let Some(lang) = app.channel_language(&login) {
+            out.insert(login, json!(lang));
+        }
+    }
+    (Value::Object(out), Value::Object(avatars))
 }
 
 /// Campagnes publiées par compte, au plus (la regardée et les inachevées d'abord)
@@ -2018,7 +2084,12 @@ fn spawn_state(app: Arc<App>) {
             state["points"] = points;
             state["streamelements"] = se;
             state["drops"] = phone_drops(&views);
-            state["scanner"] = phone_scanner(&app.scanner.lock().unwrap().view());
+            let scanner = app.scanner.lock().unwrap().view();
+            state["scanner"] = phone_scanner(&scanner);
+            // Langue de diffusion (drapeaux) et photo de profil des chaînes affichées, 0.48.55
+            let (languages, avatars) = phone_channel_info(&app, &state, &scanner);
+            state["languages"] = languages;
+            state["avatars"] = avatars;
             state["actionsAllowed"] = json!(phone_actions_allowed(&app));
             state["pc"] = json!({
                 "version": app.handle().package_info().version.to_string(),
@@ -2138,10 +2209,16 @@ async fn run_phone_action(app: &Arc<App>, action: &PhoneAction) -> Result<(Strin
 /// Demandes du téléphone sur un giveaway ou le scanner (serveur 0.8.10) : masquer, journal du
 /// chat, conditions, surveiller une chaîne ; None : autre demande. Pas d'achat : toujours permises
 async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Result<(String, Option<Value>), String>> {
-    if !matches!(action.kind.as_str(), "giveaway_hide" | "giveaway_chat_log" | "giveaway_conditions" | "channel_monitor") {
+    if !matches!(action.kind.as_str(), "giveaway_hide" | "giveaway_chat_log" | "giveaway_conditions" | "channel_monitor" | "points_order" | "se_option") {
         return None;
     }
     let p = &action.payload;
+    if action.kind == "points_order" {
+        return Some(phone_points_order(app, p));
+    }
+    if action.kind == "se_option" {
+        return Some(phone_se_option(app, p));
+    }
     if action.kind == "channel_monitor" {
         let Some(channel) = str_of(p, "channel") else { return Some(Err("Demande incomplète".into())) };
         return Some(crate::commands::monitor_channel(app, &channel).await.map(|login| (format!("{login} ajoutée aux chaînes surveillées"), None)));
@@ -2208,6 +2285,65 @@ async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Res
     })
 }
 
+/// Présence dans le chat ou achat automatique d'une chaîne StreamElements, depuis le téléphone
+fn phone_se_option(app: &Arc<App>, p: &Value) -> Result<(String, Option<Value>), String> {
+    let (Some(login), Some(channel), Some(option)) = (str_of(p, "account"), str_of(p, "channel"), str_of(p, "option")) else {
+        return Err("Demande incomplète".into());
+    };
+    let enabled = bool_of(p, "enabled").unwrap_or(false);
+    let account = app
+        .db
+        .accounts()
+        .map_err(db_err)?
+        .into_iter()
+        .find(|a| a.login.eq_ignore_ascii_case(&login))
+        .ok_or_else(|| format!("Compte {login} inconnu sur ce PC"))?;
+    let ch = app
+        .db
+        .channels(account.id)
+        .map_err(db_err)?
+        .into_iter()
+        .find(|c| c.in_se && c.login.eq_ignore_ascii_case(&channel))
+        .ok_or_else(|| format!("{channel} n'est pas dans la page StreamElements de {login}"))?;
+    let what = match option.as_str() {
+        "chat" => {
+            app.db.set_channel_options(ch.id, ch.enabled, ch.auto_claim, enabled).map_err(db_err)?;
+            "présence dans le chat"
+        }
+        "autoBuy" => {
+            // Des points seront dépensés : même autorisation que les achats depuis le téléphone
+            if enabled && !phone_actions_allowed(app) {
+                return Err("Achats depuis le téléphone désactivés sur le PC (Paramètres → Synchronisation)".into());
+            }
+            app.db.set_se_auto_buy(ch.id, enabled).map_err(db_err)?;
+            "achat automatique"
+        }
+        _ => return Err("Réglage inconnu".into()),
+    };
+    app.send(account.id, crate::miner::MinerCommand::Reload);
+    Ok((format!("{} : {what} {} pour {}", ch.login, if enabled { "activé(e)" } else { "désactivé(e)" }, account.login), None))
+}
+
+/// Ordre des chaînes de la page Points de chaîne d'un compte, choisi sur le téléphone (pseudos) ;
+/// chaînes absentes de la liste reçue : après, dans leur ordre actuel
+fn phone_points_order(app: &Arc<App>, p: &Value) -> Result<(String, Option<Value>), String> {
+    let Some(login) = str_of(p, "account") else { return Err("Demande incomplète".into()) };
+    let order = strings_of(p, "order");
+    let account = app
+        .db
+        .accounts()
+        .map_err(db_err)?
+        .into_iter()
+        .find(|a| a.login.eq_ignore_ascii_case(&login))
+        .ok_or_else(|| format!("Compte {login} inconnu sur ce PC"))?;
+    let channels: Vec<crate::db::Channel> = app.db.channels(account.id).map_err(db_err)?.into_iter().filter(|c| c.in_points).collect();
+    let mut ids: Vec<i64> = order.iter().filter_map(|l| channels.iter().find(|c| c.login.eq_ignore_ascii_case(l)).map(|c| c.id)).collect();
+    ids.extend(channels.iter().map(|c| c.id).filter(|id| !ids.contains(id)).collect::<Vec<_>>());
+    app.db.reorder_channels(account.id, &ids).map_err(db_err)?;
+    app.send(account.id, crate::miner::MinerCommand::Reload);
+    Ok((format!("Ordre des chaînes de {} enregistré", account.login), None))
+}
+
 /// Demandes des téléphones (serveur 0.8 et plus) : lues à chaque annonce du serveur et toutes les
 /// minutes, exécutées une par une, résultat rendu au serveur
 fn spawn_phone_actions(app: Arc<App>) {
@@ -2248,6 +2384,8 @@ fn spawn_phone_actions(app: Arc<App>) {
                 };
                 let kind = if ok { crate::app::EventKind::Info } else { crate::app::EventKind::Error };
                 app.log("téléphone", kind, format!("Demande du téléphone : {message}"));
+                // État du téléphone republié aussitôt (scanner, masqués…), sans attendre
+                app.sync.state_changed();
                 let req = app.http.put(format!("{}/api/v1/instances/{id}/actions/{}", cfg.url, action.id)).json(&json!({ "ok": ok, "message": message, "data": data }));
                 if let Err(e) = send(req, &cfg.code).await {
                     tracing::debug!("résultat d'une demande du téléphone : {e}");

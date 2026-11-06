@@ -107,6 +107,14 @@ export function giveawayChatLog<T>(token: string, item: string): Promise<T> {
 export function giveawayConditions<T>(token: string, item: string, conditions: Record<string, unknown>): Promise<T> {
   return requestAction<T>(token, { kind: 'giveaway_conditions', item, conditions })
 }
+// Ordre des chaînes de la page Points de chaîne d'un compte (pseudos)
+export function pointsOrder<T>(token: string, account: string, order: string[]): Promise<T> {
+  return requestAction<T>(token, { kind: 'points_order', account, order })
+}
+// Présence dans le chat ou achat automatique d'une chaîne StreamElements
+export function seOption<T>(token: string, account: string, channel: string, option: 'chat' | 'autoBuy', enabled: boolean): Promise<T> {
+  return requestAction<T>(token, { kind: 'se_option', account, channel, option, enabled })
+}
 // Chaîne du scanner ajoutée aux chaînes surveillées du PC
 export function monitorChannel<T>(token: string, channel: string): Promise<T> {
   return requestAction<T>(token, { kind: 'channel_monitor', channel })

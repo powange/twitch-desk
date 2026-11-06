@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { InstanceState, PointsChannelState } from '../types'
+import { computed, ref, watch } from 'vue'
+import type { InstanceState, PhoneAction, PointsChannel, PointsChannelState } from '../types'
+import { ApiError, pointsOrder } from '../api'
+import { usePhone } from '../phone'
 import { formatNumber } from '../format'
 import AccountPicker from './AccountPicker.vue'
+import ChannelFlag from './ChannelFlag.vue'
 
-// Page Points de chaîne : chaînes du compte choisi, en lecture seule
+// Page Points de chaîne : chaînes du compte choisi ; leur ordre (celui des chaînes regardées)
+// se change en faisant glisser la poignée, puis est enregistré par le PC
 const props = defineProps<{ state: InstanceState | null }>()
 const account = defineModel<string>('account', { required: true })
 
@@ -20,6 +24,71 @@ const STATES: Record<PointsChannelState, { label: string, color: 'success' | 'pr
   unknown: { label: '…', color: 'neutral' }
 }
 const totalToday = computed(() => current.value?.channels.reduce((n, c) => n + c.earnedToday, 0) ?? 0)
+
+// --- Ordre : glisser la poignée (souris ou doigt) ---
+const phone = usePhone()
+const toast = useToast()
+// Ordre affiché pendant le glisser, puis jusqu'à ce que le PC publie le nouveau (null : celui du PC)
+const order = ref<string[] | null>(null)
+const dragging = ref<string | null>(null)
+const list = ref<HTMLElement | null>(null)
+const channels = computed<PointsChannel[]>(() => {
+  const all = current.value?.channels ?? []
+  if (!order.value) return all
+  const byLogin = new Map(all.map(c => [c.login, c]))
+  const kept = order.value.map(l => byLogin.get(l)).filter((c): c is PointsChannel => !!c)
+  return [...kept, ...all.filter(c => !order.value!.includes(c.login))]
+})
+// Ordre publié par le PC égal à celui demandé (ou compte changé) : on revient au sien
+watch(() => [current.value?.login, current.value?.channels.map(c => c.login).join()], ([, published]) => {
+  if (!dragging.value && order.value && (!published || order.value.join() === published)) order.value = null
+})
+watch(() => current.value?.login, () => { order.value = null })
+let timer: ReturnType<typeof setTimeout> | null = null
+
+function onGrab(e: PointerEvent, login: string) {
+  e.preventDefault()
+  dragging.value = login
+  order.value = channels.value.map(c => c.login)
+  ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+}
+function onMove(e: PointerEvent) {
+  if (!dragging.value || !order.value || !list.value) return
+  // Ligne sous le doigt : la chaîne tirée prend sa place
+  const rows = [...list.value.querySelectorAll<HTMLElement>('[data-login]')]
+  const over = rows.find(r => {
+    const b = r.getBoundingClientRect()
+    return e.clientY >= b.top && e.clientY <= b.bottom
+  })
+  const target = over?.dataset.login
+  if (!target || target === dragging.value) return
+  const from = order.value.indexOf(dragging.value)
+  const to = order.value.indexOf(target)
+  const next = [...order.value]
+  next.splice(from, 1)
+  next.splice(to, 0, dragging.value)
+  order.value = next
+}
+async function onDrop() {
+  if (!dragging.value) return
+  dragging.value = null
+  const acc = current.value
+  const token = phone.token.value
+  if (!acc || !token || !order.value) return
+  if (order.value.join() === acc.channels.map(c => c.login).join()) {
+    order.value = null
+    return
+  }
+  try {
+    phone.requested(await pointsOrder<PhoneAction>(token, acc.login, order.value))
+    // Sans nouvelle publication du PC : retour à son ordre
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => { order.value = null }, 20_000)
+  } catch (e) {
+    order.value = null
+    toast.add({ title: 'Ordre non envoyé', description: e instanceof ApiError && e.status === 400 ? 'Mets à jour le serveur de synchronisation (version 0.8.10 ou plus).' : String(e), color: 'error' })
+  }
+}
 </script>
 
 <template>
@@ -33,12 +102,31 @@ const totalToday = computed(() => current.value?.channels.reduce((n, c) => n + c
       </div>
       <UAlert v-if="!current.enabled" color="warning" variant="subtle" icon="i-lucide-pause" description="Points de chaîne coupés pour ce compte sur le PC." />
       <p v-if="!current.channels.length" class="text-sm text-muted py-6 text-center">Aucune chaîne dans la page Points de chaîne de ce compte.</p>
-      <ul class="flex flex-col gap-2">
-        <li v-for="c in current.channels" :key="c.login" class="rounded-xl border border-default bg-elevated/40 p-3 flex items-center gap-3">
+      <p v-if="current.channels.length > 1" class="text-xs text-muted -mt-1">Fais glisser la poignée pour changer l'ordre : les premières chaînes en live sont regardées.</p>
+      <ul ref="list" class="flex flex-col gap-2">
+        <li
+          v-for="c in channels"
+          :key="c.login"
+          :data-login="c.login"
+          class="rounded-xl border bg-elevated/40 p-3 flex items-center gap-3 transition-colors"
+          :class="dragging === c.login ? 'border-primary bg-primary/10' : 'border-default'"
+        >
+          <button
+            type="button"
+            class="touch-none cursor-grab active:cursor-grabbing text-muted -ml-1 p-1 shrink-0"
+            :aria-label="`Déplacer ${c.login}`"
+            @pointerdown="onGrab($event, c.login)"
+            @pointermove="onMove"
+            @pointerup="onDrop"
+            @pointercancel="onDrop"
+          >
+            <UIcon name="i-lucide-grip-vertical" class="size-5 block" />
+          </button>
           <img v-if="c.avatar" :src="c.avatar" alt="" class="size-10 rounded-full shrink-0" loading="lazy">
           <div v-else class="size-10 rounded-full bg-accented shrink-0" />
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-1.5 flex-wrap">
+              <ChannelFlag :login="c.login" :langs="state?.languages" />
               <span class="font-semibold break-all">{{ c.login }}</span>
               <UBadge :label="STATES[c.state]?.label ?? c.state" :color="STATES[c.state]?.color ?? 'neutral'" variant="subtle" size="sm" />
               <UBadge v-if="c.priority" label="Prioritaire" color="primary" variant="subtle" size="sm" icon="i-lucide-gift" />

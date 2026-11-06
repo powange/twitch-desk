@@ -6,6 +6,7 @@ import { pendingFor, usePhone } from '../phone'
 import { chatUrl, conditions, copyText, GIVEAWAY_KIND, playerUrl, streamUrl } from '../giveaways'
 import { formatDraw, formatNumber, formatWhen } from '../format'
 import GiftImage from './GiftImage.vue'
+import ChannelFlag from './ChannelFlag.vue'
 
 const props = defineProps<{ giveaway: Giveaway, state: InstanceState | null }>()
 const toast = useToast()
@@ -77,6 +78,8 @@ async function copy() {
       <!-- Chaîne, type et statut -->
       <header class="flex flex-col gap-1.5">
         <div class="flex items-center gap-2 flex-wrap">
+          <img v-if="state?.avatars?.[g.channel.toLowerCase()]" :src="state.avatars[g.channel.toLowerCase()]" alt="" class="size-8 rounded-full shrink-0" loading="lazy">
+          <ChannelFlag :login="g.channel" :langs="state?.languages" />
           <h2 class="text-lg font-semibold break-all">{{ g.channel }}</h2>
           <UBadge :label="kind.label" :color="kind.color" variant="subtle" size="sm" />
           <UBadge v-if="g.status === 'paused'" label="En pause" color="warning" variant="subtle" size="sm" icon="i-lucide-pause" />

@@ -1869,6 +1869,14 @@ mod tests {
         let (_, v) = json_of(&s, request_auth("GET", "/api/v1/app/actions", &auth, "9.9.9.1", "")).await;
         let found = v.as_array().unwrap().iter().find(|a| a["id"] == log_id.as_str()).unwrap().clone();
         assert_eq!(found["data"]["entries"][0]["author"], "bob");
+        // Ordre de la page Points, réglage StreamElements (0.8.10) : vérifiés
+        let bad = r#"{"kind":"points_order","account":"alice","order":["bob","a b"]}"#;
+        assert_eq!(status(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", bad)).await, StatusCode::BAD_REQUEST);
+        let bad = r#"{"kind":"se_option","account":"alice","channel":"lunarsea","option":"delete","enabled":true}"#;
+        assert_eq!(status(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", bad)).await, StatusCode::BAD_REQUEST);
+        let ok = r#"{"kind":"se_option","account":"Alice","channel":"lunarsea","option":"autoBuy","enabled":true}"#;
+        let (st, v) = json_of(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", ok)).await;
+        assert_eq!((st, v["payload"]["account"].as_str(), v["payload"]["enabled"].as_bool()), (StatusCode::OK, Some("alice"), Some(true)));
         // État léger de l'application
         let (st, v) = json_of(&s, request_auth("GET", "/api/v1/app/state", &auth, "9.9.9.1", "")).await;
         assert_eq!((st, v["state"].is_null()), (StatusCode::OK, true));

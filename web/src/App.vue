@@ -97,7 +97,12 @@ const isHidden = (id: string) => !!data.value?.state?.giveaways[id]?.hidden
 const hiddenCount = computed(() => data.value?.giveaways.filter(g => isHidden(g.id)).length ?? 0)
 const visible = computed(() => data.value?.giveaways.filter(g => showHidden.value || !isHidden(g.id)) ?? [])
 const open = computed(() => visible.value.filter(g => g.status === 'open'))
-const paused = computed(() => visible.value.filter(g => g.status === 'paused'))
+// En pause (live terminé, tirage pas encore fait) : cachés, sauf « Afficher les giveaways en
+// pause » (choix gardé sur ce téléphone)
+const showPaused = ref(localStorage.getItem('showPaused') === '1')
+watch(showPaused, v => localStorage.setItem('showPaused', v ? '1' : '0'))
+const pausedAll = computed(() => visible.value.filter(g => g.status === 'paused'))
+const paused = computed(() => showPaused.value ? pausedAll.value : [])
 // Giveaway affiché dans chaque carrousel
 const openIndex = ref(0)
 const pausedIndex = ref(0)
@@ -198,7 +203,9 @@ const ACTION_TITLES: Record<string, [string, string]> = {
   giveaway_hide: ['Fait par le PC', 'Refusé par le PC'],
   giveaway_conditions: ['Conditions enregistrées', 'Conditions non enregistrées'],
   giveaway_chat_log: ['Journal du chat', 'Journal du chat illisible'],
-  channel_monitor: ['Chaîne surveillée', 'Chaîne non ajoutée']
+  channel_monitor: ['Chaîne surveillée', 'Chaîne non ajoutée'],
+  points_order: ['Ordre enregistré', 'Ordre non enregistré'],
+  se_option: ['Réglage enregistré', 'Réglage refusé']
 }
 // Journal du chat rendu par le PC : affiché dans sa fenêtre
 const chatLog = ref<{ channel: string, entries: ChatLogEntry[] } | null>(null)
@@ -358,7 +365,10 @@ const menu = computed<DropdownMenuItem[][]>(() => [
             <p class="font-medium">Aucun giveaway en cours</p>
             <p class="text-sm text-muted">Ils apparaissent ici dès que l'application en détecte un.</p>
           </div>
-          <USwitch v-if="hiddenCount" v-model="showHidden" :label="`Afficher les masqués (${hiddenCount})`" size="sm" />
+          <div v-if="hiddenCount || pausedAll.length" class="flex flex-col gap-2">
+            <USwitch v-if="pausedAll.length" v-model="showPaused" :label="`Afficher les giveaways en pause (${pausedAll.length})`" size="sm" />
+            <USwitch v-if="hiddenCount" v-model="showHidden" :label="`Afficher les masqués (${hiddenCount})`" size="sm" />
+          </div>
           <section v-if="open.length" class="flex flex-col gap-3" aria-labelledby="open-title">
             <h1 id="open-title" class="text-sm font-medium text-muted uppercase tabular-nums">En cours · {{ Math.min(openIndex, open.length - 1) + 1 }} / {{ open.length }}</h1>
             <GiveawayCarousel v-model:index="openIndex" :giveaways="open" :state="data.state" />
@@ -368,7 +378,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
             <p class="text-xs text-muted -mt-1">Live terminé, tirage pas encore fait.</p>
             <GiveawayCarousel v-model:index="pausedIndex" :giveaways="paused" :state="data.state" />
           </section>
-          <MentionList v-if="data.state?.mentions?.length" id="mentions" :mentions="data.state.mentions" class="scroll-mt-20" />
+          <MentionList v-if="data.state?.mentions?.length" id="mentions" :mentions="data.state.mentions" :langs="data.state.languages" :avatars="data.state.avatars" class="scroll-mt-20" />
           <p v-if="data.stateAt" class="text-xs text-muted text-center">Participations publiées par le PC {{ timeAgo(data.stateAt) }}</p>
         </template>
       </main>

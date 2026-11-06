@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ApiError, buyTickets } from '../api'
+import { ApiError, buyTickets, seOption } from '../api'
 import type { InstanceState, PhoneAction, SeChannel } from '../types'
 import { formatNumber } from '../format'
 import AccountPicker from './AccountPicker.vue'
+import { usePhone } from '../phone'
+import ChannelFlag from './ChannelFlag.vue'
 
 // Page StreamElements : chaînes du compte choisi, giveaway en cours, achat de tickets (fait par
 // le PC s'il l'autorise)
@@ -53,6 +55,21 @@ async function confirmBuy() {
     sending.value = false
   }
 }
+
+// Présence dans le chat, achat automatique : demandés au PC (résultat annoncé par un message)
+const phone = usePhone()
+const optionPending = (c: SeChannel, option: string) =>
+  phone.actions.value.some(a => a.status === 'pending' && a.kind === 'se_option' && a.payload.channel === c.login && (a.payload as Record<string, unknown>).option === option)
+async function setOption(c: SeChannel, option: 'chat' | 'autoBuy', enabled: boolean) {
+  const acc = current.value
+  const token = phone.token.value
+  if (!acc || !token) return
+  try {
+    phone.requested(await seOption<PhoneAction>(token, acc.login, c.login, option, enabled))
+  } catch (e) {
+    toast.add({ title: 'Demande non envoyée', description: e instanceof ApiError && e.status === 400 ? 'Mets à jour le serveur de synchronisation (version 0.8.10 ou plus).' : String(e), color: 'error' })
+  }
+}
 </script>
 
 <template>
@@ -72,17 +89,23 @@ async function confirmBuy() {
             <div v-else class="size-10 rounded-full bg-accented shrink-0" />
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-1.5 flex-wrap">
+                <ChannelFlag :login="c.login" :langs="state?.languages" />
                 <span class="font-semibold break-all">{{ c.login }}</span>
                 <UBadge v-if="c.live" label="En live" color="error" variant="solid" size="sm" />
                 <UBadge v-if="c.inChat" label="Dans le chat" color="success" variant="subtle" size="sm" />
                 <UBadge v-if="c.enabled === false" label="Sans StreamElements" color="neutral" variant="subtle" size="sm" />
               </div>
-              <div v-if="c.live" class="text-xs text-muted truncate">{{ c.live.category ?? 'Sans catégorie' }} · <span class="text-error">{{ formatNumber(c.live.viewers) }} spectateurs</span></div>
+              <div v-if="c.live" class="text-xs text-muted flex flex-wrap gap-x-1"><span>{{ c.live.category ?? 'Sans catégorie' }}</span><span>· <span class="text-error whitespace-nowrap">{{ formatNumber(c.live.viewers) }} spectateurs</span></span></div>
             </div>
             <div class="text-right shrink-0 tabular-nums">
               <div class="font-semibold">{{ formatNumber(c.points) }}</div>
               <div class="text-xs text-success">+{{ formatNumber(c.earnedToday) }}</div>
             </div>
+          </div>
+          <!-- Réglages de la ligne, appliqués par le PC -->
+          <div v-if="c.chatPresence !== undefined" class="flex flex-wrap items-center gap-x-5 gap-y-2">
+            <USwitch :model-value="c.chatPresence" label="Chat" size="sm" :disabled="optionPending(c, 'chat')" @update:model-value="(v: boolean) => setOption(c, 'chat', v)" />
+            <USwitch :model-value="!!c.autoBuy" label="Achat auto" size="sm" :disabled="optionPending(c, 'autoBuy')" @update:model-value="(v: boolean) => setOption(c, 'autoBuy', v)" />
           </div>
           <!-- Giveaway StreamElements en cours -->
           <div v-if="c.giveaway" class="rounded-lg bg-primary/5 p-3 flex flex-col gap-1.5 text-sm">
