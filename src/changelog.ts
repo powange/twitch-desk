@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.53',
+    date: '2026-11-06',
+    title: 'Solde StreamElements sans présence dans le chat',
+    changes: [
+      { kind: 'fixed', text: 'Page StreamElements : une chaîne dont la présence dans le chat est désactivée voit maintenant son solde relu toutes les 30 minutes pendant son live. Avant, il n\'était plus relu du tout, alors qu\'il peut changer (tickets achetés, points donnés par le streamer, récolte sur un autre PC).' }
+    ]
+  },
+  {
     version: '0.48.52',
     date: '2026-11-06',
     title: 'Journal du chat corrigé pour les bots',

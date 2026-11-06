@@ -51,6 +51,8 @@ const STREAM_UP_DELAY: Duration = Duration::from_secs(15);
 // chaîne (réglé par le streamer), borné entre 2 et 10 min ; 2 min s'il est inconnu
 const SE_POLL_MIN: u64 = 2;
 const SE_POLL_MAX: u64 = 10;
+/// Solde StreamElements d'une chaîne sans présence dans le chat : relu ce délai pendant son live
+const SE_POLL_NO_CHAT: Duration = Duration::from_secs(30 * 60);
 const SE_RETRY_AFTER: Duration = Duration::from_secs(15 * 60);
 /// Chaîne vue sans StreamElements : nouvelle recherche à ce rythme
 const SE_NONE_RECHECK: Duration = Duration::from_secs(24 * 3600);
@@ -183,6 +185,11 @@ impl ChannelRt {
 
 /// Fréquence de relevé du solde StreamElements d'une chaîne
 fn se_poll_every(c: &ChannelRt) -> Duration {
+    // Présence dans le chat coupée : pas de points gagnés, mais le solde peut bouger (tickets
+    // achetés, points donnés, récolte sur un autre PC) : relu rarement
+    if !c.ch.chat_presence {
+        return SE_POLL_NO_CHAT;
+    }
     let interval = c.se_loyalty.as_ref().filter(|l| l.enabled && l.interval > 0).map(|l| l.interval as u64);
     se_poll_minutes(c.ch.se_refresh, interval)
 }
@@ -894,8 +901,9 @@ impl Miner {
     /// Solde StreamElements
     async fn poll_se_points(&mut self, now: Instant) -> bool {
         let username = self.account.login.clone();
+        // Liste StreamElements : solde relu même sans présence dans le chat (plus rarement)
         let Some(i) = self.channels.iter().position(|c| {
-            c.ch.wants_chat()
+            c.ch.in_se
                 && match c.ch.se_channel_id.as_deref() {
                     // Vue sans StreamElements : revérifiée au lancement, sur « Actualiser » et toutes
                     // les SE_NONE_RECHECK (chaîne inscrite depuis, ou réponse d'un incident)
