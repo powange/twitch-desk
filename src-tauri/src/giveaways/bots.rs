@@ -98,6 +98,11 @@ pub fn note_badged_bot(user: &str) {
     }
 }
 
+/// Compte vu avec le badge « Chat Bot » depuis le lancement
+pub fn is_badged_bot(user: &str) -> bool {
+    BADGED_BOTS.read().unwrap().contains(&user.to_lowercase())
+}
+
 /// Bot identifié par son pseudo exact (connu, ajouté dans les réglages) ou par le badge « Chat
 /// Bot » : un spectateur ne peut pas le prendre. Un pseudo en « …bot » seul n'en est pas un
 /// (« viewerbot » est libre)

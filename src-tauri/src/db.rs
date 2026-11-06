@@ -2413,6 +2413,12 @@ impl Db {
 
     // --- Journal du chat ---
 
+    /// Bot reconnu après coup (badge « Chat Bot ») : ses messages notés comme commandes de
+    /// spectateur passent en messages de bot ; renvoie leur nombre
+    pub fn reclassify_bot_chat_log(&self, author: &str) -> DbResult<usize> {
+        self.conn().execute("UPDATE chat_log SET kind = 'bot' WHERE author = ?1 AND kind = 'command'", [author.to_lowercase()])
+    }
+
     pub fn add_chat_log(&self, entries: &[ChatLogEntry]) -> DbResult<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -3272,6 +3278,25 @@ mod tests {
         assert_eq!(gifts_in_text(&witcher, "une e\u{301}pe\u{301}e"), vec![7]);
         let k = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(clean_keywords("Épée", &k(&[" Navire  Pirate ", "épée", "EPEE", "a", "+", "epées", "navire pirate"])), k(&["navire pirate", "epées"]));
+    }
+
+    #[test]
+    fn bot_recognized_later_in_chat_log() {
+        let db = Db::memory().unwrap();
+        let entry = |author: &str, kind: &str| ChatLogEntry {
+            id: 0,
+            channel: "b".into(),
+            at: "2026-11-06T04:00:00.000Z".into(),
+            author: author.into(),
+            kind: kind.into(),
+            command: Some("!pokecatch".into()),
+            message: "Catch it using !pokecatch".into(),
+        };
+        db.add_chat_log(&[entry("pokemoncommunitygame", "command"), entry("pokemoncommunitygame", "winner"), entry("bob", "command")]).unwrap();
+        assert_eq!(db.reclassify_bot_chat_log("PokemonCommunityGame").unwrap(), 1);
+        let kinds: Vec<(String, String)> =
+            db.conn().prepare("SELECT author, kind FROM chat_log ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(kinds, [("pokemoncommunitygame".into(), "bot".into()), ("pokemoncommunitygame".into(), "winner".into()), ("bob".into(), "command".into())]);
     }
 
     #[test]

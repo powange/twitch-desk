@@ -329,6 +329,8 @@ struct Monitor {
     auto_seen: HashMap<(String, String), VecDeque<(String, Instant)>>,
     /// (chaîne, commande) → dernier envoi (une fois par vague)
     auto_sent: HashMap<(String, String), Instant>,
+    /// Bots reconnus à leur badge dont le journal a déjà été corrigé depuis le lancement
+    log_reclassified: HashSet<String>,
 }
 
 /// Participation automatique hors giveaway : une vague (assez de spectateurs différents qui
@@ -406,6 +408,7 @@ impl Monitor {
             auto_commands: HashMap::new(),
             auto_seen: HashMap::new(),
             auto_sent: HashMap::new(),
+            log_reclassified: HashSet::new(),
             open_commands: HashMap::new(),
         }
     }
@@ -1202,6 +1205,16 @@ impl Monitor {
     /// annonces de gagnant, réponses des bots
     fn log_chat(&mut self, channel: &str, user: &str, text: &str, parsed: &Parsed) {
         let author = user.to_lowercase();
+        // Bot reconnu à son badge : ses anciens messages, notés comme commandes de spectateur
+        // avant qu'on le sache, deviennent des messages de bot (une fois par lancement)
+        if bots::is_badged_bot(&author) && self.log_reclassified.insert(author.clone()) {
+            self.flush_chat_log();
+            match self.app.db.reclassify_bot_chat_log(&author) {
+                Ok(n) if n > 0 => tracing::info!("journal du chat : {n} message(s) de {author} reclassé(s) en messages de bot"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("journal du chat : {e}"),
+            }
+        }
         // Commande avec « ! », ou mot-clé d'un giveaway ouvert tapé seul (« bonbons »)
         let mut command = detect::extract_command(text).or_else(|| {
             let word = text.trim().to_lowercase();

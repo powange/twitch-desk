@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.52',
+    date: '2026-11-06',
+    title: 'Journal du chat corrigé pour les bots',
+    changes: [
+      { kind: 'fixed', text: 'Journal du chat : quand un bot est reconnu à son badge « Bot de chat », ses anciens messages notés à tort comme commandes de spectateur passent en messages de bot (par exemple les « Catch it using !pokecatch » de PokemonCommunityGame).' }
+    ]
+  },
+  {
     version: '0.48.51',
     date: '2026-11-06',
     title: 'Réponse au gain en plusieurs phrases',
