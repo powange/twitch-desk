@@ -998,6 +998,11 @@ fn open_db(path: &str) -> rusqlite::Result<Connection> {
              created_at TEXT NOT NULL
          );",
     )?;
+    // Bases d'avant la 0.8.10 : résultat détaillé des demandes des téléphones
+    let has_data: bool = conn.prepare("SELECT 1 FROM pragma_table_info('actions') WHERE name = 'data'")?.exists([])?;
+    if !has_data {
+        conn.execute_batch("ALTER TABLE actions ADD COLUMN data TEXT;")?;
+    }
     // Bases d'avant la 0.4 : l'historique gardait le contenu de chaque version (lu par
     // personne) ; il est vidé de ce contenu et la place libérée au fil des ménages
     // (auto_vacuum incrémental, pris en compte par un VACUUM complet, une seule fois)
@@ -1850,6 +1855,20 @@ mod tests {
         // Mise à jour du PC : demande sans contenu
         let (st, v) = json_of(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", r#"{"kind":"update_check"}"#)).await;
         assert_eq!((st, v["kind"].as_str(), v["payload"].clone()), (StatusCode::OK, Some("update_check"), serde_json::json!({})));
+        // Giveaway (0.8.10) : conditions vérifiées, résultat détaillé rendu par le PC
+        let bad = r#"{"kind":"giveaway_conditions","item":"abc-1","conditions":{"requireFollow":"oui"}}"#;
+        assert_eq!(status(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", bad)).await, StatusCode::BAD_REQUEST);
+        let ok = r#"{"kind":"giveaway_conditions","item":"abc-1","conditions":{"requireFollow":true,"minChatMinutes":30,"canGift":null}}"#;
+        let (st, v) = json_of(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", ok)).await;
+        assert_eq!((st, v["payload"]["conditions"]["minChatMinutes"].as_i64()), (StatusCode::OK, Some(30)));
+        let (_, v) = json_of(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", r#"{"kind":"giveaway_chat_log","item":"abc-1"}"#)).await;
+        let log_id = v["id"].as_str().unwrap().to_owned();
+        let finish = format!("/api/v1/instances/{INSTANCE}/actions/{log_id}");
+        let result = r#"{"ok":true,"message":"2 messages","data":{"entries":[{"author":"bob","message":"!join"}]}}"#;
+        assert_eq!(status(&s, request("PUT", &finish, Some("code-secret"), "9.9.9.1", result)).await, StatusCode::NO_CONTENT);
+        let (_, v) = json_of(&s, request_auth("GET", "/api/v1/app/actions", &auth, "9.9.9.1", "")).await;
+        let found = v.as_array().unwrap().iter().find(|a| a["id"] == log_id.as_str()).unwrap().clone();
+        assert_eq!(found["data"]["entries"][0]["author"], "bob");
         // État léger de l'application
         let (st, v) = json_of(&s, request_auth("GET", "/api/v1/app/state", &auth, "9.9.9.1", "")).await;
         assert_eq!((st, v["state"].is_null()), (StatusCode::OK, true));

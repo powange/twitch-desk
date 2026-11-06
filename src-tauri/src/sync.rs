@@ -1793,7 +1793,7 @@ fn instance_state(view: &crate::giveaways::GiveawaysView, sync_ids: &HashMap<i64
         let mut participated: Vec<&str> = g.entries_view.iter().map(|e| e.login.as_str()).filter(|l| !l.is_empty()).collect();
         participated.sort_unstable();
         participated.dedup();
-        giveaways.insert(id.clone(), json!({ "participated": participated, "handled": g.row.handled }));
+        giveaways.insert(id.clone(), json!({ "participated": participated, "handled": g.row.handled, "hidden": g.row.hidden }));
         if !channels.contains(&g.row.channel.as_str()) {
             channels.push(&g.row.channel);
         }
@@ -2135,6 +2135,79 @@ async fn run_phone_action(app: &Arc<App>, action: &PhoneAction) -> Result<(Strin
     Ok((format!("{tickets} ticket(s) acheté(s) sur {channel} pour {login} ({total} au total)"), None))
 }
 
+/// Demandes du téléphone sur un giveaway ou le scanner (serveur 0.8.10) : masquer, journal du
+/// chat, conditions, surveiller une chaîne ; None : autre demande. Pas d'achat : toujours permises
+async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Result<(String, Option<Value>), String>> {
+    if !matches!(action.kind.as_str(), "giveaway_hide" | "giveaway_chat_log" | "giveaway_conditions" | "channel_monitor") {
+        return None;
+    }
+    let p = &action.payload;
+    if action.kind == "channel_monitor" {
+        let Some(channel) = str_of(p, "channel") else { return Some(Err("Demande incomplète".into())) };
+        return Some(crate::commands::monitor_channel(app, &channel).await.map(|login| (format!("{login} ajoutée aux chaînes surveillées"), None)));
+    }
+    let local = str_of(p, "item").and_then(|item| local_id(&app.db.conn(), "giveaways", &item).ok().flatten());
+    let Some(id) = local else { return Some(Err("Ce giveaway n'existe pas sur le PC".into())) };
+    let row = match app.db.giveaway(id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return Some(Err("Ce giveaway n'existe pas sur le PC".into())),
+        Err(e) => return Some(Err(db_err(e))),
+    };
+    Some(match action.kind.as_str() {
+        "giveaway_hide" => {
+            let hidden = bool_of(p, "hidden").unwrap_or(true);
+            crate::commands::hide_giveaway(app, id, hidden)
+                .map(|_| (format!("Giveaway de {} {}", row.channel, if hidden { "masqué" } else { "affiché de nouveau" }), None))
+        }
+        "giveaway_chat_log" => {
+            // Messages depuis la détection (200 au plus, les plus récents), dans l'ordre
+            let since = chrono::DateTime::parse_from_rfc3339(&row.detected_at).ok().map(|t| t - chrono::Duration::minutes(5));
+            match app.db.chat_log(&row.channel, &[], &[], None, None, None, None, 200) {
+                Ok(mut list) => {
+                    list.retain(|e| since.is_none_or(|t| chrono::DateTime::parse_from_rfc3339(&e.at).is_ok_and(|at| at >= t)));
+                    list.reverse();
+                    let entries: Vec<Value> = list
+                        .iter()
+                        .map(|e| json!({ "at": e.at, "author": e.author, "kind": e.kind, "command": e.command, "message": e.message }))
+                        .collect();
+                    Ok((format!("{} message(s) du journal de {}", entries.len(), row.channel), Some(json!({ "channel": row.channel, "entries": entries }))))
+                }
+                Err(e) => Err(db_err(e)),
+            }
+        }
+        _ => {
+            // Conditions : seules celles envoyées changent ; le reste du giveaway est gardé
+            let Some(c) = p.get("conditions").and_then(Value::as_object) else { return Some(Err("Demande incomplète".into())) };
+            let mut d = row.details.clone();
+            let flag = |key: &str, current: Option<bool>| match c.get(key) {
+                Some(v) => v.as_bool(),
+                None => current,
+            };
+            let num = |key: &str, current: Option<i64>| match c.get(key) {
+                Some(v) => v.as_i64(),
+                None => current,
+            };
+            d.require_follow = flag("requireFollow", d.require_follow);
+            d.require_presence = flag("requirePresence", d.require_presence);
+            d.require_discord = flag("requireDiscord", d.require_discord);
+            d.require_greeting = flag("requireGreeting", d.require_greeting);
+            d.can_gift = flag("canGift", d.can_gift);
+            d.follow_min_secs = num("followMinSecs", d.follow_min_secs).filter(|_| d.require_follow == Some(true));
+            d.min_chat_minutes = num("minChatMinutes", d.min_chat_minutes);
+            let input = crate::db::GiveawayInput {
+                channel: row.channel.clone(),
+                kind: row.kind.clone(),
+                command: row.command.clone(),
+                url: row.url.clone(),
+                gift_ids: row.gift_ids.clone(),
+                shown_gift_ids: None,
+                details: d,
+            };
+            crate::commands::apply_giveaway_update(app, id, input).await.map(|_| (format!("Conditions du giveaway de {} enregistrées", row.channel), None))
+        }
+    })
+}
+
 /// Demandes des téléphones (serveur 0.8 et plus) : lues à chaque annonce du serveur et toutes les
 /// minutes, exécutées une par une, résultat rendu au serveur
 fn spawn_phone_actions(app: Arc<App>) {
@@ -2162,13 +2235,20 @@ fn spawn_phone_actions(app: Arc<App>) {
                 }
             };
             for action in list {
-                let (ok, message, update) = match run_phone_action(&app, &action).await {
-                    Ok((m, update)) => (true, m, update),
-                    Err(e) => (false, e, None),
+                let (ok, message, update, data) = if let Some(result) = run_giveaway_action(&app, &action).await {
+                    match result {
+                        Ok((m, data)) => (true, m, None, data),
+                        Err(e) => (false, e, None, None),
+                    }
+                } else {
+                    match run_phone_action(&app, &action).await {
+                        Ok((m, update)) => (true, m, update, None),
+                        Err(e) => (false, e, None, None),
+                    }
                 };
                 let kind = if ok { crate::app::EventKind::Info } else { crate::app::EventKind::Error };
                 app.log("téléphone", kind, format!("Demande du téléphone : {message}"));
-                let req = app.http.put(format!("{}/api/v1/instances/{id}/actions/{}", cfg.url, action.id)).json(&json!({ "ok": ok, "message": message }));
+                let req = app.http.put(format!("{}/api/v1/instances/{id}/actions/{}", cfg.url, action.id)).json(&json!({ "ok": ok, "message": message, "data": data }));
                 if let Err(e) = send(req, &cfg.code).await {
                     tracing::debug!("résultat d'une demande du téléphone : {e}");
                 }
@@ -3086,7 +3166,7 @@ mod tests {
         };
         let state = instance_state(&view, &ids, &["alice".into(), "bob".into()]);
         assert_eq!(state["accounts"], json!(["alice", "bob"]));
-        assert_eq!(state["giveaways"][&shared], json!({ "participated": ["alice", "bob"], "handled": true }));
+        assert_eq!(state["giveaways"][&shared], json!({ "participated": ["alice", "bob"], "handled": true, "hidden": false }));
         assert_eq!(state["live"]["lunarsea"], json!({ "live": true, "viewers": 42, "category": "Sea of Thieves", "title": "Tirage ce soir" }));
         // Giveaway sans identifiant partagé (pas encore synchronisé) : absent
         let state = instance_state(&view, &HashMap::new(), &[]);

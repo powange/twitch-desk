@@ -97,6 +97,21 @@ export function updatePc<T>(token: string, kind: 'update_check' | 'update_instal
   return requestAction<T>(token, { kind })
 }
 
+// Giveaway (serveur 0.8.10 et plus, exécuté par le PC) : masquer, journal du chat, conditions
+export function hideGiveaway<T>(token: string, item: string, hidden: boolean): Promise<T> {
+  return requestAction<T>(token, { kind: 'giveaway_hide', item, hidden })
+}
+export function giveawayChatLog<T>(token: string, item: string): Promise<T> {
+  return requestAction<T>(token, { kind: 'giveaway_chat_log', item })
+}
+export function giveawayConditions<T>(token: string, item: string, conditions: Record<string, unknown>): Promise<T> {
+  return requestAction<T>(token, { kind: 'giveaway_conditions', item, conditions })
+}
+// Chaîne du scanner ajoutée aux chaînes surveillées du PC
+export function monitorChannel<T>(token: string, channel: string): Promise<T> {
+  return requestAction<T>(token, { kind: 'channel_monitor', channel })
+}
+
 export function actions<T>(token: string): Promise<T[]> {
   return call<T[]>('/app/actions', { headers: authHeader(token) })
 }

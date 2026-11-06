@@ -13,6 +13,9 @@ import ScannerView from './components/ScannerView.vue'
 import MentionList from './components/MentionList.vue'
 import NotificationsModal from './components/NotificationsModal.vue'
 import UpdateModal from './components/UpdateModal.vue'
+import ChatLogModal from './components/ChatLogModal.vue'
+import { providePhone } from './phone'
+import type { ChatLogEntry } from './types'
 import { active as pushActive, disable as disablePush, refresh as refreshPush, serverTooOld, support as pushSupport } from './push'
 
 // Lien d'association scanné alors que l'appareil est déjà associé : nouvelle association
@@ -87,8 +90,14 @@ const TABS: { key: Tab, label: string, icon: string, title?: string }[] = [
   { key: 'drops', label: 'Drops', icon: 'i-lucide-package-open' }
 ]
 
-const open = computed(() => data.value?.giveaways.filter(g => g.status === 'open') ?? [])
-const paused = computed(() => data.value?.giveaways.filter(g => g.status === 'paused') ?? [])
+// Masqués sur le PC : cachés, sauf « Afficher les masqués » (choix gardé sur ce téléphone)
+const showHidden = ref(localStorage.getItem('showHidden') === '1')
+watch(showHidden, v => localStorage.setItem('showHidden', v ? '1' : '0'))
+const isHidden = (id: string) => !!data.value?.state?.giveaways[id]?.hidden
+const hiddenCount = computed(() => data.value?.giveaways.filter(g => isHidden(g.id)).length ?? 0)
+const visible = computed(() => data.value?.giveaways.filter(g => showHidden.value || !isHidden(g.id)) ?? [])
+const open = computed(() => visible.value.filter(g => g.status === 'open'))
+const paused = computed(() => visible.value.filter(g => g.status === 'paused'))
 // Giveaway affiché dans chaque carrousel
 const openIndex = ref(0)
 const pausedIndex = ref(0)
@@ -185,8 +194,15 @@ function refreshStateSoon() {
 const ACTION_TITLES: Record<string, [string, string]> = {
   se_buy: ['Achat fait par le PC', 'Achat refusé'],
   update_check: ['Mise à jour du PC', 'Vérification impossible'],
-  update_install: ['Mise à jour lancée', 'Mise à jour impossible']
+  update_install: ['Mise à jour lancée', 'Mise à jour impossible'],
+  giveaway_hide: ['Fait par le PC', 'Refusé par le PC'],
+  giveaway_conditions: ['Conditions enregistrées', 'Conditions non enregistrées'],
+  giveaway_chat_log: ['Journal du chat', 'Journal du chat illisible'],
+  channel_monitor: ['Chaîne surveillée', 'Chaîne non ajoutée']
 }
+// Journal du chat rendu par le PC : affiché dans sa fenêtre
+const chatLog = ref<{ channel: string, entries: ChatLogEntry[] } | null>(null)
+const chatLogOpen = ref(false)
 const phoneActions = ref<PhoneAction[]>([])
 const pendingActions = computed(() => phoneActions.value.filter(a => a.status === 'pending'))
 async function loadActions() {
@@ -197,6 +213,11 @@ async function loadActions() {
     for (const a of list) {
       const before = phoneActions.value.find(x => x.id === a.id)
       if (before?.status === 'pending' && a.status !== 'pending') {
+        if (a.kind === 'giveaway_chat_log' && a.status === 'done' && a.data?.entries) {
+          chatLog.value = { channel: a.data.channel ?? '', entries: a.data.entries }
+          chatLogOpen.value = true
+          continue
+        }
         const [done, failed] = ACTION_TITLES[a.kind] ?? ACTION_TITLES.se_buy!
         toast.add(a.status === 'done'
           ? { title: done, description: a.message ?? '', color: 'success', icon: 'i-lucide-check' }
@@ -209,6 +230,7 @@ async function loadActions() {
 function onRequested(a: PhoneAction) {
   phoneActions.value = [a, ...phoneActions.value]
 }
+providePhone({ token: computed(() => device.value?.token ?? null), actions: phoneActions, requested: onRequested })
 const toast = useToast()
 
 function connect(d: Device) {
@@ -336,6 +358,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
             <p class="font-medium">Aucun giveaway en cours</p>
             <p class="text-sm text-muted">Ils apparaissent ici dès que l'application en détecte un.</p>
           </div>
+          <USwitch v-if="hiddenCount" v-model="showHidden" :label="`Afficher les masqués (${hiddenCount})`" size="sm" />
           <section v-if="open.length" class="flex flex-col gap-3" aria-labelledby="open-title">
             <h1 id="open-title" class="text-sm font-medium text-muted uppercase tabular-nums">En cours · {{ Math.min(openIndex, open.length - 1) + 1 }} / {{ open.length }}</h1>
             <GiveawayCarousel v-model:index="openIndex" :giveaways="open" :state="data.state" />
@@ -371,6 +394,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
     </div>
 
     <NotificationsModal v-if="device" v-model:open="notificationsOpen" :token="device.token" />
+    <ChatLogModal v-model:open="chatLogOpen" :log="chatLog" />
     <UpdateModal v-if="device" v-model:open="updateOpen" :state="data?.state ?? null" :token="device.token" :pending="pendingActions" @requested="onRequested" />
 
     <UModal v-model:open="logoutOpen" title="Se déconnecter de cet appareil ?">

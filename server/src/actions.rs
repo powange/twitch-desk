@@ -35,6 +35,44 @@ pub struct NewAction {
     giveaway: String,
     #[serde(default)]
     tickets: i64,
+    /// Giveaway de l'application (identifiant de synchronisation) : masquer, journal, conditions
+    #[serde(default)]
+    item: String,
+    /// Masquer (true) ou ne plus masquer (false)
+    #[serde(default)]
+    hidden: bool,
+    /// Conditions du giveaway (mêmes champs que sa fiche synchronisée)
+    #[serde(default)]
+    conditions: Option<Value>,
+}
+
+/// Identifiant de synchronisation (uuid) d'un document de l'application
+fn sync_id_ok(s: &str) -> bool {
+    (1..=64).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Conditions d'un giveaway : booléens ou null, nombres ou null ; rien d'autre
+fn conditions_of(v: &Value) -> Result<Value, ApiError> {
+    let bad = || ApiError::BadRequest("Conditions invalides".into());
+    let obj = v.as_object().ok_or_else(bad)?;
+    let mut out = serde_json::Map::new();
+    for (key, value) in obj {
+        match key.as_str() {
+            "requireFollow" | "requirePresence" | "requireDiscord" | "requireGreeting" | "canGift" => {
+                if !(value.is_null() || value.is_boolean()) {
+                    return Err(bad());
+                }
+            }
+            "followMinSecs" | "minChatMinutes" => {
+                if !(value.is_null() || value.as_i64().is_some_and(|n| (0..=315_360_000).contains(&n))) {
+                    return Err(bad());
+                }
+            }
+            _ => return Err(bad()),
+        }
+        out.insert(key.clone(), value.clone());
+    }
+    Ok(Value::Object(out))
 }
 
 /// Contenu vérifié d'une demande, selon son type
@@ -42,6 +80,28 @@ fn payload_of(body: &NewAction) -> Result<Value, ApiError> {
     match body.kind.as_str() {
         // Mise à jour de l'application : vérifier, ou installer puis redémarrer
         "update_check" | "update_install" => Ok(serde_json::json!({})),
+        // Giveaway (0.8.10) : masquer ou non, journal du chat, conditions
+        "giveaway_hide" | "giveaway_chat_log" | "giveaway_conditions" => {
+            if !sync_id_ok(&body.item) {
+                return Err(ApiError::BadRequest("Giveaway invalide".into()));
+            }
+            Ok(match body.kind.as_str() {
+                "giveaway_hide" => serde_json::json!({ "item": body.item, "hidden": body.hidden }),
+                "giveaway_conditions" => {
+                    let conditions = conditions_of(body.conditions.as_ref().ok_or_else(|| ApiError::BadRequest("Conditions manquantes".into()))?)?;
+                    serde_json::json!({ "item": body.item, "conditions": conditions })
+                }
+                _ => serde_json::json!({ "item": body.item }),
+            })
+        }
+        // Chaîne du scanner à surveiller (0.8.10)
+        "channel_monitor" => {
+            let channel = body.channel.trim().to_lowercase();
+            if !login_ok(&channel) {
+                return Err(ApiError::BadRequest("Chaîne invalide".into()));
+            }
+            Ok(serde_json::json!({ "channel": channel }))
+        }
         "se_buy" => {
             let account = body.account.trim().to_lowercase();
             let channel = body.channel.trim().to_lowercase();
@@ -69,6 +129,9 @@ pub struct ActionView {
     /// « pending », « done » ou « failed »
     status: String,
     message: Option<String>,
+    /// Résultat détaillé rendu par le PC (journal du chat…), 0.8.10
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
     created_at: String,
     updated_at: String,
 }
@@ -103,10 +166,13 @@ fn view_of(r: &rusqlite::Row) -> rusqlite::Result<ActionView> {
         message: r.get(4)?,
         created_at: r.get(5)?,
         updated_at: r.get(6)?,
+        data: r.get::<_, Option<String>>(7)?.and_then(|d| serde_json::from_str(&d).ok()),
     })
 }
 
-const SELECT: &str = "SELECT id, kind, payload, status, message, created_at, updated_at FROM actions";
+const SELECT: &str = "SELECT id, kind, payload, status, message, created_at, updated_at, data FROM actions";
+/// Résultat détaillé d'une demande, au plus (journal du chat d'un giveaway)
+const MAX_DATA: usize = 512 * 1024;
 
 /// `POST /api/v1/app/actions` (appareil associé) : nouvelle demande pour son application
 pub async fn create(State(server): State<Shared>, Extension(access): Extension<Access>, Json(body): Json<NewAction>) -> Result<Json<ActionView>, ApiError> {
@@ -175,6 +241,8 @@ pub struct ActionResult {
     ok: bool,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    data: Option<Value>,
 }
 
 /// `PUT /api/v1/instances/{id}/actions/{action}` (application) : résultat d'une demande, annoncé
@@ -188,6 +256,10 @@ pub async fn finish(
         return Err(ApiError::BadRequest("Identifiant d'application invalide".into()));
     }
     let message: Option<String> = body.message.map(|m| m.chars().take(300).collect());
+    let data = body.data.map(|d| d.to_string());
+    if data.as_ref().is_some_and(|d| d.len() > MAX_DATA) {
+        return Err(ApiError::BadRequest("Résultat trop volumineux".into()));
+    }
     let device = with_db(&server, move |conn| {
         let device: Option<String> = conn
             .query_row("SELECT device FROM actions WHERE id = ?1 AND instance = ?2 AND status = 'pending'", params![action, instance], |r| {
@@ -196,8 +268,8 @@ pub async fn finish(
             .optional()?;
         if device.is_some() {
             conn.execute(
-                "UPDATE actions SET status = ?2, message = ?3, updated_at = ?4 WHERE id = ?1",
-                params![action, if body.ok { "done" } else { "failed" }, message, now_text()],
+                "UPDATE actions SET status = ?2, message = ?3, updated_at = ?4, data = ?5 WHERE id = ?1",
+                params![action, if body.ok { "done" } else { "failed" }, message, now_text(), data],
             )?;
         }
         Ok(device)

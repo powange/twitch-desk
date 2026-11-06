@@ -94,7 +94,8 @@ export interface SeChannel {
 // État publié par l'application du PC
 export interface InstanceState {
   accounts: string[]
-  giveaways: Record<string, { participated: string[], handled: boolean }>
+  // hidden : masqué sur le PC (application 0.48.54 et plus)
+  giveaways: Record<string, { participated: string[], handled: boolean, hidden?: boolean }>
   live: Record<string, ChannelLive>
   // Pages Points de chaîne et StreamElements (application 0.41 et plus)
   points?: { login: string, enabled: boolean, channels: PointsChannel[] }[]
@@ -173,11 +174,32 @@ export interface PhoneAction {
   id: string
   kind: string
   // Achat de tickets ; vide pour une mise à jour (« update_check », « update_install »)
-  payload: { account?: string, channel?: string, giveaway?: string, tickets?: number }
+  payload: { account?: string, channel?: string, giveaway?: string, tickets?: number, item?: string, hidden?: boolean, conditions?: Record<string, unknown> }
   status: 'pending' | 'done' | 'failed'
   message: string | null
+  // Résultat détaillé (journal du chat), serveur 0.8.10 et plus
+  data?: { channel?: string, entries?: ChatLogEntry[] }
   createdAt: string
   updatedAt: string
+}
+
+// Message du journal du chat d'un giveaway, lu par le PC
+export interface ChatLogEntry {
+  at: string
+  author: string
+  kind: string
+  command: string | null
+  message: string
+}
+
+// Conditions d'un giveaway modifiables depuis le téléphone (null : on ne sait pas)
+export interface GiveawayConditions {
+  requirePresence: boolean | null
+  requireDiscord: boolean | null
+  requireFollow: boolean | null
+  requireGreeting: boolean | null
+  minChatMinutes: number | null
+  canGift: boolean | null
 }
 
 export interface Overview {

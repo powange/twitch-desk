@@ -643,6 +643,11 @@ pub fn get_chat_log_meta(app: AppState, channel: String) -> CmdResult<ChatLogMet
 /// achat automatique ; le streamer reste suivi
 #[tauri::command]
 pub fn set_giveaway_hidden(app: AppState, id: i64, hidden: bool) -> CmdResult<()> {
+    hide_giveaway(&app, id, hidden)
+}
+
+/// Masque ou ré-affiche un giveaway (interface, téléphone)
+pub(crate) fn hide_giveaway(app: &App, id: i64, hidden: bool) -> CmdResult<()> {
     if !app.db.set_giveaway_hidden(id, hidden).map_err(db_err)? {
         return Err("Ce giveaway n'existe plus".into());
     }
@@ -1051,7 +1056,12 @@ pub fn reorder_drop_games(app: AppState, account_id: i64, ids: Vec<i64>) -> CmdR
 /// Ajoute une chaîne à surveiller ; renvoie son login
 #[tauri::command]
 pub async fn add_giveaway_channel(app: AppState<'_>, login: String) -> CmdResult<String> {
-    let login = normalize_login(&login).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    monitor_channel(&app, &login).await
+}
+
+/// Chaîne ajoutée aux chaînes surveillées (interface, téléphone) ; renvoie son nom
+pub(crate) async fn monitor_channel(app: &App, login: &str) -> CmdResult<String> {
+    let login = normalize_login(login).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
     // N'importe quel compte connecté sert à vérifier que la chaîne existe
     let account = app.db.accounts().map_err(db_err)?.into_iter().next().ok_or("Connecte d'abord un compte Twitch")?;
     let tokens = app.secrets.load(&account.user_id).ok_or("Reconnecte ton compte Twitch")?;
@@ -1405,6 +1415,13 @@ pub async fn create_giveaway(app: AppState<'_>, input: crate::db::GiveawayInput)
 #[tauri::command]
 pub async fn update_giveaway(app: AppState<'_>, id: i64, input: crate::db::GiveawayInput) -> CmdResult<()> {
     let app: Arc<App> = app.inner().clone();
+    apply_giveaway_update(&app, id, input).await
+}
+
+/// Giveaway modifié (interface, téléphone) : en cours, ses conditions changées passent aussi dans
+/// la fiche du streamer
+pub(crate) async fn apply_giveaway_update(app: &Arc<App>, id: i64, input: crate::db::GiveawayInput) -> CmdResult<()> {
+    let app = app.clone();
     let mut input = crate::giveaways::validate_input(input)?;
     input.gift_ids = known_gifts(&app, &input.gift_ids);
     let before = app.db.giveaway(id).map_err(db_err)?;

@@ -14,6 +14,16 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.54',
+    date: '2026-11-06',
+    title: 'Web app : masquer, journal, conditions et photos',
+    changes: [
+      { kind: 'new', text: 'Web app du téléphone, giveaways : boutons « Masquer » (ou « Afficher »), « Journal » (journal du chat pendant le giveaway) et « Conditions » (les modifier ; un giveaway en cours met aussi à jour la fiche du streamer, comme sur le PC). Une option « Afficher les masqués » fait réapparaître les giveaways masqués. Le PC exécute chaque demande.' },
+      { kind: 'new', text: 'Web app, Scanner : bouton « Surveiller » pour ajouter un stream repéré aux chaînes surveillées du PC. Les lignes trop longues passent à la ligne au lieu d\'être coupées.' },
+      { kind: 'fixed', text: 'Web app : les photos des cadeaux hébergées ailleurs que chez Twitch s\'affichent maintenant. Le serveur de synchronisation (version 0.8.10) va les chercher lui-même, l\'adresse du téléphone n\'est donc jamais connue de leur site.' }
+    ]
+  },
+  {
     version: '0.48.53',
     date: '2026-11-06',
     title: 'Solde StreamElements sans présence dans le chat',

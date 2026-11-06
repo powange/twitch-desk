@@ -1,12 +1,26 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { InstanceState } from '../types'
+import type { InstanceState, PhoneAction } from '../types'
 import { formatNumber, timeAgo } from '../format'
 import { GIVEAWAY_KIND, streamUrl } from '../giveaways'
+import { ApiError, monitorChannel } from '../api'
+import { pendingFor, usePhone } from '../phone'
 
-// Page Scanner : streams repérés par le scan automatique du PC, en lecture seule
+// Page Scanner : streams repérés par le scan automatique du PC ; une chaîne pas encore surveillée
+// peut l'être d'ici (ajoutée par le PC à ses chaînes surveillées)
 const props = defineProps<{ state: InstanceState | null }>()
 const scanner = computed(() => props.state?.scanner ?? null)
+const phone = usePhone()
+const toast = useToast()
+async function monitor(login: string) {
+  const token = phone.token.value
+  if (!token) return
+  try {
+    phone.requested(await monitorChannel<PhoneAction>(token, login))
+  } catch (e) {
+    toast.add({ title: 'Demande non envoyée', description: e instanceof ApiError && e.status === 400 ? 'Mets à jour le serveur de synchronisation (version 0.8.10 ou plus).' : String(e), color: 'error' })
+  }
+}
 </script>
 
 <template>
@@ -33,17 +47,29 @@ const scanner = computed(() => props.state?.scanner ?? null)
                 <UBadge v-if="m.monitored" label="Surveillée" color="success" variant="subtle" size="sm" />
                 <UBadge v-if="m.giveawayKind" :label="GIVEAWAY_KIND[m.giveawayKind]?.label ?? m.giveawayKind" :color="GIVEAWAY_KIND[m.giveawayKind]?.color ?? 'neutral'" variant="subtle" size="sm" />
               </div>
-              <div class="text-xs text-muted truncate">
-                {{ m.game }} · <span class="text-error">{{ formatNumber(m.viewers) }} spectateurs</span><template v-if="m.startedAt"> · en live {{ timeAgo(m.startedAt).replace('il y a ', 'depuis ') }}</template>
+              <!-- Lignes qui passent à la ligne plutôt que d'être coupées (écran étroit) -->
+              <div class="text-xs text-muted flex flex-wrap gap-x-1">
+                <span>{{ m.game }}</span>
+                <span>· <span class="text-error whitespace-nowrap">{{ formatNumber(m.viewers) }} spectateurs</span></span>
+                <span v-if="m.startedAt" class="whitespace-nowrap">· en live {{ timeAgo(m.startedAt).replace('il y a ', 'depuis ') }}</span>
               </div>
             </div>
-            <UButton icon="i-lucide-external-link" size="sm" color="neutral" variant="soft" :to="streamUrl(m.login)" target="_blank" :aria-label="`Ouvrir ${m.login} sur Twitch`" />
+            <UButton icon="i-lucide-external-link" size="sm" color="neutral" variant="soft" class="shrink-0" :to="streamUrl(m.login)" target="_blank" :aria-label="`Ouvrir ${m.login} sur Twitch`" />
           </div>
           <p class="text-sm break-words">{{ m.title }}</p>
           <div class="flex flex-wrap items-center gap-1.5">
             <UBadge v-for="k in m.keywords" :key="k" :label="k" color="primary" variant="outline" size="sm" />
-            <span v-if="m.giveawayCommand" class="font-mono text-xs">{{ m.giveawayCommand }}</span>
+            <span v-if="m.giveawayCommand" class="font-mono text-xs break-all">{{ m.giveawayCommand }}</span>
           </div>
+          <UButton
+            v-if="!m.monitored"
+            label="Surveiller"
+            icon="i-lucide-plus"
+            size="sm"
+            block
+            :loading="pendingFor(phone.actions.value, 'channel_monitor', m.login)"
+            @click="monitor(m.login)"
+          />
         </li>
       </ul>
     </template>

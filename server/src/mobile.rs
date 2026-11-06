@@ -398,14 +398,14 @@ fn text(v: &Value, key: &str) -> Option<String> {
 }
 
 /// Image d'un cadeau envoyée à part (`gift_image`) : adresse avec l'empreinte de l'image (gardée
-/// en cache par le téléphone tant qu'elle ne change pas) ; image en ligne : son adresse, seulement
-/// chez Twitch (une image hébergée ailleurs ferait connaître l'adresse IP des téléphones à son
-/// hébergeur)
+/// en cache par le téléphone tant qu'elle ne change pas). Image en ligne : son adresse si elle est
+/// chez Twitch ; ailleurs, relayée par ce serveur (0.8.10), qui la lit lui-même : l'adresse IP des
+/// téléphones n'est jamais connue de son hébergeur
 fn gift_image_url(gift_id: &str, image: &str) -> Option<String> {
-    if image.starts_with("https://") {
-        return twitch_image(image).then(|| image.to_owned());
+    if image.starts_with("https://") && twitch_image(image) {
+        return Some(image.to_owned());
     }
-    if !image.starts_with("data:image/") {
+    if !image.starts_with("data:image/") && !image.starts_with("https://") {
         return None;
     }
     let hash: String = Sha256::digest(image.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect();
@@ -490,6 +490,89 @@ pub fn gift_image(conn: &Connection, id: &str) -> rusqlite::Result<Option<(Strin
     Ok(Base64::decode_vec(payload.trim()).ok().map(|bytes| (mime.to_owned(), bytes)))
 }
 
+/// Images en ligne relayées : lues au plus 5 Mo, gardées en mémoire (200 au plus)
+const RELAY_MAX_BYTES: usize = 5 * 1024 * 1024;
+const RELAY_CACHE: usize = 200;
+/// Image relayée : type, octets
+type Relayed = (String, Vec<u8>);
+static RELAYED: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Relayed>>> = std::sync::LazyLock::new(Default::default);
+
+/// Adresse IP publique : ni locale, ni privée, ni réservée (le relais ne doit jamais viser le
+/// réseau du serveur)
+fn public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast() || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 198 && (b == 18 || b == 19))
+                || a >= 240)
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return public_ip(std::net::IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
+/// Image en ligne lue par le serveur : https seulement, hôte à adresse publique (vérifiée puis
+/// imposée à la connexion), pas de redirection, type d'image (pas de SVG), 5 Mo au plus
+async fn relay_image(url: &str) -> Option<(String, Vec<u8>)> {
+    if let Some(found) = RELAYED.lock().unwrap_or_else(|e| e.into_inner()).get(url) {
+        return Some(found.clone());
+    }
+    let parsed = url.parse::<axum::http::Uri>().ok()?;
+    if parsed.scheme_str() != Some("https") || url.contains('@') {
+        return None;
+    }
+    let host = parsed.host()?.trim_start_matches('[').trim_end_matches(']').to_owned();
+    let port = parsed.port_u16().unwrap_or(443);
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port)).await.ok()?.collect();
+    let addr = *addrs.first()?;
+    if addrs.iter().any(|a| !public_ip(a.ip())) {
+        return None;
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(&host, addr)
+        .user_agent(concat!("twitch-desk-sync/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()?;
+    let mut res = client.get(url).send().await.ok()?.error_for_status().ok()?;
+    let mime = res.headers().get(reqwest::header::CONTENT_TYPE)?.to_str().ok()?.split(';').next()?.trim().to_ascii_lowercase();
+    if !matches!(mime.as_str(), "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/avif") {
+        return None;
+    }
+    if res.content_length().is_some_and(|n| n as usize > RELAY_MAX_BYTES) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = res.chunk().await.ok()? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > RELAY_MAX_BYTES {
+            return None;
+        }
+    }
+    let mut cache = RELAYED.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= RELAY_CACHE {
+        cache.clear();
+    }
+    cache.insert(url.to_owned(), (mime.clone(), bytes.clone()));
+    Some((mime, bytes))
+}
+
+/// Adresse en ligne de l'image d'un cadeau (hors Twitch), à relayer
+fn gift_online_image(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    let Some(gift) = doc_of(conn, "gifts", id)? else { return Ok(None) };
+    Ok(text(&gift, "image").filter(|i| i.starts_with("https://")))
+}
+
 /// `GET /api/v1/app/gifts/{id}/image` (appareil associé) : image d'un cadeau, gardée en cache par
 /// le téléphone (l'adresse donnée par la vue change avec l'image)
 pub async fn gift_image_route(State(server): State<Shared>, Extension(access): Extension<Access>, Path(id): Path<String>) -> Result<axum::response::Response, ApiError> {
@@ -500,7 +583,12 @@ pub async fn gift_image_route(State(server): State<Shared>, Extension(access): E
     if !server.collections.contains("gifts") {
         return Err(ApiError::NotFound("Pas de cadeaux sur ce serveur".into()));
     }
-    let found = with_db(&server, move |conn| Ok(gift_image(conn, &id)?)).await?;
+    let (found, online) = with_db(&server, move |conn| Ok((gift_image(conn, &id)?, gift_online_image(conn, &id)?))).await?;
+    let found = match (found, online) {
+        (Some(f), _) => Some(f),
+        (None, Some(url)) => relay_image(&url).await,
+        (None, None) => None,
+    };
     let Some((mime, bytes)) = found else { return Err(ApiError::NotFound("Image introuvable".into())) };
     Ok((
         [
@@ -559,12 +647,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn online_gift_images_only_from_twitch() {
-        assert!(gift_image_url("a", "https://static-cdn.jtvnw.net/twitch-quests-assets/REWARD/x.png").is_some());
-        assert!(gift_image_url("a", "https://exemple.fr/x.png").is_none());
-        assert!(gift_image_url("a", "https://jtvnw.net.exemple.fr/x.png").is_none());
-        assert!(gift_image_url("a", "https://static-cdn.jtvnw.net:8443/x.png").is_none());
+    fn online_gift_images_direct_only_from_twitch() {
+        // Chez Twitch : adresse directe ; ailleurs (ou faux domaine Twitch) : relayée par le serveur
+        assert_eq!(gift_image_url("a", "https://static-cdn.jtvnw.net/twitch-quests-assets/REWARD/x.png").as_deref(), Some("https://static-cdn.jtvnw.net/twitch-quests-assets/REWARD/x.png"));
+        for url in ["https://exemple.fr/x.png", "https://jtvnw.net.exemple.fr/x.png", "https://static-cdn.jtvnw.net:8443/x.png"] {
+            assert!(gift_image_url("a", url).unwrap().starts_with("/api/v1/app/gifts/a/image?v="), "{url}");
+        }
         assert!(gift_image_url("a", "http://static-cdn.jtvnw.net/x.png").is_none());
         assert!(gift_image_url("a", "data:image/png;base64,iVBORw==").unwrap().starts_with("/api/v1/app/gifts/a/image?v="));
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+
+    #[test]
+    fn relay_never_targets_the_server_network() {
+        for ip in ["127.0.0.1", "10.1.2.3", "192.168.1.10", "172.16.0.1", "169.254.169.254", "0.0.0.0", "100.64.0.1", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1"] {
+            assert!(!public_ip(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"] {
+            assert!(public_ip(ip.parse().unwrap()), "{ip}");
+        }
+        // Image hors Twitch : relayée par le serveur ; Twitch : adresse directe
+        assert!(gift_image_url("g1", "https://i.ebayimg.com/a.jpg").unwrap().starts_with("/api/v1/app/gifts/g1/image?v="));
+        assert_eq!(gift_image_url("g1", "https://static-cdn.jtvnw.net/a.png").as_deref(), Some("https://static-cdn.jtvnw.net/a.png"));
+        assert!(gift_image_url("g1", "http://insecure.example/a.png").is_none());
     }
 }
