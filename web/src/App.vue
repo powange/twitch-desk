@@ -57,6 +57,9 @@ const query = new URLSearchParams(location.search)
 const asked = asTab(query.get('tab'))
 // « ?focus=mentions » : section Mentions de l'accueil montrée une fois les données lues
 const focus = ref<string | null>(query.get('focus'))
+// « ?target=… » : cible de la notification (chaîne du giveaway, du gain, de la mention ou du
+// stream repéré ; compte du drop), ouverte une fois les données lues
+const target = ref<string | null>(query.get('target'))
 if (asked) history.replaceState(null, '', location.pathname + location.hash)
 const tab = ref<Tab>(asked ?? asTab(remembered('tab', 'giveaways')) ?? 'giveaways')
 const pointsAccount = ref(remembered('points-account', ''))
@@ -68,10 +71,11 @@ watch(seAccount, a => remember('se-account', a))
 watch(dropsAccount, a => remember('drops-account', a))
 // Notification touchée, web app déjà ouverte : le service worker indique l'onglet
 navigator.serviceWorker?.addEventListener('message', (e: MessageEvent) => {
-  const msg = e.data as { tab?: unknown, focus?: unknown } | null
+  const msg = e.data as { tab?: unknown, focus?: unknown, target?: unknown } | null
   const t = asTab(msg?.tab)
   if (t) tab.value = t
   if (typeof msg?.focus === 'string') focus.value = msg.focus
+  if (typeof msg?.target === 'string') target.value = msg.target
 })
 watch([focus, () => data.value, tab], async ([f]) => {
   if (!f || !data.value) return
@@ -112,6 +116,37 @@ const shownTitle = computed(() => mode.value === 'hidden' ? 'Masqués' : mode.va
 // Giveaway affiché ; revenu au premier quand la liste change
 const shownIndex = ref(0)
 watch(mode, () => { shownIndex.value = 0 })
+
+// Cible d'une notification touchée : son giveaway (dans la bonne liste), son stream repéré, la
+// mention de sa chaîne ou le compte du drop ; une fois, dès que les données sont là
+const highlight = ref<string | null>(null)
+let highlightTimer: ReturnType<typeof setTimeout> | null = null
+watch([target, () => data.value, tab], async ([t]) => {
+  if (!t || !data.value) return
+  const login = t.toLowerCase()
+  target.value = null
+  if (tab.value === 'drops') {
+    const acc = data.value.state?.drops?.find(a => a.login.toLowerCase() === login)
+    if (acc) dropsAccount.value = acc.login
+    return
+  }
+  if (tab.value === 'giveaways' && focus.value !== 'mentions') {
+    const all = data.value.giveaways.filter(g => g.channel.toLowerCase() === login)
+    const g = all.find(x => x.status === 'open' && !isHidden(x.id)) ?? all[0]
+    if (!g) return
+    listChoice.value = isHidden(g.id) ? 'hidden' : g.status === 'paused' ? 'paused' : 'open'
+    await nextTick()
+    const i = shown.value.findIndex(x => x.id === g.id)
+    if (i >= 0) shownIndex.value = i
+    return
+  }
+  // Scanner, mentions : élément de la chaîne mis en évidence quelques secondes
+  highlight.value = login
+  if (highlightTimer) clearTimeout(highlightTimer)
+  highlightTimer = setTimeout(() => { highlight.value = null }, 6000)
+  await nextTick()
+  document.getElementById(`${tab.value === 'scanner' ? 'scan' : 'mention'}-${login}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}, { immediate: true })
 const instanceName = computed(() => data.value?.instance.name || device.value?.instanceName || 'Twitch Desk')
 const connection = computed(() => {
   switch (status.value) {
@@ -397,7 +432,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
           <PointsView v-model:account="pointsAccount" :state="data.state" />
         </template>
         <template v-else-if="data && tab === 'scanner'">
-          <ScannerView :state="data.state" />
+          <ScannerView :state="data.state" :highlight="highlight" />
         </template>
         <template v-else-if="data && tab === 'drops'">
           <DropsView v-model:account="dropsAccount" :state="data.state" />
@@ -420,7 +455,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
             <GiveawayCarousel :key="mode" v-model:index="shownIndex" :giveaways="shown" :state="data.state" />
           </section>
           <p v-else-if="data.giveaways.length" class="text-sm text-muted py-6 text-center">{{ mode === 'hidden' ? 'Aucun giveaway masqué.' : mode === 'paused' ? 'Aucun giveaway en pause.' : 'Aucun giveaway en cours : choisis une autre liste ci-dessus.' }}</p>
-          <MentionList v-if="data.state?.mentions?.length" id="mentions" :mentions="data.state.mentions" :langs="data.state.languages" :avatars="data.state.avatars" class="scroll-mt-20" />
+          <MentionList v-if="data.state?.mentions?.length" id="mentions" :mentions="data.state.mentions" :langs="data.state.languages" :avatars="data.state.avatars" :highlight="highlight" class="scroll-mt-20" />
           <p v-if="data.stateAt" class="text-xs text-muted text-center">Participations publiées par le PC {{ timeAgo(data.stateAt) }}</p>
         </template>
       </main>

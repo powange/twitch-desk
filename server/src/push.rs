@@ -215,6 +215,9 @@ pub struct NotifyBody {
     title: String,
     #[serde(default)]
     body: String,
+    /// Cible ouverte au clic sur le téléphone (0.8.13) : chaîne, ou compte pour un drop
+    #[serde(default)]
+    target: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -332,7 +335,12 @@ pub async fn notify(
     let targets = with_db(&server, move |conn| Ok(targets(conn, &id, alert)?)).await?;
     let devices = targets.len();
     if devices > 0 {
-        let payload = serde_json::json!({ "alert": alert, "title": title, "body": clip(&body.body, MAX_BODY) }).to_string().into_bytes();
+        // Cible : un pseudo Twitch seulement (sinon ignorée)
+        let target = body
+            .target
+            .map(|t| t.trim().to_lowercase())
+            .filter(|t| (1..=25).contains(&t.len()) && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        let payload = serde_json::json!({ "alert": alert, "title": title, "body": clip(&body.body, MAX_BODY), "target": target }).to_string().into_bytes();
         tokio::spawn(deliver(server.clone(), targets, payload));
     }
     Ok(Json(NotifyResult { devices }))

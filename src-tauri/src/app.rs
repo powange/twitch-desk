@@ -628,15 +628,20 @@ impl App {
 
     /// Comme `notify`, ouverte au clic sur `page` (ex. le stream à mettre en avant)
     pub fn notify_page(&self, alert: Alert, title: &str, body: &str, page: &str) {
-        self.notify_full(alert, title, body, page, None);
+        self.notify_full(alert, title, body, page, None, None);
+    }
+
+    /// Comme `notify`, avec sa cible (chaîne, ou compte pour un drop) : le téléphone l'ouvre au clic
+    pub fn notify_channel(&self, alert: Alert, title: &str, body: &str, target: &str) {
+        self.notify_full(alert, title, body, alert.page(), None, Some(target));
     }
 
     /// Comme `notify_page`, avec un bouton (libellé, lien `twitch-desk://`) sur la notification
     /// Windows de l'application installée
-    pub fn notify_full(&self, alert: Alert, title: &str, body: &str, page: &str, action: Option<(&str, &str)>) {
+    pub fn notify_full(&self, alert: Alert, title: &str, body: &str, page: &str, action: Option<(&str, &str)>, target: Option<&str>) {
         use tauri_plugin_notification::NotificationExt;
         // Téléphones connectés : chacun a choisi ses alertes, quels que soient les réglages du PC
-        self.sync.phone_alert(alert.key(), title, body);
+        self.sync.phone_alert(alert.key(), title, body, target);
         let settings = self.db.settings();
         if settings.sound_alerts && settings.sound_events.iter().any(|e| e == alert.key()) {
             let sound = settings.sound_choices.get(alert.key()).cloned();

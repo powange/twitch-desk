@@ -97,11 +97,14 @@ self.addEventListener('push', (event) => {
   const tab = data.alert === 'drop' ? 'drops' : data.alert === 'scanner' ? 'scanner' : 'giveaways'
   // Mention : section Mentions de l'accueil
   const focus = data.alert === 'mention' ? 'mentions' : null
+  // Cible (serveur 0.8.13) : chaîne du giveaway, du gain, de la mention ou du stream repéré ;
+  // compte du drop
+  const target = typeof data.target === 'string' && /^[a-z0-9_]{1,25}$/.test(data.target) ? data.target : null
   event.waitUntil(self.registration.showNotification(title, {
     body: data.body || '',
     icon: '/app/icon-192.png',
     lang: 'fr',
-    data: { url: `/app/?tab=${tab}${focus ? `&focus=${focus}` : ''}`, tab, focus }
+    data: { url: `/app/?tab=${tab}${focus ? `&focus=${focus}` : ''}${target ? `&target=${target}` : ''}`, tab, focus, target }
   }))
 })
 
@@ -137,7 +140,7 @@ self.addEventListener('notificationclick', (event) => {
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       const client = list.find(c => new URL(c.url).pathname.startsWith('/app/'))
       if (client) {
-        if (data.tab) client.postMessage({ tab: data.tab, focus: data.focus })
+        if (data.tab) client.postMessage({ tab: data.tab, focus: data.focus, target: data.target })
         return client.focus()
       }
       return self.clients.openWindow(url)

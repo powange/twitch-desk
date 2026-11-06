@@ -581,7 +581,7 @@ impl Monitor {
             }
             let when = if minutes == 0 { "maintenant".to_owned() } else { format!("dans {minutes} min") };
             self.app.log("giveaways", EventKind::Giveaway, format!("Tirage {when} sur {} : présence requise", g.channel));
-            self.app.notify(Alert::Reminder, &format!("Tirage {when} sur {}", g.channel), "Présence requise au moment du tirage : reste sur le live");
+            self.app.notify_channel(Alert::Reminder, &format!("Tirage {when} sur {}", g.channel), "Présence requise au moment du tirage : reste sur le live", &g.channel);
         }
     }
 
@@ -1509,7 +1509,7 @@ impl Monitor {
             if self.app.db.set_giveaway_command_if_unknown(g.id, &command).unwrap_or(false) {
                 self.app.log("giveaways", EventKind::Giveaway, format!("Commande trouvée pour le giveaway de {channel} : {command}"));
                 if !g.hidden {
-                    self.app.notify(Alert::Giveaway, &format!("Commande trouvée sur {channel}"), &format!("Le giveaway attend {command}"));
+                    self.app.notify_channel(Alert::Giveaway, &format!("Commande trouvée sur {channel}"), &format!("Le giveaway attend {command}"), channel);
                 }
                 self.publish();
                 schedule_auto_participation(self.app.clone(), g.id);
@@ -1526,7 +1526,7 @@ impl Monitor {
             }
             self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway de {channel} repris : {command} de nouveau dans le chat"));
             if !g.hidden {
-                self.app.notify(Alert::Giveaway, &format!("Giveaway repris sur {channel}"), &format!("Commande {command} de nouveau reprise par le chat"));
+                self.app.notify_channel(Alert::Giveaway, &format!("Giveaway repris sur {channel}"), &format!("Commande {command} de nouveau reprise par le chat"), channel);
             }
             self.publish();
             // Comptes déjà inscrits : pas de nouvel envoi
@@ -1551,7 +1551,7 @@ impl Monitor {
         let _ = self.app.db.apply_streamer_conditions(id);
         let share = evidence.count * 100 / evidence.window.max(1);
         self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway détecté sur {channel} : {command} ({share} % du chat)"));
-        self.app.notify(Alert::Giveaway, &format!("Giveaway sur {channel}"), &format!("Commande {command}, reprise par {share} % du chat"));
+        self.app.notify_channel(Alert::Giveaway, &format!("Giveaway sur {channel}"), &format!("Commande {command}, reprise par {share} % du chat"), channel);
         self.gifts_from_known_replies(channel);
         self.publish();
         schedule_auto_participation(self.app.clone(), id);
@@ -1595,7 +1595,7 @@ impl Monitor {
         };
         let _ = self.app.db.apply_streamer_conditions(id);
         self.app.log("giveaways", EventKind::Giveaway, format!("Giveaway Lingo Echo sur {channel}"));
-        self.app.notify(Alert::Giveaway, &format!("Giveaway Lingo Echo sur {channel}"), "Commande à taper dans le chat : elle sera remplie dès que la détection la repère");
+        self.app.notify_channel(Alert::Giveaway, &format!("Giveaway Lingo Echo sur {channel}"), "Commande à taper dans le chat : elle sera remplie dès que la détection la repère", channel);
         self.gifts_from_known_replies(channel);
         self.publish();
     }
@@ -1661,7 +1661,7 @@ impl Monitor {
         let login = channel.to_owned();
         let channel_id = self.channels.iter().find(|c| c.login == channel).map(|c| c.channel_id.clone());
         tauri::async_runtime::spawn(async move { ensure_channel_in_list(&app, &login, channel_id, crate::db::ChannelList::Se).await });
-        self.app.notify(Alert::Giveaway, &format!("Giveaway StreamElements sur {channel}"), "Tickets à acheter avec tes points StreamElements");
+        self.app.notify_channel(Alert::Giveaway, &format!("Giveaway StreamElements sur {channel}"), "Tickets à acheter avec tes points StreamElements", channel);
         self.gifts_from_known_replies(channel);
         self.publish();
         Some(id)
@@ -1751,7 +1751,7 @@ impl Monitor {
                         if let Some((id, text, delay)) = self.win_reply(channel, target, &login, true, reply_from.or(drawn)) {
                             let cancel = crate::win_reply::cancel_url(id);
                             let body = format!("{login} a gagné le giveaway de {channel}. Réponse dans {delay} s : « {text} »");
-                            self.app.notify_full(Alert::Win, "Réponse au gain", &body, Alert::Win.page(), Some(("Annuler la réponse", &cancel)));
+                            self.app.notify_full(Alert::Win, "Réponse au gain", &body, Alert::Win.page(), Some(("Annuler la réponse", &cancel)), Some(channel));
                         }
                     }
                     return;
@@ -1775,9 +1775,9 @@ impl Monitor {
                     Some((id, text, delay)) => {
                         let body = format!("{body}. Réponse dans {delay} s : « {text} »");
                         let cancel = crate::win_reply::cancel_url(id);
-                        self.app.notify_full(Alert::Win, "Tu as gagné !", &body, Alert::Win.page(), Some(("Annuler la réponse", &cancel)));
+                        self.app.notify_full(Alert::Win, "Tu as gagné !", &body, Alert::Win.page(), Some(("Annuler la réponse", &cancel)), Some(channel));
                     }
-                    None => self.app.notify(Alert::Win, "Tu as gagné !", &body),
+                    None => self.app.notify_channel(Alert::Win, "Tu as gagné !", &body, channel),
                 }
             }
             None if target.is_some() => {
@@ -1849,7 +1849,7 @@ impl Monitor {
                 message: message.clone(),
             });
             self.mentions.truncate(MAX_MENTIONS);
-            self.app.notify(Alert::Mention, &format!("{author} mentionne {login} sur {channel}"), &message);
+            self.app.notify_channel(Alert::Mention, &format!("{author} mentionne {login} sur {channel}"), &message, channel);
             self.publish();
         }
     }

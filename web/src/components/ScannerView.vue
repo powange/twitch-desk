@@ -9,7 +9,8 @@ import ChannelFlag from './ChannelFlag.vue'
 
 // Page Scanner : streams repérés par le scan automatique du PC ; une chaîne pas encore surveillée
 // peut l'être d'ici (ajoutée par le PC à ses chaînes surveillées)
-const props = defineProps<{ state: InstanceState | null }>()
+// `highlight` : chaîne d'une notification touchée, mise en évidence
+const props = defineProps<{ state: InstanceState | null, highlight?: string | null }>()
 const scanner = computed(() => props.state?.scanner ?? null)
 const phone = usePhone()
 const toast = useToast()
@@ -38,7 +39,7 @@ async function monitor(login: string) {
         <p class="text-sm text-muted">Ils apparaissent ici quand le scanner du PC en trouve un.</p>
       </div>
       <ul class="flex flex-col gap-2">
-        <li v-for="m in scanner.matches" :key="m.login" class="rounded-xl border border-default bg-elevated/40 p-3 flex flex-col gap-2">
+        <li v-for="m in scanner.matches" :id="`scan-${m.login.toLowerCase()}`" :key="m.login" class="rounded-xl border bg-elevated/40 p-3 flex flex-col gap-2 transition-colors" :class="highlight === m.login.toLowerCase() ? 'border-primary ring-2 ring-primary/40' : 'border-default'">
           <div class="flex items-center gap-3">
             <img v-if="m.avatar" :src="m.avatar" alt="" class="size-10 rounded-full shrink-0" loading="lazy">
             <div v-else class="size-10 rounded-full bg-accented shrink-0" />

@@ -24,6 +24,13 @@ function go(i: number) {
 }
 // Liste raccourcie (giveaway clos) : rester dans les bornes
 watch(() => props.giveaways.length, (n) => { if (index.value > n - 1) go(n - 1) })
+// Giveaway choisi de l'extérieur (notification touchée) : on y va
+watch(index, (i) => {
+  const el = track.value
+  if (!el || !el.clientWidth || Math.round(el.scrollLeft / el.clientWidth) === i) return
+  el.scrollTo({ left: i * el.clientWidth, behavior: 'auto' })
+})
+onMounted(() => { if (index.value > 0) requestAnimationFrame(() => go(index.value)) })
 
 function onKey(e: KeyboardEvent) {
   if (e.key === 'ArrowRight') { e.preventDefault(); go(index.value + 1) }

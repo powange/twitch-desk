@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.59',
+    date: '2026-11-06',
+    title: 'Notifications du téléphone qui ouvrent la bonne chose',
+    changes: [
+      { kind: 'improved', text: 'Web app : toucher une notification ouvre ce qu\'elle concerne. Pour un giveaway, un rappel « reste présent » ou un gain : le giveaway de la chaîne, dans la bonne liste (en cours, en pause ou masqués). Pour un stream repéré : le stream dans le Scanner, mis en évidence. Pour une mention : la mention de la chaîne, mise en évidence. Pour un drop : la page Drops du bon compte.' }
+    ]
+  },
+  {
     version: '0.48.58',
     date: '2026-11-06',
     title: 'Pages StreamElements mieux reconnues',

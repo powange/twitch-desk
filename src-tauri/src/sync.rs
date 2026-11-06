@@ -128,6 +128,10 @@ struct PhoneAlert {
     alert: &'static str,
     title: String,
     body: String,
+    /// Cible de l'alerte, ouverte au clic sur le téléphone : la chaîne (giveaway, rappel, gain,
+    /// mention, stream repéré) ou le compte (drop)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
     /// Mise en file : une alerte trop ancienne n'est plus renvoyée après une erreur
     #[serde(skip)]
     queued: std::time::Instant,
@@ -164,12 +168,18 @@ impl SyncHandle {
     }
 
     /// Alerte transmise au serveur, qui l'envoie aux téléphones qui l'ont choisie
-    pub fn phone_alert(&self, alert: &'static str, title: &str, body: &str) {
+    pub fn phone_alert(&self, alert: &'static str, title: &str, body: &str, target: Option<&str>) {
         let mut queue = self.phone_alerts.lock().unwrap();
         if queue.len() >= MAX_PHONE_ALERTS {
             queue.pop_front();
         }
-        queue.push_back(PhoneAlert { alert, title: title.to_owned(), body: body.to_owned(), queued: std::time::Instant::now() });
+        queue.push_back(PhoneAlert {
+            alert,
+            title: title.to_owned(),
+            body: body.to_owned(),
+            target: target.map(str::to_lowercase),
+            queued: std::time::Instant::now(),
+        });
         drop(queue);
         self.phone_alert.notify_one();
     }

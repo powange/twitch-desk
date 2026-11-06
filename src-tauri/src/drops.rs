@@ -1066,7 +1066,7 @@ impl DropsEngine {
                 Ok(ClaimOutcome::Claimed) => {
                     app.log(&account.login, EventKind::Drop, format!("Drop réclamé : {name} ({game})"));
                     if !quiet {
-                        app.notify(crate::app::Alert::Drop, &format!("Drop obtenu : {name}"), &format!("{game}, sur le compte {}", account.login));
+                        app.notify_channel(crate::app::Alert::Drop, &format!("Drop obtenu : {name}"), &format!("{game}, sur le compte {}", account.login), &account.login);
                     }
                     self.mark_claimed(&instance_id);
                 }
