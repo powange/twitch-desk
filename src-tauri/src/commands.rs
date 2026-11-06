@@ -1248,9 +1248,18 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
         return Err("Ancienneté du follow invalide (1 s à 3650 j)".into());
     }
     let follow_min_secs = streamer.follow_min_secs.filter(|_| streamer.require_follow == Some(true));
-    let win_reply = streamer.win_reply.map(|r| r.replace(['\r', '\n'], " ").trim().chars().take(400).collect::<String>()).filter(|r| !r.is_empty());
+    // Réponse au gain : une phrase par ligne (5 au plus, 400 caractères chacune), lignes vides retirées
+    let win_reply = streamer
+        .win_reply
+        .map(|r| {
+            r.lines().map(str::trim).filter(|l| !l.is_empty()).take(5).map(|l| l.chars().take(400).collect::<String>()).collect::<Vec<_>>().join("\n")
+        })
+        .filter(|r| !r.is_empty());
     if streamer.win_reply_delay.is_some_and(|d| !(0..=600).contains(&d)) {
         return Err("Délai de la réponse invalide (0 à 600 secondes)".into());
+    }
+    if streamer.win_reply_gap.is_some_and(|d| !(0..=600).contains(&d)) {
+        return Err("Délai entre deux phrases invalide (0 à 600 secondes)".into());
     }
     // Pseudo StreamElements : celui de l'adresse streamelements.com/<pseudo> (lien collé accepté) ;
     // identique au pseudo Twitch : rien à retenir

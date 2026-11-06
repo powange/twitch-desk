@@ -14,6 +14,14 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.51',
+    date: '2026-11-06',
+    title: 'Réponse au gain en plusieurs phrases',
+    changes: [
+      { kind: 'improved', text: 'Réponse automatique si tu gagnes : on peut maintenant écrire plusieurs phrases, une par ligne (5 au plus). Elles sont envoyées l\'une après l\'autre : la première après le délai habituel, les suivantes espacées d\'un délai réglable (3 secondes par défaut). La réponse reste annulable jusqu\'à la dernière phrase.' }
+    ]
+  },
+  {
     version: '0.48.50',
     date: '2026-11-06',
     title: 'Giveaways passés dans l\'ordre, heure du tirage',

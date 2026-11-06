@@ -33,7 +33,7 @@ defineProps<{ target: ConditionTarget, actions: ConditionActions }>()
                 Réponse automatique si tu gagnes
               </div>
               <p class="whitespace-pre-wrap wrap-break-word">« {{ target.winReply }} »</p>
-              <p class="text-xs text-muted">Écrite dans le chat par le compte gagnant, {{ target.winReplyDelay ?? 10 }} s après l'annonce (annulable).</p>
+              <p class="text-xs text-muted">Écrite dans le chat par le compte gagnant, {{ target.winReplyDelay ?? 10 }} s après l'annonce (annulable){{ target.winReply.includes('\n') ? ' ; une phrase par ligne, l\'une après l\'autre' : '' }}.</p>
             </div>
           </template>
         </UPopover>

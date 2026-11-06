@@ -486,6 +486,10 @@ const MIGRATIONS: &[&str] = &[r#"
     -- (synchronisée), et celles auxquelles ce PC répond (propre à ce PC)
     ALTER TABLE streamers ADD COLUMN auto_commands TEXT NOT NULL DEFAULT '[]';
     ALTER TABLE streamers ADD COLUMN auto_commands_on TEXT NOT NULL DEFAULT '[]';
+"#, r#"
+    -- Réponse au gain en plusieurs phrases (une par ligne) : délai entre deux phrases, en
+    -- secondes (NULL : WIN_REPLY_GAP) ; propre à ce PC comme la réponse
+    ALTER TABLE streamers ADD COLUMN win_reply_gap INTEGER;
 "#];
 
 /// Message épinglé gardé ; `current` : relu sur Twitch à l'instant (sinon dernière version vue)
@@ -574,17 +578,22 @@ pub struct Streamer {
     /// Phrase écrite dans le chat par notre compte quand il gagne un giveaway avec présence
     /// requise (None : pas de réponse) ; propre à ce PC
     pub win_reply: Option<String>,
-    /// Délai avant cette réponse, en secondes (None : WIN_REPLY_DELAY)
+    /// Délai avant cette réponse, en secondes (None : WIN_REPLY_DELAY) ; plusieurs phrases (une
+    /// par ligne) : la première après ce délai, les suivantes `win_reply_gap` secondes après
     pub win_reply_delay: Option<i64>,
+    /// Délai entre deux phrases de la réponse, en secondes (None : WIN_REPLY_GAP)
+    pub win_reply_gap: Option<i64>,
     /// Pseudo de sa page StreamElements s'il diffère de son pseudo Twitch
     pub se_name: Option<String>,
 }
 
 /// Délai par défaut avant la réponse au gain, en secondes
 pub const WIN_REPLY_DELAY: i64 = 10;
+/// Délai par défaut entre deux phrases de la réponse au gain, en secondes
+pub const WIN_REPLY_GAP: i64 = 3;
 
 const STREAMER_SELECT: &str = "SELECT login, discord_url, notes, ignored_commands, require_follow, follow_min_secs,
-     require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name, can_gift, auto_commands, auto_commands_on FROM streamers";
+     require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name, can_gift, auto_commands, auto_commands_on, win_reply_gap FROM streamers";
 
 fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
     Ok(Streamer {
@@ -604,6 +613,7 @@ fn streamer_row(r: &rusqlite::Row) -> rusqlite::Result<Streamer> {
         can_gift: r.get(13)?,
         auto_commands: serde_json::from_str(&r.get::<_, String>(14)?).unwrap_or_default(),
         auto_commands_on: serde_json::from_str(&r.get::<_, String>(15)?).unwrap_or_default(),
+        win_reply_gap: r.get(16)?,
     })
 }
 
@@ -2016,8 +2026,8 @@ impl Db {
     pub fn save_streamer(&self, s: &Streamer) -> DbResult<()> {
         self.conn().execute(
             "INSERT INTO streamers (login, discord_url, notes, ignored_commands, require_follow, follow_min_secs,
-                 require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name, can_gift, auto_commands, auto_commands_on)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 require_presence, require_discord, require_greeting, min_chat_minutes, win_reply, win_reply_delay, se_name, can_gift, auto_commands, auto_commands_on, win_reply_gap)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(login) DO UPDATE SET discord_url = excluded.discord_url, notes = excluded.notes,
                  ignored_commands = excluded.ignored_commands, require_follow = excluded.require_follow,
                  follow_min_secs = excluded.follow_min_secs, require_presence = excluded.require_presence,
@@ -2025,7 +2035,7 @@ impl Db {
                  min_chat_minutes = excluded.min_chat_minutes, win_reply = excluded.win_reply,
                  win_reply_delay = excluded.win_reply_delay, se_name = excluded.se_name,
                  can_gift = excluded.can_gift, auto_commands = excluded.auto_commands,
-                 auto_commands_on = excluded.auto_commands_on",
+                 auto_commands_on = excluded.auto_commands_on, win_reply_gap = excluded.win_reply_gap",
             params![
                 s.login,
                 s.discord_url,
@@ -2042,7 +2052,8 @@ impl Db {
                 s.se_name,
                 s.can_gift,
                 serde_json::to_string(&s.auto_commands).expect("liste sérialisable"),
-                serde_json::to_string(&s.auto_commands_on).expect("liste sérialisable")
+                serde_json::to_string(&s.auto_commands_on).expect("liste sérialisable"),
+                s.win_reply_gap
             ],
         )?;
         Ok(())

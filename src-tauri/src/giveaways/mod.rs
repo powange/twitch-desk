@@ -1769,7 +1769,8 @@ impl Monitor {
         let wanted = streamer.win_reply_delay.unwrap_or(crate::db::WIN_REPLY_DELAY).clamp(0, 600);
         let delay = reply_delay(wanted, drawn.map(|t| (chrono::Utc::now() - t).num_seconds()))?;
         let account_id = self.accounts.iter().find(|(_, l)| l == login).map(|(id, _)| *id)?;
-        let id = crate::win_reply::schedule(&self.app, account_id, target.map(|t| t.id), login, channel, &text, delay);
+        let gap = streamer.win_reply_gap.unwrap_or(crate::db::WIN_REPLY_GAP).clamp(0, 600) as u64;
+        let id = crate::win_reply::schedule(&self.app, account_id, target.map(|t| t.id), login, channel, &text, delay, gap);
         self.win_replied.insert(key, Instant::now());
         Some((id, text, delay))
     }

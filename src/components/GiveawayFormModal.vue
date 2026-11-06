@@ -277,8 +277,9 @@ watch(open, (isOpen) => {
   streamerAuto.value = []
   streamerWinReply.value = ''
   streamerWinDelay.value = null
+  streamerWinGap.value = null
   streamerSeName.value = ''
-  streamerLoaded.value = { discord: '', notes: '', ignored: '', auto: '', winReply: '', winDelay: null, seName: '' }
+  streamerLoaded.value = { discord: '', notes: '', ignored: '', auto: '', winReply: '', winDelay: null, winGap: null, seName: '' }
   const g = props.giveaway
   const channel = g?.channel ?? props.channel ?? ''
   shownGiftIds.value = [...(g?.giftIds ?? [])]
@@ -370,6 +371,7 @@ interface ChannelSuggestion {
     // Réponse automatique au gain (présence requise), propre à ce PC
     winReply: string | null
     winReplyDelay: number | null
+    winReplyGap: number | null
     // Pseudo de sa page StreamElements s'il diffère de son pseudo Twitch
     seName: string | null
     // Participation automatique : commandes (liste partagée) et celles tapées par ce PC
@@ -401,10 +403,14 @@ function addAutoCommands() {
 const WIN_REPLY_DELAY = 10
 const streamerWinReply = ref('')
 const streamerWinDelay = ref<number | null>(null)
+// Plusieurs phrases (une par ligne) : délai entre deux phrases
+const WIN_REPLY_GAP = 3
+const streamerWinGap = ref<number | null>(null)
+const winReplyLines = computed(() => streamerWinReply.value.split('\n').filter(l => l.trim()).length)
 // Pseudo StreamElements s'il diffère du pseudo Twitch (vide : le même)
 const streamerSeName = ref('')
 // Valeurs chargées, pour n'enregistrer que si elles changent
-const streamerLoaded = ref({ discord: '', notes: '', ignored: '', auto: '', winReply: '', winDelay: null as number | null, seName: '' })
+const streamerLoaded = ref({ discord: '', notes: '', ignored: '', auto: '', winReply: '', winDelay: null as number | null, winGap: null as number | null, seName: '' })
 const inspecting = ref(false)
 let inspectTimer: ReturnType<typeof setTimeout> | null = null
 let inspectSeq = 0
@@ -488,7 +494,7 @@ function formSnapshot() {
   const f = form.value
   return {
     discord: streamerDiscord.value, notes: streamerNotes.value, ignored: streamerIgnored.value.join(), auto: autoKey(),
-    winReply: streamerWinReply.value, winDelay: streamerWinDelay.value, seName: streamerSeName.value,
+    winReply: streamerWinReply.value, winDelay: streamerWinDelay.value, winGap: streamerWinGap.value, seName: streamerSeName.value,
     follow: f.follow, followDuration: f.followDuration, presence: f.presence, discordCond: f.discord, greeting: f.greeting,
     chatTime: f.chatTime, chatMinutes: f.chatMinutes, canGift: f.canGift
   }
@@ -536,11 +542,12 @@ function applySuggestion(found: ChannelSuggestion, before: ReturnType<typeof for
   streamerLoaded.value = {
     discord: found.streamer?.discordUrl ?? '', notes: found.streamer?.notes ?? '', ignored: (found.streamer?.ignoredCommands ?? []).join(),
     auto: (found.streamer?.autoCommands ?? []).map(c => `${c}:${(found.streamer?.autoCommandsOn ?? []).includes(c)}`).join(),
-    winReply: found.streamer?.winReply ?? '', winDelay: found.streamer?.winReplyDelay ?? null, seName: found.streamer?.seName ?? ''
+    winReply: found.streamer?.winReply ?? '', winDelay: found.streamer?.winReplyDelay ?? null, winGap: found.streamer?.winReplyGap ?? null, seName: found.streamer?.seName ?? ''
   }
   if (streamerSeName.value === before.seName) streamerSeName.value = found.streamer?.seName ?? ''
   if (streamerWinReply.value === before.winReply) streamerWinReply.value = found.streamer?.winReply ?? ''
   if (streamerWinDelay.value === before.winDelay) streamerWinDelay.value = found.streamer?.winReplyDelay ?? null
+  if (streamerWinGap.value === before.winGap) streamerWinGap.value = found.streamer?.winReplyGap ?? null
   if (streamerDiscord.value === before.discord) streamerDiscord.value = found.streamer?.discordUrl ?? found.profile?.discord ?? ''
   if (streamerNotes.value === before.notes) streamerNotes.value = found.streamer?.notes ?? ''
   if (streamerIgnored.value.join() === before.ignored) streamerIgnored.value = [...(found.streamer?.ignoredCommands ?? [])]
@@ -694,6 +701,7 @@ async function saveStreamer() {
         canGift: fromTri(f.canGift),
         winReply: streamerWinReply.value.trim() || null,
         winReplyDelay: streamerWinDelay.value,
+        winReplyGap: streamerWinGap.value,
         seName: streamerSeName.value.trim() || null
       }
     })
@@ -741,7 +749,7 @@ async function save() {
   // jamais si elle n'a pas été chargée (elle serait effacée)
   const loaded = streamerLoaded.value
   const streamerChanged = !!suggestion.value && (streamerDiscord.value !== loaded.discord || streamerNotes.value !== loaded.notes || streamerIgnored.value.join() !== loaded.ignored
-    || streamerWinReply.value.trim() !== loaded.winReply || streamerWinDelay.value !== loaded.winDelay || streamerSeName.value.trim() !== loaded.seName
+    || streamerWinReply.value.trim() !== loaded.winReply || streamerWinDelay.value !== loaded.winDelay || streamerWinGap.value !== loaded.winGap || streamerSeName.value.trim() !== loaded.seName
     || autoKey() !== loaded.auto)
   if (followDurationError.value) {
     toast.add({ title: 'Ancienneté du follow invalide', description: followDurationError.value, color: 'error' })
@@ -817,7 +825,7 @@ async function save() {
       await invoke('save_streamer', {
         streamer: {
           ...(existing ?? {}), login: f.channel, discordUrl: streamerDiscord.value.trim() || null, notes: streamerNotes.value || null, ignoredCommands: streamerIgnored.value,
-          winReply: streamerWinReply.value.trim() || null, winReplyDelay: streamerWinDelay.value, seName: streamerSeName.value.trim() || null,
+          winReply: streamerWinReply.value.trim() || null, winReplyDelay: streamerWinDelay.value, winReplyGap: streamerWinGap.value, seName: streamerSeName.value.trim() || null,
           autoCommands: streamerAuto.value.map(a => a.command), autoCommandsOn: streamerAuto.value.filter(a => a.on).map(a => a.command)
         }
       })
@@ -1215,14 +1223,19 @@ async function save() {
               <div v-if="c.key === 'presence' && form.presence === 'yes'" class="basis-full flex flex-col gap-2 pt-1">
                 <UFormField
                   label="Réponse automatique si tu gagnes"
-                  :help="`Écrite dans le chat par le compte gagnant, ${streamerWinDelay ?? WIN_REPLY_DELAY} s après l'annonce (annulable). Vide : pas de réponse. Gardée dans la fiche de ${form.channel || 'ce streamer'}, sur ce PC seulement.`"
+                  :help="`Une phrase par ligne (5 au plus), écrites dans le chat par le compte gagnant l'une après l'autre, la première ${streamerWinDelay ?? WIN_REPLY_DELAY} s après l'annonce (annulable jusqu'à la dernière). Vide : pas de réponse. Gardée dans la fiche de ${form.channel || 'ce streamer'}, sur ce PC seulement.`"
                 >
-                  <UInput id="gw-win-reply" v-model="streamerWinReply" :maxlength="400" placeholder="Merci beaucoup, je suis là !" class="w-full" />
+                  <UTextarea id="gw-win-reply" v-model="streamerWinReply" :rows="2" autoresize placeholder="Merci beaucoup, je suis là !" class="w-full" />
                 </UFormField>
                 <span v-if="streamerWinReply.trim()" class="flex items-center justify-end gap-2 text-sm text-muted">
-                  après
+                  {{ winReplyLines > 1 ? 'première phrase après' : 'après' }}
                   <UInputNumber id="gw-win-delay" v-model="streamerWinDelay" :min="0" :max="600" :placeholder="String(WIN_REPLY_DELAY)" size="sm" class="w-28" />
                   seconde(s)
+                </span>
+                <span v-if="winReplyLines > 1" class="flex items-center justify-end gap-2 text-sm text-muted">
+                  puis
+                  <UInputNumber id="gw-win-gap" v-model="streamerWinGap" :min="0" :max="600" :placeholder="String(WIN_REPLY_GAP)" size="sm" class="w-28" />
+                  seconde(s) entre deux phrases
                 </span>
               </div>
               <span v-if="c.key === 'chatTime' && form.chatTime === 'yes'" class="basis-full flex items-center justify-end gap-2 text-sm text-muted">
