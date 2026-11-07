@@ -1871,6 +1871,17 @@ mod tests {
         let ok = r#"{"kind":"giveaway_conditions","item":"abc-1","conditions":{"requireFollow":true,"minChatMinutes":30,"canGift":null}}"#;
         let (st, v) = json_of(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", ok)).await;
         assert_eq!((st, v["payload"]["conditions"]["minChatMinutes"].as_i64()), (StatusCode::OK, Some(30)));
+        // Formulaire d'un giveaway et bonjour choisi (0.8.16)
+        let bad = r#"{"kind":"giveaway_save","item":"abc-1","form":{"input":{},"autre":1}}"#;
+        assert_eq!(status(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", bad)).await, StatusCode::BAD_REQUEST);
+        let ok = r#"{"kind":"giveaway_save","item":"abc-1","form":{"input":{"channel":"lunarsea"},"reopen":false,"winners":null}}"#;
+        let (st, v) = json_of(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", ok)).await;
+        assert_eq!((st, v["payload"]["form"]["input"]["channel"].as_str()), (StatusCode::OK, Some("lunarsea")));
+        let bad = r#"{"kind":"giveaway_hello","item":"abc-1","messages":[{"account":"pas un pseudo!","message":"salut"}]}"#;
+        assert_eq!(status(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", bad)).await, StatusCode::BAD_REQUEST);
+        let ok = r#"{"kind":"giveaway_hello","item":"abc-1","messages":[{"account":"Alice","message":" Salut ! "}]}"#;
+        let (st, v) = json_of(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", ok)).await;
+        assert_eq!((st, v["payload"]["messages"][0]["account"].as_str(), v["payload"]["messages"][0]["message"].as_str()), (StatusCode::OK, Some("alice"), Some("Salut !")));
         let (_, v) = json_of(&s, request_auth("POST", "/api/v1/app/actions", &auth, "9.9.9.1", r#"{"kind":"giveaway_chat_log","item":"abc-1"}"#)).await;
         let log_id = v["id"].as_str().unwrap().to_owned();
         let finish = format!("/api/v1/instances/{INSTANCE}/actions/{log_id}");

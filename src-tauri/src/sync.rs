@@ -1944,6 +1944,196 @@ fn phone_discord(app: &App, view: &crate::giveaways::GiveawaysView) -> Value {
     Value::Object(out)
 }
 
+/// Follow de nos comptes par chaîne (état du téléphone), relu au plus toutes les 10 minutes
+static PHONE_FOLLOWS: Mutex<BTreeMap<String, (std::time::Instant, Value)>> = Mutex::new(BTreeMap::new());
+const PHONE_FOLLOW_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// Follow d'une chaîne changé (interface, téléphone) : relu à la prochaine publication
+pub(crate) fn forget_follows(channel: &str) {
+    PHONE_FOLLOWS.lock().unwrap().remove(&channel.to_lowercase());
+}
+
+/// Pour les chaînes des giveaways en cours ou en pause : follow de nos comptes (follow requis),
+/// bonjour déjà dit (bonjour requis), réponse automatique au gain (présence requise)
+async fn phone_conditions(app: &App, view: &crate::giveaways::GiveawaysView) -> Value {
+    let mut follow: BTreeSet<String> = BTreeSet::new();
+    let mut greet: BTreeSet<String> = BTreeSet::new();
+    let mut out = serde_json::Map::new();
+    for g in view.giveaways.iter().filter(|g| matches!(g.row.status.as_str(), "open" | "paused")) {
+        let login = g.row.channel.to_lowercase();
+        let d = &g.row.details;
+        if d.require_follow == Some(true) {
+            follow.insert(login.clone());
+        }
+        if d.require_greeting == Some(true) {
+            greet.insert(login.clone());
+        }
+        if let (Some(true), Some(reply)) = (d.require_presence, &g.win_reply) {
+            let delay = g.win_reply_delay.unwrap_or(crate::db::WIN_REPLY_DELAY);
+            out.insert(login, json!({ "winReply": { "text": reply, "delay": delay } }));
+        }
+    }
+    let entry = |out: &mut serde_json::Map<String, Value>, login: &str, key: &str, v: Value| {
+        let e = out.entry(login.to_owned()).or_insert_with(|| json!({}));
+        e[key] = v;
+    };
+    for login in follow {
+        let cached = PHONE_FOLLOWS.lock().unwrap().get(&login).filter(|(at, _)| at.elapsed() < PHONE_FOLLOW_TTL).map(|(_, v)| v.clone());
+        let v = match cached {
+            Some(v) => v,
+            None => match crate::commands::follow_states(app, &login).await {
+                Ok(list) => {
+                    let v = json!(list.iter().map(|f| json!({ "login": f.login, "follows": f.follows, "followedAt": f.followed_at })).collect::<Vec<_>>());
+                    PHONE_FOLLOWS.lock().unwrap().insert(login.clone(), (std::time::Instant::now(), v.clone()));
+                    v
+                }
+                Err(_) => continue,
+            },
+        };
+        entry(&mut out, &login, "follows", v);
+    }
+    for login in greet {
+        if let Ok(list) = crate::commands::greeting_states(app, &login) {
+            entry(&mut out, &login, "greetings", json!(list.iter().map(|g| json!({ "login": g.login, "greeted": g.greeted })).collect::<Vec<_>>()));
+        }
+    }
+    Value::Object(out)
+}
+
+/// Image d'un cadeau servie par le serveur (adresse qui change avec elle)
+fn phone_gift_image(sync_id: &str, image: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    image.hash(&mut h);
+    format!("/api/v1/app/gifts/{sync_id}/image?v={:016x}", h.finish())
+}
+
+/// Contenu du formulaire de modification d'un giveaway pour le téléphone : giveaway, fiche du
+/// streamer, catalogue de cadeaux (suggérés d'après la chaîne), récompenses de la chaîne et
+/// giveaway StreamElements, comme le formulaire du PC
+async fn phone_giveaway_form(app: &Arc<App>, row: &crate::db::GiveawayRow) -> Result<Value, String> {
+    let channel = row.channel.to_lowercase();
+    let found = crate::commands::inspect_channel(app, &channel).await.unwrap_or_default();
+    let view = app.giveaways.view();
+    let live = view.channels.iter().find(|c| c.login.eq_ignore_ascii_case(&channel)).and_then(|c| c.live.clone());
+    // Texte où chercher les cadeaux : le même que le formulaire du PC
+    let mut text: Vec<String> = view.bot_replies.get(&channel).map(|r| r.iter().map(|r| r.message.clone()).collect()).unwrap_or_default();
+    if let Some(l) = &live {
+        text.push(l.title.clone());
+    }
+    if let Some(p) = &found.profile {
+        text.extend([p.title.clone(), p.description.clone(), p.pinned_message.clone()].into_iter().flatten());
+    }
+    if let Some(se) = &found.streamelements {
+        text.push(se.title.clone());
+        text.push(se.description.clone());
+    }
+    let catalog = app.db.gifts().map_err(db_err)?;
+    let suggested: HashSet<i64> = crate::db::gifts_in_text(&catalog, &text.join("\n")).into_iter().collect();
+    // Identifiant partagé : image servie par le serveur de synchronisation
+    let gift_sync: HashMap<i64, String> = app
+        .db
+        .conn()
+        .prepare("SELECT id, sync_id FROM gifts WHERE sync_id IS NOT NULL")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+        .unwrap_or_default();
+    let gifts: Vec<Value> = catalog
+        .iter()
+        .map(|g| {
+            let image = g.image.as_deref().zip(gift_sync.get(&g.id)).map(|(img, sid)| phone_gift_image(sid, img));
+            json!({ "id": g.id, "title": g.title, "gameId": g.game_id, "gameName": g.game_name, "groupId": g.group_id, "image": image, "suggested": suggested.contains(&g.id) })
+        })
+        .collect();
+    let groups: Vec<Value> = app.db.gift_groups().map_err(db_err)?.iter().map(|g| json!({ "id": g.id, "name": g.name })).collect();
+    let rewards = if row.kind == "channelpoints" { crate::twitch::gql::channel_rewards(&app.http, &channel).await.ok() } else { None };
+    let se_info = match (row.kind.as_str(), &row.url) {
+        ("streamelements", Some(url)) => crate::commands::se_giveaway_outcome(app, url).await.ok().flatten(),
+        _ => None,
+    };
+    let winners: Vec<Value> = row
+        .winners
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let chance = row.winner_chances.get(&w.to_lowercase()).cloned().or_else(|| if i == 0 { row.winner_chance.clone() } else { None });
+            json!({ "login": w, "chance": chance })
+        })
+        .collect();
+    let d = &row.details;
+    Ok(json!({
+        "giveaway": {
+            "channel": row.channel, "kind": row.kind, "command": row.command, "url": row.url, "status": row.status,
+            "ticketUnique": d.ticket_unique, "ticketMax": d.ticket_max, "rewardName": d.reward_name, "rewardCost": d.reward_cost,
+            "drawAt": d.draw_at, "requireFollow": d.require_follow, "followMinSecs": d.follow_min_secs, "requirePresence": d.require_presence,
+            "requireDiscord": d.require_discord, "requireGreeting": d.require_greeting, "minChatMinutes": d.min_chat_minutes,
+            "canGift": d.can_gift, "notes": d.notes, "giftIds": row.gift_ids, "winners": winners,
+        },
+        "streamer": found.streamer,
+        "profileDiscord": found.profile.as_ref().and_then(|p| p.discord.clone()),
+        "gifts": gifts,
+        "groups": groups,
+        "liveGameId": live.and_then(|l| l.game_id),
+        "botReplies": view.bot_replies.get(&channel).map(|r| r.iter().map(|r| json!({ "command": r.command, "bot": r.bot, "message": r.message })).collect::<Vec<_>>()).unwrap_or_default(),
+        "rewards": rewards,
+        "seInfo": se_info,
+    }))
+}
+
+/// Formulaire du téléphone enregistré, dans l'ordre du formulaire du PC : giveaway (cadeaux
+/// retirés seulement parmi ceux affichés), rouvert ou gagnants changés, puis fiche du streamer
+/// (seulement ce que le formulaire modifie, le reste de la fiche gardé)
+async fn phone_giveaway_save(app: &Arc<App>, id: i64, row: &crate::db::GiveawayRow, form: &Value) -> Result<String, String> {
+    let input: crate::db::GiveawayInput = serde_json::from_value(form["input"].clone()).map_err(|_| "Formulaire incomplet".to_owned())?;
+    let reopen = form["reopen"].as_bool() == Some(true) && row.status == "closed";
+    let winners: Option<Vec<crate::commands::WinnerInput>> = match &form["winners"] {
+        Value::Array(list) => Some(
+            list.iter()
+                .map(|w| crate::commands::WinnerInput { login: str_of(w, "login").unwrap_or_default(), chance: str_of(w, "chance") })
+                .collect(),
+        ),
+        _ => None,
+    };
+    // Vérifiés avant tout enregistrement : sinon le giveaway serait modifié, puis le reste refusé
+    if let Some(w) = &winners {
+        crate::commands::winner_list(w)?;
+    }
+    let streamer = form.get("streamer").filter(|v| v.is_object());
+    if let Some(url) = streamer.and_then(|s| str_of(s, "discordUrl")).map(|u| u.trim().to_owned()).filter(|u| !u.is_empty()) {
+        if !url.starts_with("https://") || url.len() > 300 || url.contains(char::is_whitespace) {
+            return Err("Lien Discord invalide (il doit commencer par https://)".into());
+        }
+    }
+    let channel = input.channel.clone();
+    crate::commands::apply_giveaway_update(app, id, input).await?;
+    if reopen {
+        app.giveaways.send(MonitorCmd::Reopen(id));
+        app.sync.poke();
+    } else if let Some(w) = &winners {
+        crate::commands::apply_winners(app, id, w).map_err(|e| format!("Giveaway modifié, mais pas ses gagnants : {e}"))?;
+    }
+    if let Some(st) = streamer {
+        let login = channel.trim().trim_start_matches('@').to_lowercase();
+        let existing = app.db.streamer(&login).map_err(db_err)?.unwrap_or_default();
+        let opt = |key: &str| str_of(st, key).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        let num = |key: &str| st.get(key).and_then(Value::as_i64);
+        let sheet = crate::db::Streamer {
+            login: login.clone(),
+            discord_url: opt("discordUrl"),
+            notes: str_of(st, "notes").filter(|n| !n.trim().is_empty()),
+            ignored_commands: strings_of(st, "ignoredCommands"),
+            auto_commands: strings_of(st, "autoCommands"),
+            auto_commands_on: strings_of(st, "autoCommandsOn"),
+            win_reply: opt("winReply"),
+            win_reply_delay: num("winReplyDelay"),
+            win_reply_gap: num("winReplyGap"),
+            se_name: opt("seName"),
+            ..existing
+        };
+        crate::commands::apply_save_streamer(app, sheet).map_err(|e| format!("Giveaway enregistré, mais pas la fiche du streamer : {e}"))?;
+    }
+    Ok(format!("Giveaway de {} modifié", row.channel))
+}
+
 /// Langue de diffusion (code ISO 639-1) des chaînes de l'état publié (giveaways, Points,
 /// StreamElements, scanner, mentions, drops), et photo de profil de celles qui n'en ont pas déjà
 /// une dans l'état (giveaways, mentions, drops) ; inconnues : absentes
@@ -2132,6 +2322,8 @@ fn spawn_state(app: Arc<App>) {
             state["paused"] = json!(app.is_paused());
             state["winReplies"] = json!(crate::win_reply::pending_view(&app));
             state["discord"] = phone_discord(&app, &giveaways);
+            // Follow et bonjour de nos comptes, réponse au gain (conditions cliquables, 0.48.61)
+            state["conditions"] = phone_conditions(&app, &giveaways).await;
             state["pc"] = json!({
                 "version": app.handle().package_info().version.to_string(),
                 "update": app.sync.pc_update.lock().unwrap().clone(),
@@ -2251,6 +2443,7 @@ async fn run_phone_action(app: &Arc<App>, action: &PhoneAction) -> Result<(Strin
 /// chat, conditions, surveiller une chaîne ; None : autre demande. Pas d'achat : toujours permises
 async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Result<(String, Option<Value>), String>> {
     if !matches!(action.kind.as_str(), "giveaway_hide" | "giveaway_chat_log" | "giveaway_conditions" | "channel_monitor" | "points_order" | "se_option" | "giveaway_participate" | "giveaway_follow" | "giveaway_hello" | "giveaway_delete"
+            | "giveaway_form" | "giveaway_save" | "giveaway_hello_draft" | "giveaway_discord"
             | "win_reply_cancel" | "points_option" | "points_max" | "drop_campaign_ignore" | "drops_refresh" | "app_pause"
     ) {
         return None;
@@ -2310,6 +2503,40 @@ async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Res
         "giveaway_follow" => {
             let ids: Vec<i64> = app.db.accounts().unwrap_or_default().into_iter().map(|a| a.id).collect();
             crate::commands::follow_accounts(app, &row.channel, &ids).await.map(|_| (format!("{} suivie par tes comptes", row.channel), None))
+        }
+        "giveaway_form" => phone_giveaway_form(app, &row).await.map(|data| (format!("Formulaire du giveaway de {}", row.channel), Some(data))),
+        "giveaway_save" => phone_giveaway_save(app, id, &row, p.get("form").unwrap_or(&Value::Null)).await.map(|m| (m, None)),
+        "giveaway_discord" => match crate::commands::streamer_discord_url(app, &row.channel).await {
+            Ok(Some(url)) => Ok((format!("Discord de {}", row.channel), Some(json!({ "channel": row.channel, "url": url })))),
+            Ok(None) => Err(format!("Aucune invitation Discord connue : ajoute-la sur la fiche de {}", row.channel)),
+            Err(e) => Err(e),
+        },
+        "giveaway_hello_draft" => match crate::commands::greeting_phrases_for(app, &row.channel).await {
+            Ok(phrases) => crate::commands::greeting_states(app, &row.channel).map(|states| {
+                let accounts: Vec<Value> = states.iter().map(|g| json!({ "login": g.login, "greeted": g.greeted })).collect();
+                (format!("Bonjour sur {}", row.channel), Some(json!({ "channel": row.channel, "phrases": phrases, "accounts": accounts })))
+            }),
+            Err(e) => Err(e),
+        },
+        // Messages choisis sur le téléphone (un par compte), sinon une phrase au hasard
+        "giveaway_hello" if p.get("messages").is_some_and(Value::is_array) => {
+            let accounts = app.db.accounts().unwrap_or_default();
+            let messages: Vec<crate::commands::HelloMessage> = p["messages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|m| {
+                    let login = str_of(m, "account")?;
+                    let account = accounts.iter().find(|a| a.login.eq_ignore_ascii_case(&login))?;
+                    Some(crate::commands::HelloMessage { account_id: account.id, message: str_of(m, "message")? })
+                })
+                .collect();
+            if messages.is_empty() {
+                return Some(Err("Aucun compte choisi".into()));
+            }
+            crate::commands::hello_accounts(app, &row.channel, Some(messages)).await.map(|n| {
+                (if n == 0 { format!("Bonjour déjà dit sur {}", row.channel) } else { format!("Bonjour dit sur {} ({n} compte(s))", row.channel) }, None)
+            })
         }
         "giveaway_hello" => crate::commands::hello_accounts(app, &row.channel, None).await.map(|n| {
             (if n == 0 { format!("Bonjour déjà dit sur {} par tous tes comptes", row.channel) } else { format!("Bonjour dit sur {} ({n} compte(s))", row.channel) }, None)

@@ -14,6 +14,17 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.61',
+    date: '2026-11-07',
+    title: 'Web app : modifier un giveaway, conditions cliquables',
+    changes: [
+      { kind: 'new', text: 'Web app, giveaways : le bouton « Conditions » devient « Modifier ». Il ouvre le même formulaire que sur le PC, avec les mêmes sections (Chaîne, Giveaway, Cadeaux, Conditions, Participation automatique) et les mêmes champs. C\'est le PC qui l\'enregistre : il doit être allumé.' },
+      { kind: 'new', text: 'Web app : les conditions d\'un giveaway se touchent, comme sur le PC. Follow : la chaîne est suivie par tes comptes qui ne la suivent pas encore, et l\'icône montre si c\'est fait (vert) ou trop récent (orange). Bonjour : une fenêtre propose une phrase par compte, modifiable, avec le dé pour en tirer une autre. Discord : l\'invitation du streamer s\'ouvre. Présence : la réponse automatique en cas de gain est affichée.' },
+      { kind: 'improved', text: 'Web app : les boutons « Suivre la chaîne », « Dire bonjour » et « Discord » sous les conditions sont retirés, les conditions font la même chose.' },
+      { kind: 'new', text: 'Web app, giveaways : nouvelle liste « Giveaways passés (48 h) », avec les giveaways clos ces dernières 48 heures, le plus récent en premier.' }
+    ]
+  },
+  {
     version: '0.48.60',
     date: '2026-11-07',
     title: 'Web app : supprimer et StreamElements',

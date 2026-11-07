@@ -493,7 +493,12 @@ pub async fn export_log(app: AppState<'_>, name: String, path: String) -> CmdRes
 /// Twitch (réseaux sociaux, description) ; None si aucune
 #[tauri::command]
 pub async fn streamer_discord(app: AppState<'_>, login: String) -> CmdResult<Option<String>> {
-    let login = normalize_login(&login).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    streamer_discord_url(&app, &login).await
+}
+
+/// Invitation Discord d'un streamer (interface, téléphone)
+pub(crate) async fn streamer_discord_url(app: &App, login: &str) -> CmdResult<Option<String>> {
+    let login = normalize_login(login).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
     if let Some(url) = app.db.streamer(&login).map_err(db_err)?.and_then(|s| s.discord_url) {
         return Ok(Some(url));
     }
@@ -563,7 +568,12 @@ pub fn set_manual_winner(app: AppState, channel: String, winner: String, giveawa
 /// tickets, gagnants ; None : inconnu de StreamElements
 #[tauri::command]
 pub async fn se_giveaway_info(app: AppState<'_>, url: String) -> CmdResult<Option<crate::streamelements::GiveawayOutcome>> {
-    let (channel, id) = crate::streamelements::parse_giveaway_url(&url).ok_or("Lien de giveaway StreamElements invalide")?;
+    se_giveaway_outcome(&app, &url).await
+}
+
+/// Giveaway StreamElements d'après son lien (interface, téléphone)
+pub(crate) async fn se_giveaway_outcome(app: &App, url: &str) -> CmdResult<Option<crate::streamelements::GiveawayOutcome>> {
+    let (channel, id) = crate::streamelements::parse_giveaway_url(url).ok_or("Lien de giveaway StreamElements invalide")?;
     // Nom de la page StreamElements du lien (pas un pseudo Twitch), identifiant gardé avec les autres
     let http = &app.http;
     let se_channel = app
@@ -581,13 +591,13 @@ pub async fn se_giveaway_info(app: AppState<'_>, url: String) -> CmdResult<Optio
 /// Gagnant saisi dans le formulaire, avec sa chance de gagner (facultative)
 #[derive(Debug, Deserialize)]
 pub struct WinnerInput {
-    login: String,
+    pub(crate) login: String,
     #[serde(default)]
-    chance: Option<String>,
+    pub(crate) chance: Option<String>,
 }
 
 /// Gagnants saisis : pseudos valides, chances lisibles, sans doublon, 100 au plus
-fn winner_list(winners: &[WinnerInput]) -> CmdResult<Vec<(String, Option<String>)>> {
+pub(crate) fn winner_list(winners: &[WinnerInput]) -> CmdResult<Vec<(String, Option<String>)>> {
     let mut list: Vec<(String, Option<String>)> = vec![];
     for w in winners.iter().filter(|w| !w.login.trim().is_empty()) {
         let login = normalize_login(&w.login).ok_or_else(|| format!("Pseudo du gagnant invalide : {}", w.login.trim()))?;
@@ -609,7 +619,12 @@ fn winner_list(winners: &[WinnerInput]) -> CmdResult<Vec<(String, Option<String>
 /// rouvert
 #[tauri::command]
 pub fn set_giveaway_winners(app: AppState, id: i64, winners: Vec<WinnerInput>) -> CmdResult<()> {
-    let list = winner_list(&winners)?;
+    apply_winners(&app, id, &winners)
+}
+
+/// Gagnants choisis à la main (interface, téléphone)
+pub(crate) fn apply_winners(app: &App, id: i64, winners: &[WinnerInput]) -> CmdResult<()> {
+    let list = winner_list(winners)?;
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     if !app.db.set_giveaway_winners(id, &list, &at).map_err(db_err)? {
         return Err("Ce giveaway n'existe plus".into());
@@ -740,22 +755,27 @@ fn has_greeted(app: &App, settings: &Settings, channel: &str, account: &crate::d
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GreetingState {
-    account_id: i64,
-    login: String,
-    greeted: bool,
+    pub(crate) account_id: i64,
+    pub(crate) login: String,
+    pub(crate) greeted: bool,
 }
 
 /// Comptes ayant déjà dit bonjour sur une chaîne
 #[tauri::command]
 pub fn greeting_status(app: AppState, channel: String) -> CmdResult<Vec<GreetingState>> {
-    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    greeting_states(&app, &channel)
+}
+
+/// Comptes ayant déjà dit bonjour sur une chaîne (interface, téléphone)
+pub(crate) fn greeting_states(app: &App, channel: &str) -> CmdResult<Vec<GreetingState>> {
+    let channel = normalize_login(channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
     let settings = app.db.settings();
     Ok(app
         .db
         .accounts()
         .map_err(db_err)?
         .iter()
-        .map(|a| GreetingState { account_id: a.id, login: a.login.clone(), greeted: has_greeted(&app, &settings, &channel, a) })
+        .map(|a| GreetingState { account_id: a.id, login: a.login.clone(), greeted: has_greeted(app, &settings, &channel, a) })
         .collect())
 }
 
@@ -784,9 +804,14 @@ async fn ensure_live_for_hello(app: &App, channel: &str) -> CmdResult<()> {
 /// Phrases de bonjour proposées pour une chaîne (fenêtre de confirmation) ; chaîne hors live : refusé
 #[tauri::command]
 pub async fn greeting_phrases(app: AppState<'_>, channel: String) -> CmdResult<Vec<String>> {
-    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
-    ensure_live_for_hello(&app, &channel).await?;
-    let phrases = hello_phrases(&app, &app.db.settings(), &channel);
+    greeting_phrases_for(&app, &channel).await
+}
+
+/// Phrases de bonjour proposées (interface, téléphone) ; chaîne hors live : refusé
+pub(crate) async fn greeting_phrases_for(app: &App, channel: &str) -> CmdResult<Vec<String>> {
+    let channel = normalize_login(channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    ensure_live_for_hello(app, &channel).await?;
+    let phrases = hello_phrases(app, &app.db.settings(), &channel);
     if phrases.is_empty() {
         return Err("Aucune phrase de bonjour : ajoute-en dans Giveaways → Réglages".into());
     }
@@ -796,8 +821,8 @@ pub async fn greeting_phrases(app: AppState<'_>, channel: String) -> CmdResult<V
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelloMessage {
-    account_id: i64,
-    message: String,
+    pub(crate) account_id: i64,
+    pub(crate) message: String,
 }
 
 /// Dit bonjour dans le chat avec chaque compte qui ne l'a pas encore fait : le message confirmé
@@ -855,6 +880,7 @@ pub(crate) async fn hello_accounts(app: &App, channel: &str, messages: Option<Ve
                 let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
                 let _ = app.db.set_state(&greeted_key(&channel, account.id), &now);
                 app.log(&account.login, crate::app::EventKind::Info, format!("Bonjour sur {channel} : {phrase}"));
+                app.sync.state_changed();
             }
             Err(e) => errors.push(format!("{} : {e}", account.login)),
         }
@@ -870,18 +896,23 @@ pub(crate) async fn hello_accounts(app: &App, channel: &str, messages: Option<Ve
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FollowState {
-    account_id: i64,
-    login: String,
+    pub(crate) account_id: i64,
+    pub(crate) login: String,
     /// None : impossible à savoir (compte à reconnecter, erreur Twitch)
-    follows: Option<bool>,
+    pub(crate) follows: Option<bool>,
     /// Date du follow
-    followed_at: Option<String>,
+    pub(crate) followed_at: Option<String>,
 }
 
 /// Comptes qui suivent (ou non) une chaîne
 #[tauri::command]
 pub async fn follow_status(app: AppState<'_>, channel: String) -> CmdResult<Vec<FollowState>> {
-    let channel = normalize_login(&channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
+    follow_states(&app, &channel).await
+}
+
+/// Comptes qui suivent (ou non) une chaîne (interface, téléphone)
+pub(crate) async fn follow_states(app: &App, channel: &str) -> CmdResult<Vec<FollowState>> {
+    let channel = normalize_login(channel).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
     let mut out = vec![];
     for account in app.db.accounts().map_err(db_err)? {
         let state = match app.secrets.load(&account.user_id) {
@@ -934,6 +965,9 @@ pub(crate) async fn follow_accounts(app: &App, channel: &str, account_ids: &[i64
             Err(e) => errors.push(format!("{} : {e}", account.login)),
         }
     }
+    // État du téléphone : follow relu à la prochaine publication
+    crate::sync::forget_follows(&channel);
+    app.sync.state_changed();
     if !errors.is_empty() {
         return Err(errors.join(" · "));
     }
@@ -1210,7 +1244,12 @@ pub struct SeSuggestion {
 
 #[tauri::command]
 pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdResult<ChannelSuggestion> {
-    let Some(login) = normalize_login(&login) else { return Ok(ChannelSuggestion::default()) };
+    inspect_channel(&app, &login).await
+}
+
+/// Ce qu'on sait d'une chaîne (formulaire de giveaway sur le PC ou le téléphone)
+pub(crate) async fn inspect_channel(app: &App, login: &str) -> CmdResult<ChannelSuggestion> {
+    let Some(login) = normalize_login(login) else { return Ok(ChannelSuggestion::default()) };
     let detected_command = app
         .db
         .giveaways(60)
@@ -1223,11 +1262,11 @@ pub async fn inspect_giveaway_channel(app: AppState<'_>, login: String) -> CmdRe
         None
     });
     if let Some(p) = &profile {
-        keep_pinned(&app, &login, p);
+        keep_pinned(app, &login, p);
     }
     // Meilleur effort : StreamElements injoignable = pas de suggestion
-    let streamelements = match streamelements::channel_id_cached(&app, &login).await {
-        Ok(Some(se_id)) => streamelements::active_giveaway_cached(&app, &se_id, std::time::Duration::from_secs(60)).await.ok().flatten().map(|g| SeSuggestion {
+    let streamelements = match streamelements::channel_id_cached(app, &login).await {
+        Ok(Some(se_id)) => streamelements::active_giveaway_cached(app, &se_id, std::time::Duration::from_secs(60)).await.ok().flatten().map(|g| SeSuggestion {
             url: format!("https://streamelements.com/{}/giveaway/{}", streamelements::page_name(&login), g.id),
             title: g.title,
             description: g.description,
@@ -1254,6 +1293,11 @@ async fn add_giveaway_channel_to_lists(app: &Arc<App>, input: &crate::db::Giveaw
 /// Enregistre ce qu'on sait d'un streamer (lien Discord, notes)
 #[tauri::command]
 pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<()> {
+    apply_save_streamer(&app, streamer)
+}
+
+/// Fiche du streamer enregistrée (interface, téléphone)
+pub(crate) fn apply_save_streamer(app: &App, streamer: crate::db::Streamer) -> CmdResult<()> {
     let login = normalize_login(&streamer.login).ok_or("Ce n'est pas un nom de chaîne Twitch valide")?;
     let discord_url = streamer.discord_url.map(|d| d.trim().to_owned()).filter(|d| !d.is_empty());
     if let Some(url) = &discord_url {
@@ -1314,7 +1358,7 @@ pub fn save_streamer(app: AppState, streamer: crate::db::Streamer) -> CmdResult<
         })
         .map_err(db_err)?;
     if se_changed {
-        refresh_se_names(&app, &login);
+        refresh_se_names(app, &login);
     }
     app.giveaways.send(MonitorCmd::Reload);
     app.sync.poke();

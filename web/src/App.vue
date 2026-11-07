@@ -15,7 +15,9 @@ import NotificationsModal from './components/NotificationsModal.vue'
 import UpdateModal from './components/UpdateModal.vue'
 import ChatLogModal from './components/ChatLogModal.vue'
 import { providePhone, sendAction } from './phone'
-import type { ChatLogEntry } from './types'
+import type { ChatLogEntry, GiveawayFormData, HelloDraftData } from './types'
+import GiveawayEditModal from './components/GiveawayEditModal.vue'
+import HelloModal from './components/HelloModal.vue'
 import { active as pushActive, disable as disablePush, refresh as refreshPush, serverTooOld, support as pushSupport } from './push'
 
 // Lien d'association scanné alors que l'appareil est déjà associé : nouvelle association
@@ -254,6 +256,10 @@ const ACTION_TITLES: Record<string, [string, string]> = {
   giveaway_participate: ['Participation', 'Participation incomplète'],
   giveaway_follow: ['Follow', 'Follow impossible'],
   giveaway_hello: ['Bonjour', 'Bonjour impossible'],
+  giveaway_form: ['Giveaway', 'Formulaire illisible'],
+  giveaway_save: ['Giveaway enregistré', 'Giveaway non enregistré'],
+  giveaway_hello_draft: ['Bonjour', 'Bonjour impossible'],
+  giveaway_discord: ['Discord', 'Invitation Discord introuvable'],
   giveaway_delete: ['Giveaway supprimé', 'Suppression impossible'],
   win_reply_cancel: ['Réponse annulée', 'Annulation impossible'],
   app_pause: ['Application du PC', 'Pause impossible'],
@@ -266,6 +272,11 @@ const ACTION_TITLES: Record<string, [string, string]> = {
 // Journal du chat rendu par le PC : affiché dans sa fenêtre
 const chatLog = ref<{ channel: string, entries: ChatLogEntry[] } | null>(null)
 const chatLogOpen = ref(false)
+// Formulaire d'un giveaway et bonjour à confirmer, lus sur le PC : affichés dans leur fenêtre
+const editForm = ref<{ item: string, data: GiveawayFormData } | null>(null)
+const editOpen = ref(false)
+const helloDraft = ref<{ item: string, draft: HelloDraftData } | null>(null)
+const helloOpen = ref(false)
 const phoneActions = ref<PhoneAction[]>([])
 const pendingActions = computed(() => phoneActions.value.filter(a => a.status === 'pending'))
 async function loadActions() {
@@ -279,6 +290,27 @@ async function loadActions() {
         if (a.kind === 'giveaway_chat_log' && a.status === 'done' && a.data?.entries) {
           chatLog.value = { channel: a.data.channel ?? '', entries: a.data.entries }
           chatLogOpen.value = true
+          continue
+        }
+        const item = typeof a.payload.item === 'string' ? a.payload.item : ''
+        if (a.kind === 'giveaway_form' && a.status === 'done' && a.data?.giveaway) {
+          editForm.value = { item, data: a.data as unknown as GiveawayFormData }
+          editOpen.value = true
+          continue
+        }
+        if (a.kind === 'giveaway_hello_draft' && a.status === 'done' && a.data?.phrases) {
+          const draft = a.data as unknown as HelloDraftData
+          if (draft.accounts.every(x => x.greeted)) {
+            toast.add({ title: `Bonjour déjà dit sur ${draft.channel}`, description: 'Par tous tes comptes', color: 'info', icon: 'i-lucide-hand' })
+          } else {
+            helloDraft.value = { item, draft }
+            helloOpen.value = true
+          }
+          continue
+        }
+        // Invitation trouvée par le PC : ouverte d'un appui (un onglet ne s'ouvre pas tout seul)
+        if (a.kind === 'giveaway_discord' && a.status === 'done' && typeof a.data?.url === 'string') {
+          toast.add({ title: `Discord de ${a.data.channel ?? ''}`, color: 'info', icon: 'i-simple-icons-discord', duration: 15000, actions: [{ label: 'Ouvrir', to: a.data.url, target: '_blank', icon: 'i-lucide-external-link' }] })
           continue
         }
         const [done, failed] = ACTION_TITLES[a.kind] ?? ACTION_TITLES.se_buy!
@@ -500,6 +532,8 @@ const menu = computed<DropdownMenuItem[][]>(() => [
 
     <NotificationsModal v-if="device" v-model:open="notificationsOpen" :token="device.token" />
     <ChatLogModal v-model:open="chatLogOpen" :log="chatLog" />
+    <GiveawayEditModal v-model:open="editOpen" :item="editForm?.item ?? null" :data="editForm?.data ?? null" />
+    <HelloModal v-model:open="helloOpen" :item="helloDraft?.item ?? null" :draft="helloDraft?.draft ?? null" />
     <UpdateModal v-if="device" v-model:open="updateOpen" :state="data?.state ?? null" :token="device.token" :pending="pendingActions" @requested="onRequested" />
 
     <UModal v-model:open="logoutOpen" title="Se déconnecter de cet appareil ?">

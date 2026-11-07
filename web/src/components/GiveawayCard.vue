@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { ChannelLive, Giveaway, GiveawayConditions, InstanceState, PhoneAction } from '../types'
-import { ApiError, giveawayChatLog, giveawayConditions, hideGiveaway } from '../api'
+import type { ChannelLive, Giveaway, InstanceState, PhoneAction } from '../types'
+import { ApiError, giveawayChatLog, hideGiveaway } from '../api'
 import { pendingFor, sendAction, usePhone } from '../phone'
-import { chatUrl, conditions, copyText, GIVEAWAY_KIND, playerUrl, streamUrl } from '../giveaways'
+import { chatUrl, conditions, copyText, GIVEAWAY_KIND, playerUrl, streamUrl, type Condition } from '../giveaways'
 import { formatDraw, formatNumber, formatWhen } from '../format'
 import GiftImage from './GiftImage.vue'
 import ChannelFlag from './ChannelFlag.vue'
@@ -48,38 +48,55 @@ function confirmDelete() {
   deleteOpen.value = false
   void act('giveaway_delete')
 }
-// Raccourcis des conditions : suivre la chaîne, dire bonjour, ouvrir le Discord du streamer
-const discordUrl = computed(() => props.state?.discord?.[g.value.channel.toLowerCase()] ?? null)
 const openChatLog = () => ask(t => giveawayChatLog<PhoneAction>(t, g.value.id))
 
-// Conditions : Oui / Non / ? ; temps de présence en minutes (0 : non requis)
-type Tri = 'yes' | 'no' | 'unknown'
-const toTri = (v: boolean | null | undefined): Tri => v === true ? 'yes' : v === false ? 'no' : 'unknown'
-const fromTri = (v: Tri) => v === 'yes' ? true : v === 'no' ? false : null
-const COND_ROWS = [
-  { key: 'requirePresence', label: 'Présence au tirage', icon: 'i-lucide-user-check' },
-  { key: 'requireDiscord', label: 'Discord du streamer', icon: 'i-simple-icons-discord' },
-  { key: 'requireFollow', label: 'Follow requis', icon: 'i-lucide-heart' },
-  { key: 'requireGreeting', label: 'Avoir dit bonjour', icon: 'i-lucide-hand' },
-  { key: 'canGift', label: 'Gain offrable', icon: 'i-lucide-hand-heart' }
-] as const
-const condOpen = ref(false)
-const form = ref<Record<string, Tri>>({})
-const chatTime = ref<Tri>('unknown')
-const chatMinutes = ref<number | null>(null)
-function openConditions() {
-  const x = g.value
-  form.value = Object.fromEntries(COND_ROWS.map(r => [r.key, toTri(x[r.key])]))
-  chatTime.value = x.minChatMinutes == null ? 'unknown' : x.minChatMinutes > 0 ? 'yes' : 'no'
-  chatMinutes.value = x.minChatMinutes && x.minChatMinutes > 0 ? x.minChatMinutes : null
-  condOpen.value = true
-}
-async function saveConditions() {
-  const conditions: Partial<GiveawayConditions> = Object.fromEntries(COND_ROWS.map(r => [r.key, fromTri(form.value[r.key] ?? 'unknown')]))
-  conditions.minChatMinutes = chatTime.value === 'yes' ? (chatMinutes.value ?? null) : chatTime.value === 'no' ? 0 : null
-  await ask(t => giveawayConditions<PhoneAction>(t, g.value.id, conditions))
-  condOpen.value = false
-}
+// Conditions cliquables, comme sur le PC (giveaway pas encore clos) : follow (fait suivre la
+// chaîne aux comptes qui ne la suivent pas), bonjour (fenêtre de confirmation des phrases),
+// Discord (invitation du streamer) ; état de mes comptes publié par le PC
+const discordUrl = computed(() => props.state?.discord?.[g.value.channel.toLowerCase()] ?? null)
+const channelState = computed(() => props.state?.conditions?.[g.value.channel.toLowerCase()] ?? null)
+const winReply = computed(() => channelState.value?.winReply ?? null)
+const followAge = (at: string | null) => at ? (Date.now() - new Date(at).getTime()) / 1000 : null
+const followInfo = computed(() => {
+  const list = channelState.value?.follows
+  if (!list) return null
+  const min = g.value.followMinSecs ?? 0
+  const missing = list.filter(f => f.follows === false).map(f => f.login)
+  const recent = list.filter(f => f.follows && min > 0 && (followAge(f.followedAt) ?? 0) < min).map(f => f.login)
+  const unknown = list.filter(f => f.follows === null).map(f => f.login)
+  return { missing, recent, ok: list.length > 0 && !missing.length && !recent.length && !unknown.length }
+})
+const greetInfo = computed(() => {
+  const list = channelState.value?.greetings
+  if (!list) return null
+  const missing = list.filter(x => !x.greeted).map(x => x.login)
+  return { missing, ok: list.length > 0 && !missing.length }
+})
+interface Chip extends Condition { done?: boolean, loading?: boolean, href?: string, action?: () => void }
+const info = (title: string, description: string, icon: string) => toast.add({ title, description, color: 'info', icon })
+const chips = computed<Chip[]>(() => conds.value.map((c): Chip => {
+  if (!c.required || g.value.status === 'closed') return c
+  const channel = g.value.channel
+  switch (c.key) {
+    case 'follow': {
+      const f = followInfo.value
+      if (f?.ok) return { ...c, done: true, colorClass: 'text-success', action: () => info('Follow', `Tous tes comptes suivent ${channel}${g.value.followMinSecs ? ' depuis assez longtemps' : ''}.`, 'i-lucide-heart') }
+      if (f && !f.missing.length && f.recent.length) {
+        return { ...c, label: `${c.label} : trop récent`, colorClass: 'text-warning', action: () => info('Follow trop récent', `${f.recent.join(', ')} suit ${channel} depuis moins longtemps que demandé.`, 'i-lucide-heart') }
+      }
+      return { ...c, label: f?.missing.length ? `${c.label} : ${f.missing.join(', ')}` : c.label, loading: busy('giveaway_follow'), action: () => act('giveaway_follow') }
+    }
+    case 'greeting': {
+      const h = greetInfo.value
+      if (h?.ok) return { ...c, done: true, colorClass: 'text-success', action: () => info('Bonjour', `Déjà dit sur ${channel} par tous tes comptes.`, 'i-lucide-hand') }
+      return { ...c, label: h?.missing.length ? `${c.label} : ${h.missing.join(', ')}` : c.label, loading: busy('giveaway_hello_draft') || busy('giveaway_hello'), action: () => act('giveaway_hello_draft') }
+    }
+    case 'discord':
+      return discordUrl.value ? { ...c, href: discordUrl.value } : { ...c, loading: busy('giveaway_discord'), action: () => act('giveaway_discord') }
+    default:
+      return c
+  }
+}))
 
 async function copy() {
   if (!g.value.command) return
@@ -163,10 +180,42 @@ async function copy() {
       </ul>
 
       <!-- Conditions -->
-      <ul v-if="conds.length" class="flex flex-wrap gap-1.5" aria-label="Conditions">
-        <li v-for="c in conds" :key="c.key" class="inline-flex items-center gap-1 rounded-full border border-default px-2 py-0.5 text-xs" :class="c.colorClass">
-          <UIcon :name="c.icon" class="size-3.5" />
-          <span :class="c.required ? '' : 'line-through decoration-1'">{{ c.label }}</span>
+      <ul v-if="chips.length" class="flex flex-wrap gap-1.5" aria-label="Conditions">
+        <li v-for="c in chips" :key="c.key" class="inline-flex items-center gap-1 min-w-0">
+          <component
+            :is="c.href ? 'a' : c.action ? 'button' : 'span'"
+            :href="c.href"
+            :target="c.href ? '_blank' : undefined"
+            :rel="c.href ? 'noopener' : undefined"
+            :type="c.action ? 'button' : undefined"
+            :disabled="c.loading || undefined"
+            class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs min-w-0"
+            :class="[c.colorClass, c.href || c.action ? 'border-current/40 active:bg-elevated focus-visible:outline-2 focus-visible:outline-primary' : 'border-default']"
+            @click="c.action?.()"
+          >
+            <span class="relative inline-flex shrink-0">
+              <UIcon :name="c.loading ? 'i-lucide-loader-circle' : c.icon" class="size-3.5" :class="c.loading ? 'animate-spin' : ''" />
+              <UIcon v-if="c.done" name="i-lucide-check" class="absolute -bottom-1 -right-1.5 size-2.5 bg-default rounded-full" />
+            </span>
+            <span class="truncate" :class="c.required ? '' : 'line-through decoration-1'">{{ c.label }}</span>
+            <UIcon v-if="c.href" name="i-lucide-external-link" class="size-3 shrink-0 opacity-70" />
+          </component>
+          <!-- Présence requise : réponse écrite automatiquement si un de mes comptes gagne -->
+          <UPopover v-if="c.key === 'presence' && c.required && winReply">
+            <button type="button" class="inline-flex rounded-full p-0.5 text-primary focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Réponse automatique si tu gagnes : ${winReply.text}`">
+              <UIcon name="i-lucide-message-circle-reply" class="size-4" />
+            </button>
+            <template #content>
+              <div class="flex flex-col gap-1.5 p-3 max-w-xs text-sm">
+                <div class="flex items-center gap-1.5 font-medium">
+                  <UIcon name="i-lucide-message-circle-reply" class="size-4 text-primary" />
+                  Réponse automatique si tu gagnes
+                </div>
+                <p class="whitespace-pre-wrap break-words">« {{ winReply.text }} »</p>
+                <p class="text-xs text-muted">Écrite dans le chat par le compte gagnant, {{ winReply.delay }} s après l'annonce (annulable){{ winReply.text.includes('\n') ? ' ; une phrase par ligne, l\'une après l\'autre' : '' }}.</p>
+              </div>
+            </template>
+          </UPopover>
         </li>
       </ul>
 
@@ -195,12 +244,6 @@ async function copy() {
         :loading="busy('giveaway_participate')"
         @click="act('giveaway_participate')"
       />
-      <div v-if="g.status !== 'closed' && (g.requireFollow || g.requireGreeting || (g.requireDiscord && discordUrl))" class="flex flex-wrap gap-2">
-        <UButton v-if="g.requireFollow" label="Suivre la chaîne" icon="i-lucide-heart" color="neutral" variant="soft" size="sm" :loading="busy('giveaway_follow')" @click="act('giveaway_follow')" />
-        <UButton v-if="g.requireGreeting" label="Dire bonjour" icon="i-lucide-hand" color="neutral" variant="soft" size="sm" :loading="busy('giveaway_hello')" @click="act('giveaway_hello')" />
-        <UButton v-if="g.requireDiscord && discordUrl" label="Discord" icon="i-simple-icons-discord" color="neutral" variant="soft" size="sm" :to="discordUrl" target="_blank" />
-      </div>
-
       <!-- Demandes au PC -->
       <div class="grid gap-2" :class="g.status === 'closed' ? 'grid-cols-2' : 'grid-cols-3'">
         <UButton
@@ -215,7 +258,7 @@ async function copy() {
           @click="toggleHidden"
         />
         <UButton label="Journal" icon="i-lucide-scroll-text" color="neutral" variant="soft" size="sm" block :loading="busy('giveaway_chat_log')" @click="openChatLog" />
-        <UButton label="Conditions" icon="i-lucide-list-checks" color="neutral" variant="soft" size="sm" block :loading="busy('giveaway_conditions')" @click="openConditions" />
+        <UButton label="Modifier" icon="i-lucide-pencil" color="neutral" variant="soft" size="sm" block :loading="busy('giveaway_form') || busy('giveaway_save')" @click="act('giveaway_form')" />
       </div>
       <UButton label="Supprimer" icon="i-lucide-trash-2" color="error" variant="soft" size="sm" block :loading="busy('giveaway_delete')" @click="deleteOpen = true" />
 
@@ -239,33 +282,6 @@ async function copy() {
         <div class="flex justify-end gap-2 w-full">
           <UButton label="Annuler" color="neutral" variant="ghost" @click="deleteOpen = false" />
           <UButton label="Supprimer" color="error" icon="i-lucide-trash-2" @click="confirmDelete" />
-        </div>
-      </template>
-    </UModal>
-    <UModal v-model:open="condOpen" :title="`Conditions · ${g.channel}`" description="Enregistrées par le PC ; un giveaway en cours met aussi à jour la fiche du streamer. « ? » : on ne sait pas.">
-      <template #body>
-        <div class="flex flex-col gap-2">
-          <div v-for="r in COND_ROWS" :key="r.key" class="flex items-center justify-between gap-3">
-            <span class="inline-flex items-center gap-2 text-sm min-w-0"><UIcon :name="r.icon" class="size-4 text-muted shrink-0" /><span class="truncate">{{ r.label }}</span></span>
-            <UFieldGroup size="sm" class="shrink-0">
-              <UButton v-for="o in (['yes', 'no', 'unknown'] as const)" :key="o" :label="o === 'yes' ? 'Oui' : o === 'no' ? 'Non' : '?'" :color="form[r.key] === o ? 'primary' : 'neutral'" :variant="form[r.key] === o ? 'solid' : 'outline'" class="w-11 justify-center" @click="form[r.key] = o" />
-            </UFieldGroup>
-          </div>
-          <div class="flex items-center justify-between gap-3">
-            <span class="inline-flex items-center gap-2 text-sm min-w-0"><UIcon name="i-lucide-timer" class="size-4 text-muted shrink-0" /><span class="truncate">Temps dans le chat</span></span>
-            <UFieldGroup size="sm" class="shrink-0">
-              <UButton v-for="o in (['yes', 'no', 'unknown'] as const)" :key="o" :label="o === 'yes' ? 'Oui' : o === 'no' ? 'Non' : '?'" :color="chatTime === o ? 'primary' : 'neutral'" :variant="chatTime === o ? 'solid' : 'outline'" class="w-11 justify-center" @click="chatTime = o" />
-            </UFieldGroup>
-          </div>
-          <div v-if="chatTime === 'yes'" class="flex items-center justify-end gap-2 text-sm text-muted">
-            au moins <UInputNumber v-model="chatMinutes" :min="1" :max="1440" size="sm" class="w-28" /> min
-          </div>
-        </div>
-      </template>
-      <template #footer>
-        <div class="flex justify-end gap-2 w-full">
-          <UButton label="Annuler" color="neutral" variant="ghost" @click="condOpen = false" />
-          <UButton label="Enregistrer" @click="saveConditions" />
         </div>
       </template>
     </UModal>

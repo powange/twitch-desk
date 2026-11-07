@@ -55,6 +55,44 @@ pub struct NewAction {
     /// Solde maximum d'une chaîne Points (absent ou 0 : pas de limite)
     #[serde(default)]
     max: Option<i64>,
+    /// Formulaire de modification d'un giveaway (vérifié en détail par le PC)
+    #[serde(default)]
+    form: Option<Value>,
+    /// Bonjour : message choisi pour chaque compte ({ account, message })
+    #[serde(default)]
+    messages: Option<Vec<Value>>,
+}
+
+/// Formulaire d'un giveaway : objet aux champs connus, 64 Ko au plus
+const MAX_FORM: usize = 64 * 1024;
+fn form_of(v: &Value) -> Result<Value, ApiError> {
+    let bad = || ApiError::BadRequest("Formulaire invalide".into());
+    let obj = v.as_object().ok_or_else(bad)?;
+    if !obj.keys().all(|k| matches!(k.as_str(), "input" | "reopen" | "winners" | "streamer")) || !obj.get("input").is_some_and(Value::is_object) {
+        return Err(bad());
+    }
+    if serde_json::to_string(v).map_or(true, |t| t.len() > MAX_FORM) {
+        return Err(bad());
+    }
+    Ok(v.clone())
+}
+
+/// Messages de bonjour : 20 comptes au plus, un message de 400 caractères au plus chacun
+fn messages_of(list: &[Value]) -> Result<Value, ApiError> {
+    let bad = || ApiError::BadRequest("Messages invalides".into());
+    if list.is_empty() || list.len() > 20 {
+        return Err(bad());
+    }
+    let mut out = vec![];
+    for m in list {
+        let account = m.get("account").and_then(Value::as_str).map(|a| a.trim().to_lowercase()).ok_or_else(bad)?;
+        let message = m.get("message").and_then(Value::as_str).map(str::trim).ok_or_else(bad)?;
+        if !login_ok(&account) || message.is_empty() || message.chars().count() > 400 {
+            return Err(bad());
+        }
+        out.push(serde_json::json!({ "account": account, "message": message }));
+    }
+    Ok(Value::Array(out))
 }
 
 /// Identifiant de synchronisation (uuid) d'un document de l'application
@@ -124,6 +162,23 @@ fn payload_of(body: &NewAction) -> Result<Value, ApiError> {
             Ok(serde_json::json!({ "account": account, "channel": channel, "option": body.option, "enabled": body.enabled }))
         }
         // Giveaway (0.8.11) : participer, suivre la chaîne, dire bonjour ; réponse au gain à annuler
+        // Giveaway (0.8.16) : formulaire à lire ou à enregistrer, bonjour (phrases choisies),
+        // invitation Discord
+        "giveaway_form" | "giveaway_hello_draft" | "giveaway_discord" | "giveaway_save" => {
+            if !sync_id_ok(&body.item) {
+                return Err(ApiError::BadRequest("Demande invalide".into()));
+            }
+            Ok(match body.kind.as_str() {
+                "giveaway_save" => serde_json::json!({ "item": body.item, "form": form_of(body.form.as_ref().ok_or_else(|| ApiError::BadRequest("Formulaire manquant".into()))?)? }),
+                _ => serde_json::json!({ "item": body.item }),
+            })
+        }
+        "giveaway_hello" if body.messages.is_some() => {
+            if !sync_id_ok(&body.item) {
+                return Err(ApiError::BadRequest("Demande invalide".into()));
+            }
+            Ok(serde_json::json!({ "item": body.item, "messages": messages_of(body.messages.as_deref().unwrap_or_default())? }))
+        }
         "giveaway_participate" | "giveaway_follow" | "giveaway_hello" | "giveaway_delete" | "win_reply_cancel" => {
             if !sync_id_ok(&body.item) {
                 return Err(ApiError::BadRequest("Demande invalide".into()));
