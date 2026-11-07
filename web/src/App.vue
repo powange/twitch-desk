@@ -249,6 +249,7 @@ const ACTION_TITLES: Record<string, [string, string]> = {
   giveaway_participate: ['Participation', 'Participation incomplète'],
   giveaway_follow: ['Follow', 'Follow impossible'],
   giveaway_hello: ['Bonjour', 'Bonjour impossible'],
+  giveaway_delete: ['Giveaway supprimé', 'Suppression impossible'],
   win_reply_cancel: ['Réponse annulée', 'Annulation impossible'],
   app_pause: ['Application du PC', 'Pause impossible'],
   points_option: ['Réglage enregistré', 'Réglage refusé'],
@@ -287,7 +288,18 @@ async function loadActions() {
 function onRequested(a: PhoneAction) {
   phoneActions.value = [a, ...phoneActions.value]
 }
-providePhone({ token: computed(() => device.value?.token ?? null), actions: phoneActions, requested: onRequested })
+// Label StreamElements d'un giveaway : page StreamElements filtrée sur sa chaîne, avec un compte
+// qui l'a dans sa liste
+const seOnly = ref<string | null>(null)
+function openSe(channel: string) {
+  const login = channel.toLowerCase()
+  const acc = (data.value?.state?.streamelements ?? []).find(a => a.channels.some(c => c.login.toLowerCase() === login))
+  if (acc) seAccount.value = acc.login
+  seOnly.value = login
+  tab.value = 'se'
+}
+watch(tab, (t) => { if (t !== 'se') seOnly.value = null })
+providePhone({ token: computed(() => device.value?.token ?? null), actions: phoneActions, requested: onRequested, openSe })
 const toast = useToast()
 
 function connect(d: Device) {
@@ -438,7 +450,7 @@ const menu = computed<DropdownMenuItem[][]>(() => [
           <DropsView v-model:account="dropsAccount" :state="data.state" />
         </template>
         <template v-else-if="data && tab === 'se'">
-          <SeView v-model:account="seAccount" :state="data.state" :token="device.token" :pending="pendingActions" @requested="onRequested" />
+          <SeView v-model:account="seAccount" v-model:only="seOnly" :state="data.state" :token="device.token" :pending="pendingActions" @requested="onRequested" />
         </template>
         <template v-else-if="data">
           <p v-if="!data.state" class="text-sm text-muted">L'application du PC n'a pas encore publié ses participations (mets-la à jour et active la synchronisation).</p>

@@ -7,6 +7,8 @@ export interface PhoneContext {
   token: Readonly<Ref<string | null>>
   actions: Ref<PhoneAction[]>
   requested: (a: PhoneAction) => void
+  // Page StreamElements filtrée sur une chaîne (label StreamElements d'un giveaway)
+  openSe?: (channel: string) => void
 }
 
 const KEY: InjectionKey<PhoneContext> = Symbol('phone')

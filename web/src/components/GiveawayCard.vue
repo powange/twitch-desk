@@ -42,6 +42,12 @@ const canJoin = computed(() => g.value.status === 'open' && missing.value.length
   && (((g.value.kind === 'command' || g.value.kind === 'ticket') && !!g.value.command)
     || (g.value.kind === 'channelpoints' && !!g.value.rewardName && !!props.state?.actionsAllowed)))
 const act = (kind: string) => sendAction(phone, toast, { kind, item: g.value.id })
+// Suppression (comme sur le PC), après confirmation
+const deleteOpen = ref(false)
+function confirmDelete() {
+  deleteOpen.value = false
+  void act('giveaway_delete')
+}
 // Raccourcis des conditions : suivre la chaîne, dire bonjour, ouvrir le Discord du streamer
 const discordUrl = computed(() => props.state?.discord?.[g.value.channel.toLowerCase()] ?? null)
 const openChatLog = () => ask(t => giveawayChatLog<PhoneAction>(t, g.value.id))
@@ -93,7 +99,11 @@ async function copy() {
           <img v-if="state?.avatars?.[g.channel.toLowerCase()]" :src="state.avatars[g.channel.toLowerCase()]" alt="" class="size-8 rounded-full shrink-0" loading="lazy">
           <ChannelFlag :login="g.channel" :langs="state?.languages" />
           <h2 class="text-lg font-semibold break-all">{{ g.channel }}</h2>
-          <UBadge :label="kind.label" :color="kind.color" variant="subtle" size="sm" />
+          <!-- StreamElements : page StreamElements de la web app, filtrée sur cette chaîne -->
+          <button v-if="g.kind === 'streamelements' && phone.openSe" type="button" class="inline-flex rounded focus-visible:outline-2 focus-visible:outline-primary" :aria-label="`Page StreamElements de ${g.channel}`" @click="phone.openSe(g.channel)">
+            <UBadge :label="kind.label" :color="kind.color" variant="subtle" size="sm" trailing-icon="i-lucide-chevron-right" class="cursor-pointer" />
+          </button>
+          <UBadge v-else :label="kind.label" :color="kind.color" variant="subtle" size="sm" />
           <UBadge v-if="g.status === 'paused'" label="En pause" color="warning" variant="subtle" size="sm" icon="i-lucide-pause" />
           <UBadge v-if="hidden" label="Masqué" color="neutral" variant="subtle" size="sm" icon="i-lucide-eye-off" />
         </div>
@@ -205,6 +215,7 @@ async function copy() {
         <UButton label="Journal" icon="i-lucide-scroll-text" color="neutral" variant="soft" size="sm" block :loading="busy('giveaway_chat_log')" @click="openChatLog" />
         <UButton label="Conditions" icon="i-lucide-list-checks" color="neutral" variant="soft" size="sm" block :loading="busy('giveaway_conditions')" @click="openConditions" />
       </div>
+      <UButton label="Supprimer" icon="i-lucide-trash-2" color="error" variant="soft" size="sm" block :loading="busy('giveaway_delete')" @click="deleteOpen = true" />
 
       <!-- Twitch -->
       <div class="grid grid-cols-2 gap-2">
@@ -221,6 +232,14 @@ async function copy() {
         />
       </div>
     </div>
+    <UModal v-model:open="deleteOpen" :title="`Supprimer le giveaway de ${g.channel} ?`" description="Il est supprimé sur le PC et sur tous les appareils synchronisés. Pour seulement ne plus le voir, choisis plutôt « Masquer ».">
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Annuler" color="neutral" variant="ghost" @click="deleteOpen = false" />
+          <UButton label="Supprimer" color="error" icon="i-lucide-trash-2" @click="confirmDelete" />
+        </div>
+      </template>
+    </UModal>
     <UModal v-model:open="condOpen" :title="`Conditions · ${g.channel}`" description="Enregistrées par le PC ; un giveaway en cours met aussi à jour la fiche du streamer. « ? » : on ne sait pas.">
       <template #body>
         <div class="flex flex-col gap-2">

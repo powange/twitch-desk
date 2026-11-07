@@ -2250,7 +2250,7 @@ async fn run_phone_action(app: &Arc<App>, action: &PhoneAction) -> Result<(Strin
 /// Demandes du téléphone sur un giveaway ou le scanner (serveur 0.8.10) : masquer, journal du
 /// chat, conditions, surveiller une chaîne ; None : autre demande. Pas d'achat : toujours permises
 async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Result<(String, Option<Value>), String>> {
-    if !matches!(action.kind.as_str(), "giveaway_hide" | "giveaway_chat_log" | "giveaway_conditions" | "channel_monitor" | "points_order" | "se_option" | "giveaway_participate" | "giveaway_follow" | "giveaway_hello"
+    if !matches!(action.kind.as_str(), "giveaway_hide" | "giveaway_chat_log" | "giveaway_conditions" | "channel_monitor" | "points_order" | "se_option" | "giveaway_participate" | "giveaway_follow" | "giveaway_hello" | "giveaway_delete"
             | "win_reply_cancel" | "points_option" | "points_max" | "drop_campaign_ignore" | "drops_refresh" | "app_pause"
     ) {
         return None;
@@ -2314,6 +2314,12 @@ async fn run_giveaway_action(app: &Arc<App>, action: &PhoneAction) -> Option<Res
         "giveaway_hello" => crate::commands::hello_accounts(app, &row.channel, None).await.map(|n| {
             (if n == 0 { format!("Bonjour déjà dit sur {} par tous tes comptes", row.channel) } else { format!("Bonjour dit sur {} ({n} compte(s))", row.channel) }, None)
         }),
+        "giveaway_delete" => {
+            // Comme sur le PC : supprimé ici et sur les autres appareils (synchronisation)
+            app.giveaways.send(crate::giveaways::MonitorCmd::Delete(id));
+            app.sync.poke();
+            Ok((format!("Giveaway de {} supprimé", row.channel), None))
+        }
         "giveaway_hide" => {
             let hidden = bool_of(p, "hidden").unwrap_or(true);
             crate::commands::hide_giveaway(app, id, hidden)

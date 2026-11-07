@@ -1,7 +1,7 @@
 {
   "name": "twitch-desk",
   "private": true,
-  "version": "0.48.59",
+  "version": "0.48.60",
   "type": "module",
   "scripts": {
     "dev": "vite",

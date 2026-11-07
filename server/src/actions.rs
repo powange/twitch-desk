@@ -124,7 +124,7 @@ fn payload_of(body: &NewAction) -> Result<Value, ApiError> {
             Ok(serde_json::json!({ "account": account, "channel": channel, "option": body.option, "enabled": body.enabled }))
         }
         // Giveaway (0.8.11) : participer, suivre la chaîne, dire bonjour ; réponse au gain à annuler
-        "giveaway_participate" | "giveaway_follow" | "giveaway_hello" | "win_reply_cancel" => {
+        "giveaway_participate" | "giveaway_follow" | "giveaway_hello" | "giveaway_delete" | "win_reply_cancel" => {
             if !sync_id_ok(&body.item) {
                 return Err(ApiError::BadRequest("Demande invalide".into()));
             }

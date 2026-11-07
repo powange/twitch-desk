@@ -11,6 +11,8 @@ import ChannelFlag from './ChannelFlag.vue'
 // le PC s'il l'autorise)
 const props = defineProps<{ state: InstanceState | null, token: string, pending: PhoneAction[] }>()
 const account = defineModel<string>('account', { required: true })
+// Chaîne seule affichée (ouverte depuis un giveaway StreamElements) ; null : toutes
+const only = defineModel<string | null>('only', { default: null })
 const emit = defineEmits<{ requested: [PhoneAction] }>()
 const toast = useToast()
 
@@ -18,8 +20,9 @@ const accounts = computed(() => props.state?.streamelements ?? [])
 const current = computed(() => accounts.value.find(a => a.login === account.value) ?? accounts.value[0] ?? null)
 const totalToday = computed(() => current.value?.channels.reduce((n, c) => n + c.earnedToday, 0) ?? 0)
 // Giveaways en cours d'abord, puis chaînes en live
-const channels = computed(() => [...(current.value?.channels ?? [])].sort((a, b) =>
-  Number(!!b.giveaway) - Number(!!a.giveaway) || Number(!!b.live) - Number(!!a.live)))
+const channels = computed(() => [...(current.value?.channels ?? [])]
+  .filter(c => !only.value || c.login.toLowerCase() === only.value.toLowerCase())
+  .sort((a, b) => Number(!!b.giveaway) - Number(!!a.giveaway) || Number(!!b.live) - Number(!!a.live)))
 
 // Achat : nombre de tickets possibles (maximum du giveaway, points disponibles)
 const buying = ref<SeChannel | null>(null)
@@ -77,6 +80,10 @@ async function setOption(c: SeChannel, option: 'chat' | 'autoBuy', enabled: bool
     <p v-if="!state?.streamelements" class="text-sm text-muted">Mets à jour l'application du PC (version 0.41 ou plus) pour voir ses chaînes StreamElements ici.</p>
     <template v-else-if="current">
       <AccountPicker v-model="account" :accounts="accounts.map(a => a.login)" />
+      <div v-if="only" class="flex items-center gap-2">
+        <UBadge :label="`Filtré sur ${only}`" color="warning" variant="subtle" icon="i-lucide-filter" />
+        <UButton label="Tout afficher" size="xs" color="neutral" variant="link" @click="only = null" />
+      </div>
       <div class="flex items-baseline justify-between gap-2">
         <h1 class="text-sm font-medium text-muted uppercase truncate min-w-0">StreamElements · {{ current.login }}</h1>
         <span class="text-sm tabular-nums whitespace-nowrap shrink-0">+{{ formatNumber(totalToday) }} aujourd'hui</span>

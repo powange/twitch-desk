@@ -14,6 +14,15 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: '0.48.60',
+    date: '2026-11-07',
+    title: 'Web app : supprimer et StreamElements',
+    changes: [
+      { kind: 'new', text: 'Web app, giveaways : bouton « Supprimer », avec confirmation, comme sur le PC. Le giveaway est supprimé partout.' },
+      { kind: 'new', text: 'Web app : sur un giveaway StreamElements, un clic sur le label « StreamElements » ouvre la page StreamElements de la web app, filtrée sur ce streamer. « Tout afficher » retire le filtre.' }
+    ]
+  },
+  {
     version: '0.48.59',
     date: '2026-11-06',
     title: 'Notifications du téléphone qui ouvrent la bonne chose',

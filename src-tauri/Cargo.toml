@@ -1,6 +1,6 @@
 [package]
 name = "twitch-desk"
-version = "0.48.59"
+version = "0.48.60"
 description = "Giveaways, points de chaîne et drops Twitch, sur plusieurs comptes"
 authors = ["powange"]
 license = "MIT"
