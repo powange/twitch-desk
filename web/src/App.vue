@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { DropdownMenuItem } from '@nuxt/ui'
 import { ApiError, actions as listActions, loadDevice, openEvents, overview, saveDevice, state as loadStateOnly, type Device, type LiveStatus } from './api'
-import type { InstanceState, Overview, PhoneAction } from './types'
+import type { Giveaway, InstanceState, Overview, PhoneAction } from './types'
 import { timeAgo } from './format'
 import PairScreen from './components/PairScreen.vue'
 import GiveawayCarousel from './components/GiveawayCarousel.vue'
@@ -94,25 +94,30 @@ const TABS: { key: Tab, label: string, icon: string, title?: string }[] = [
   { key: 'drops', label: 'Drops', icon: 'i-lucide-package-open' }
 ]
 
-// Un seul carrousel : giveaways en cours, masqués sur le PC, ou en pause (live terminé, tirage
-// pas encore fait), au choix (gardé sur ce téléphone)
-type GiveawayList = 'open' | 'hidden' | 'paused'
-const savedList = localStorage.getItem('giveawayList')
-const listChoice = ref<GiveawayList>(savedList === 'hidden' || savedList === 'paused' ? savedList : 'open')
+// Un seul carrousel : giveaways en cours, masqués sur le PC, en pause (live terminé, tirage
+// pas encore fait) ou clos depuis moins de 48 h, au choix (gardé sur ce téléphone)
+type GiveawayList = 'open' | 'hidden' | 'paused' | 'closed'
+const LISTS: Record<GiveawayList, { item: string, title: string, empty: string }> = {
+  open: { item: 'Giveaways en cours', title: 'En cours', empty: 'Aucun giveaway en cours : choisis une autre liste ci-dessus.' },
+  hidden: { item: 'Giveaways masqués', title: 'Masqués', empty: 'Aucun giveaway masqué.' },
+  paused: { item: 'Giveaways en pause', title: 'En pause', empty: 'Aucun giveaway en pause.' },
+  closed: { item: 'Giveaways passés (48 h)', title: 'Passés', empty: 'Aucun giveaway clos ces dernières 48 h.' }
+}
+const savedList = localStorage.getItem('giveawayList') as GiveawayList | null
+const listChoice = ref<GiveawayList>(savedList && savedList in LISTS ? savedList : 'open')
 watch(listChoice, v => localStorage.setItem('giveawayList', v))
 const isHidden = (id: string) => !!data.value?.state?.giveaways[id]?.hidden
 const all = computed(() => data.value?.giveaways ?? [])
-const hiddenList = computed(() => all.value.filter(g => isHidden(g.id)))
+const hiddenList = computed(() => all.value.filter(g => g.status !== 'closed' && isHidden(g.id)))
 const pausedList = computed(() => all.value.filter(g => g.status === 'paused' && !isHidden(g.id)))
 const openList = computed(() => all.value.filter(g => g.status === 'open' && !isHidden(g.id)))
+// Clos le plus récemment d'abord (ordre du serveur)
+const closedList = computed(() => all.value.filter(g => g.status === 'closed'))
 const mode = computed<GiveawayList>(() => listChoice.value)
-const listItems = computed(() => [
-  { label: `Giveaways en cours (${openList.value.length})`, value: 'open' },
-  { label: `Giveaways masqués (${hiddenList.value.length})`, value: 'hidden' },
-  { label: `Giveaways en pause (${pausedList.value.length})`, value: 'paused' }
-])
-const shown = computed(() => mode.value === 'hidden' ? hiddenList.value : mode.value === 'paused' ? pausedList.value : openList.value)
-const shownTitle = computed(() => mode.value === 'hidden' ? 'Masqués' : mode.value === 'paused' ? 'En pause' : 'En cours')
+const lists = computed<Record<GiveawayList, Giveaway[]>>(() => ({ open: openList.value, hidden: hiddenList.value, paused: pausedList.value, closed: closedList.value }))
+const listItems = computed(() => (Object.keys(LISTS) as GiveawayList[]).map(k => ({ label: `${LISTS[k].item} (${lists.value[k].length})`, value: k })))
+const shown = computed(() => lists.value[mode.value])
+const shownTitle = computed(() => LISTS[mode.value].title)
 // Giveaway affiché ; revenu au premier quand la liste change
 const shownIndex = ref(0)
 watch(mode, () => { shownIndex.value = 0 })
@@ -132,9 +137,9 @@ watch([target, () => data.value, tab], async ([t]) => {
   }
   if (tab.value === 'giveaways' && focus.value !== 'mentions') {
     const all = data.value.giveaways.filter(g => g.channel.toLowerCase() === login)
-    const g = all.find(x => x.status === 'open' && !isHidden(x.id)) ?? all[0]
+    const g = all.find(x => x.status === 'open' && !isHidden(x.id)) ?? all.find(x => x.status !== 'closed') ?? all[0]
     if (!g) return
-    listChoice.value = isHidden(g.id) ? 'hidden' : g.status === 'paused' ? 'paused' : 'open'
+    listChoice.value = g.status === 'closed' ? 'closed' : isHidden(g.id) ? 'hidden' : g.status === 'paused' ? 'paused' : 'open'
     await nextTick()
     const i = shown.value.findIndex(x => x.id === g.id)
     if (i >= 0) shownIndex.value = i
@@ -464,9 +469,10 @@ const menu = computed<DropdownMenuItem[][]>(() => [
             <h1 id="shown-title" class="text-sm font-medium text-muted uppercase tabular-nums">{{ shownTitle }} · {{ Math.min(shownIndex, shown.length - 1) + 1 }} / {{ shown.length }}</h1>
             <p v-if="mode === 'paused'" class="text-xs text-muted -mt-1">Live terminé, tirage pas encore fait.</p>
             <p v-else-if="mode === 'hidden'" class="text-xs text-muted -mt-1">Masqués sur le PC : ni alerte, ni participation automatique.</p>
+            <p v-else-if="mode === 'closed'" class="text-xs text-muted -mt-1">Clos ces dernières 48 h, le plus récent d'abord.</p>
             <GiveawayCarousel :key="mode" v-model:index="shownIndex" :giveaways="shown" :state="data.state" />
           </section>
-          <p v-else-if="data.giveaways.length" class="text-sm text-muted py-6 text-center">{{ mode === 'hidden' ? 'Aucun giveaway masqué.' : mode === 'paused' ? 'Aucun giveaway en pause.' : 'Aucun giveaway en cours : choisis une autre liste ci-dessus.' }}</p>
+          <p v-else-if="data.giveaways.length" class="text-sm text-muted py-6 text-center">{{ LISTS[mode].empty }}</p>
           <MentionList v-if="data.state?.mentions?.length" id="mentions" :mentions="data.state.mentions" :langs="data.state.languages" :avatars="data.state.avatars" :highlight="highlight" class="scroll-mt-20" />
           <p v-if="data.stateAt" class="text-xs text-muted text-center">Participations publiées par le PC {{ timeAgo(data.stateAt) }}</p>
         </template>

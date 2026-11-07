@@ -1650,7 +1650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overview_lists_open_then_paused_giveaways_with_their_gifts() {
+    async fn overview_lists_open_then_paused_then_recently_closed_giveaways_with_their_gifts() {
         let s = server(&["groups", "gifts", "giveaways"]);
         let body = Push {
             author: Some("alice".into()),
@@ -1662,9 +1662,17 @@ mod tests {
                 change("giveaways", "p1", Some(serde_json::json!({"channel": "b", "kind": "command", "detectedAt": "2026-11-01T12:00:00Z", "open": false, "status": "paused"}))),
                 change("giveaways", "o1", Some(serde_json::json!({"channel": "c", "kind": "command", "command": "!join", "detectedAt": "2026-11-01T10:00:00Z", "open": true, "gifts": ["c1", "c2", "absent"]}))),
                 change("giveaways", "o2", Some(serde_json::json!({"channel": "d", "kind": "ticket", "detectedAt": "2026-11-01T11:00:00Z", "open": true}))),
+                change("giveaways", "c1", Some(serde_json::json!({"channel": "e", "kind": "command", "detectedAt": "2026-01-02T00:00:00Z", "open": false}))),
             ],
         };
         let _ = push(State(s.clone()), Json(body)).await.ok().unwrap();
+        // Clos il y a 3 jours : plus envoyé ; clos il y a 1 h : envoyé, après les autres
+        {
+            let conn = s.db.lock().unwrap();
+            let at = |h: i64| (chrono::Utc::now() - chrono::Duration::hours(h)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            conn.execute("UPDATE docs SET updated_at = ?1 WHERE id = 'old'", [at(72)]).unwrap();
+            conn.execute("UPDATE docs SET updated_at = ?1 WHERE id = 'c1'", [at(1)]).unwrap();
+        }
         let (token, _) = paired_device(&s, INSTANCE).await;
         let auth = format!("Device {token}");
 
@@ -1677,7 +1685,9 @@ mod tests {
         let (st, v) = json_of(&s, request_auth("GET", "/api/v1/app/overview", &auth, "7.7.7.2", "")).await;
         assert_eq!(st, StatusCode::OK);
         let ids: Vec<&str> = v["giveaways"].as_array().unwrap().iter().map(|g| g["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, vec!["o2", "o1", "p1"]);
+        assert_eq!(ids, vec!["o2", "o1", "p1", "c1"]);
+        assert_eq!(v["giveaways"][3]["status"], "closed");
+        assert!(v["giveaways"][3]["closedAt"].is_string());
         let o1 = &v["giveaways"][1];
         assert_eq!(o1["status"], "open");
         assert_eq!(o1["command"], "!join");

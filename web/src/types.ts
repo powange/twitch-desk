@@ -14,7 +14,9 @@ export interface Giveaway {
   id: string
   channel: string
   kind: GiveawayKind
-  status: 'open' | 'paused'
+  // Clos : seulement ceux des dernières 48 h, avec leur heure de clôture
+  status: 'open' | 'paused' | 'closed'
+  closedAt?: string | null
   command?: string | null
   url?: string | null
   detectedAt: string

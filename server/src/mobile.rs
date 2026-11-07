@@ -423,9 +423,13 @@ fn twitch_image(url: &str) -> bool {
         && ["jtvnw.net", "twitchcdn.net", "twitch.tv"].iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
-/// Giveaways ouverts ou en pause, ouverts d'abord, les plus récents en premier ; cadeaux
+/// Clos depuis moins de 48 h : aussi envoyés (liste « passés » de la web app)
+const CLOSED_HOURS: i64 = 48;
+
+/// Giveaways ouverts, en pause ou clos depuis moins de 48 h (heure de clôture : dernière
+/// modification reçue, `closedAt`), ouverts d'abord, les plus récents en premier ; cadeaux
 /// remplacés par leur titre, adresse de leur image, jeu et groupe. Seuls ces giveaways et leurs
-/// cadeaux sont lus (pas les terminés, ni les images des autres cadeaux)
+/// cadeaux sont lus (pas les plus anciens, ni les images des autres cadeaux)
 pub fn open_giveaways(conn: &Connection, collections: &std::collections::BTreeSet<String>) -> rusqlite::Result<Vec<Value>> {
     if !collections.contains("giveaways") {
         return Ok(vec![]);
@@ -433,19 +437,18 @@ pub fn open_giveaways(conn: &Connection, collections: &std::collections::BTreeSe
     let with_gifts = collections.contains("gifts");
     let groups = if with_gifts && collections.contains("groups") { docs_of(conn, "groups")? } else { HashMap::new() };
     let mut stmt = conn.prepare_cached(
-        "SELECT id, data FROM docs WHERE collection = 'giveaways' AND deleted = 0 AND data IS NOT NULL
-           AND json_valid(data) AND (json_extract(data, '$.open') = 1 OR json_extract(data, '$.status') = 'paused')",
+        "SELECT id, data, updated_at FROM docs WHERE collection = 'giveaways' AND deleted = 0 AND data IS NOT NULL
+           AND json_valid(data) AND (json_extract(data, '$.open') = 1 OR json_extract(data, '$.status') = 'paused' OR updated_at >= ?1)",
     )?;
-    let rows: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let since = (chrono::Utc::now() - chrono::Duration::hours(CLOSED_HOURS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let rows: Vec<(String, String, String)> = stmt.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
     let mut gifts: HashMap<String, Option<Value>> = HashMap::new();
-    let mut list: Vec<(bool, String, Value)> = vec![];
-    for (id, data) in rows {
+    // (rang : ouvert, en pause, clos ; date de tri, giveaway)
+    let mut list: Vec<(u8, String, Value)> = vec![];
+    for (id, data, updated) in rows {
         let Some(mut g) = object_of(&data) else { continue };
         let open = g.get("open").and_then(Value::as_bool).unwrap_or(false);
-        let paused = g.get("status").and_then(Value::as_str) == Some("paused");
-        if !open && !paused {
-            continue;
-        }
+        let paused = !open && g.get("status").and_then(Value::as_str) == Some("paused");
         let ids: Vec<String> = g.get("gifts").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
         let mut resolved = vec![];
         if with_gifts {
@@ -465,13 +468,20 @@ pub fn open_giveaways(conn: &Connection, collections: &std::collections::BTreeSe
                 }));
             }
         }
-        let detected = text(&g, "detectedAt").unwrap_or_default();
+        let (rank, status, date) = if open {
+            (0, "open", text(&g, "detectedAt").unwrap_or_default())
+        } else if paused {
+            (1, "paused", text(&g, "detectedAt").unwrap_or_default())
+        } else {
+            g["closedAt"] = Value::String(updated.clone());
+            (2, "closed", updated)
+        };
         g["id"] = Value::String(id);
         g["gifts"] = Value::Array(resolved);
-        g["status"] = Value::String(if open { "open" } else { "paused" }.into());
-        list.push((open, detected, g));
+        g["status"] = Value::String(status.into());
+        list.push((rank, date, g));
     }
-    list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    list.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
     Ok(list.into_iter().map(|(_, _, g)| g).collect())
 }
 

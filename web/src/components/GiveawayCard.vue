@@ -91,7 +91,7 @@ async function copy() {
 </script>
 
 <template>
-  <article class="rounded-xl border border-default bg-elevated/40 overflow-hidden" :class="g.status === 'paused' || hidden ? 'opacity-80' : ''">
+  <article class="rounded-xl border border-default bg-elevated/40 overflow-hidden" :class="g.status !== 'open' || hidden ? 'opacity-80' : ''">
     <div class="flex flex-col gap-3 p-4">
       <!-- Chaîne, type et statut -->
       <header class="flex flex-col gap-1.5">
@@ -105,7 +105,8 @@ async function copy() {
           </button>
           <UBadge v-else :label="kind.label" :color="kind.color" variant="subtle" size="sm" />
           <UBadge v-if="g.status === 'paused'" label="En pause" color="warning" variant="subtle" size="sm" icon="i-lucide-pause" />
-          <UBadge v-if="hidden" label="Masqué" color="neutral" variant="subtle" size="sm" icon="i-lucide-eye-off" />
+          <UBadge v-if="g.status === 'closed'" :label="g.closedAt ? `Clos ${formatWhen(g.closedAt)}` : 'Clos'" color="neutral" variant="subtle" size="sm" icon="i-lucide-lock" />
+          <UBadge v-if="hidden && g.status !== 'closed'" label="Masqué" color="neutral" variant="subtle" size="sm" icon="i-lucide-eye-off" />
         </div>
         <div v-if="live" class="flex items-center gap-2 flex-wrap text-sm">
           <UBadge v-if="live.live" label="En live" color="error" variant="solid" size="sm" icon="i-lucide-radio" />
@@ -137,8 +138,8 @@ async function copy() {
         block
       />
 
-      <!-- Participation de mes comptes -->
-      <div v-if="state" class="flex items-center gap-2 text-sm">
+      <!-- Participation de mes comptes (pas connue du PC pour un giveaway clos) -->
+      <div v-if="state && (g.status !== 'closed' || mine)" class="flex items-center gap-2 text-sm">
         <template v-if="mine && mine.participated.length">
           <UIcon name="i-lucide-circle-check" class="size-4 text-success shrink-0" />
           <span><span class="text-muted">Participé :</span> {{ mine.participated.join(', ') }}</span>
@@ -194,15 +195,16 @@ async function copy() {
         :loading="busy('giveaway_participate')"
         @click="act('giveaway_participate')"
       />
-      <div v-if="g.requireFollow || g.requireGreeting || (g.requireDiscord && discordUrl)" class="flex flex-wrap gap-2">
+      <div v-if="g.status !== 'closed' && (g.requireFollow || g.requireGreeting || (g.requireDiscord && discordUrl))" class="flex flex-wrap gap-2">
         <UButton v-if="g.requireFollow" label="Suivre la chaîne" icon="i-lucide-heart" color="neutral" variant="soft" size="sm" :loading="busy('giveaway_follow')" @click="act('giveaway_follow')" />
         <UButton v-if="g.requireGreeting" label="Dire bonjour" icon="i-lucide-hand" color="neutral" variant="soft" size="sm" :loading="busy('giveaway_hello')" @click="act('giveaway_hello')" />
         <UButton v-if="g.requireDiscord && discordUrl" label="Discord" icon="i-simple-icons-discord" color="neutral" variant="soft" size="sm" :to="discordUrl" target="_blank" />
       </div>
 
       <!-- Demandes au PC -->
-      <div class="grid grid-cols-3 gap-2">
+      <div class="grid gap-2" :class="g.status === 'closed' ? 'grid-cols-2' : 'grid-cols-3'">
         <UButton
+          v-if="g.status !== 'closed'"
           :label="hidden ? 'Afficher' : 'Masquer'"
           :icon="hidden ? 'i-lucide-eye' : 'i-lucide-eye-off'"
           color="neutral"
